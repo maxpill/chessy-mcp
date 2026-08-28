@@ -3,20 +3,8 @@
 # the way in. TLS is terminated at the Cloudflare tunnel; Caddy serves
 # plain HTTP on :80 here.
 #
-# Cache hints:
-#   - evaluate_position with the same FEN+depth is a no-op for Stockfish —
-#     the MCP itself caches (L1 memory + L2 SQLite WAL), but Cloudflare's
-#     edge can't see JSON-RPC body identity. Edge cache is disabled here
-#     (the MCP server handles correctness); the server-side cache absorbs
-#     the dedupe work.
-#   - Caddy adds gzip via the encode directive — analyze_game payloads are
-#     large JSON.
-#
-# Hardening:
-#   - read_timeout / write_timeout are generous because analyze_game at
-#     depth 26 on a long PGN can run for ~30s in the worst case.
-#   - No HSTS — TLS terminates upstream at Cloudflare, so an app-layer HSTS
-#     header would misrepresent where TLS actually happens.
+# Streamable HTTP lives at /mcp; the bare root returns a friendly 404 so
+# healthchecks on / (the CF default) don't return 200.
 
 http://mcp.trychessy.com {
 	encode zstd gzip
@@ -25,8 +13,6 @@ http://mcp.trychessy.com {
 		format json
 	}
 
-	# CORS: mcp.trychessy.com is the canonical origin for MCP; other origins
-	# (e.g. ChatGPT client in browser) must be permitted.
 	@origin_options method OPTIONS
 	header @origin_options {
 		Access-Control-Allow-Origin "*"
@@ -36,29 +22,14 @@ http://mcp.trychessy.com {
 	}
 	respond @origin_options 204
 
-	# Streamable HTTP lives at /mcp; allow both the documented path and the
-	# root for clients that hit the bare host.
-	handle /mcp* {
-		reverse_proxy mcp:8000 {
-			transport http {
-				keepalive 30s
-				keepidle 30s
-				keepintvl 5s
-				read_timeout 120s
-				write_timeout 120s
-				dial_timeout 10s
-				response_header_timeout 60s
-				# Cap streamed response bodies at analyze_game's worst-case size.
-				# Default is unlimited; an explicit limit prevents OOM if a
-				# client requests analyze_game at depth 30 on a 5k-ply game.
-			}
-			flush_interval -1
-		}
-	}
-
-	# Health endpoint for compose / orchestrator probes.
+	# /health is a public probe — no auth, no MCP machinery.
 	handle /health {
 		respond "ok" 200
+	}
+
+	# Streamable HTTP lives at /mcp.
+	handle /mcp* {
+		reverse_proxy mcp:8000
 	}
 
 	# 404 fallback
