@@ -83,3 +83,4 @@ primary consumer, and this server is sized for that workload.
   requests share one Stockfish call via the `SingleFlight` helper.
 - **Multi-tier cache (L1 memory LRU + L2 SQLite WAL)** absorbs repeat
   positions / top-moves queries.
+# Last verified 12:51:02
