@@ -1,22 +1,7 @@
 # Minimal Caddy — just proxy /mcp to the MCP service.
-# Simplifies debugging by removing the @origin_options preflight matcher.
 
 http://mcp.trychessy.com {
 	encode zstd gzip
-	log {
-		output stderr
-		format json
-	}
 
-	handle /health {
-		respond "ok" 200
-	}
-
-	handle /mcp* {
-		reverse_proxy mcp:8000
-	}
-
-	handle {
-		respond "Chess MCP server. Use POST /mcp." 404
-	}
+	reverse_proxy mcp:8000
 }
