@@ -1,10 +1,5 @@
-# Caddy serves mcp.trychessy.com ONLY — the chessy app's MCP traffic goes
-# through this Caddy on the way out and through the Cloudflare tunnel on
-# the way in. TLS is terminated at the Cloudflare tunnel; Caddy serves
-# plain HTTP on :80 here.
-#
-# Streamable HTTP lives at /mcp; the bare root returns a friendly 404 so
-# healthchecks on / (the CF default) don't return 200.
+# Minimal Caddy — just proxy /mcp to the MCP service.
+# Simplifies debugging by removing the @origin_options preflight matcher.
 
 http://mcp.trychessy.com {
 	encode zstd gzip
@@ -13,26 +8,14 @@ http://mcp.trychessy.com {
 		format json
 	}
 
-	@origin_options method OPTIONS
-	header @origin_options {
-		Access-Control-Allow-Origin "*"
-		Access-Control-Allow-Methods "GET, POST, OPTIONS"
-		Access-Control-Allow-Headers "Content-Type, Accept, Mcp-Session-Id, X-Chessy-Auth"
-		Access-Control-Max-Age "86400"
-	}
-	respond @origin_options 204
-
-	# /health is a public probe — no auth, no MCP machinery.
 	handle /health {
 		respond "ok" 200
 	}
 
-	# Streamable HTTP lives at /mcp.
 	handle /mcp* {
 		reverse_proxy mcp:8000
 	}
 
-	# 404 fallback
 	handle {
 		respond "Chess MCP server. Use POST /mcp." 404
 	}
