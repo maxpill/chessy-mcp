@@ -34,8 +34,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && CXXFLAGS="-O3 -DNDEBUG -march=native" \
        CFLAGS="-O3 -DNDEBUG -march=native" \
        make -j"$(nproc)" build ARCH=native \
-    && /src/src/stockfish --help 2>&1 | head -3 \
-    && cp /src/src/stockfish /usr/local/bin/stockfish \
+    && ./stockfish --help 2>&1 | head -3 \
+    && cp ./stockfish /usr/local/bin/stockfish \
     && chmod +x /usr/local/bin/stockfish \
     && rm -rf /tmp/sfbuild
 
