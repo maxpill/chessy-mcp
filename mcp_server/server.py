@@ -68,19 +68,11 @@ def _format_exception(exc: BaseException) -> str:
     return str(exc)
 
 
-def _tool_error(
-    code: str, message: str | BaseException, tool: str, **kwargs: Any
-) -> ToolError:
+def _tool_error(code: str, message: str | BaseException, tool: str, **kwargs: Any) -> ToolError:
     """Create a clean human/agent-readable ToolError payload."""
-    raw = (
-        _format_exception(message)
-        if isinstance(message, BaseException)
-        else str(message)
-    )
+    raw = _format_exception(message) if isinstance(message, BaseException) else str(message)
     clean_msg = raw.strip()
-    clean_msg = re.sub(
-        r"^(?:\[[A-Za-z0-9_]+\]|[A-Za-z0-9_]+:)\s*", "", clean_msg
-    ).strip()
+    clean_msg = re.sub(r"^(?:\[[A-Za-z0-9_]+\]|[A-Za-z0-9_]+:)\s*", "", clean_msg).strip()
     return ToolError(f"[{code.upper()}] {clean_msg}")
 
 
@@ -214,9 +206,7 @@ _FIGURINE_MAP = str.maketrans(
     }
 )
 
-TAG_PAIR_REGEX = re.compile(
-    r'\[\s*([A-Za-z0-9_]+)\s+"((?:[^"\\]|\\.)*)"\s*\]', re.DOTALL
-)
+TAG_PAIR_REGEX = re.compile(r'\[\s*([A-Za-z0-9_]+)\s+"((?:[^"\\]|\\.)*)"\s*\]', re.DOTALL)
 
 
 def _unescape_pgn_tag_value(val: str | None) -> str | None:
@@ -346,9 +336,7 @@ def _package_version() -> str:
         pass
 
     env_override = os.environ.get("CHESSY_PACKAGE_VERSION")
-    if (
-        env_override
-    ):  # pragma: no cover — env read kept for tests that bypass get_build_metadata
+    if env_override:  # pragma: no cover — env read kept for tests that bypass get_build_metadata
         return env_override
 
     try:
@@ -463,9 +451,7 @@ async def _mcp_lifespan(server: MCPServer) -> AsyncIterator[dict[str, Any]]:
             threads=1,
             hash_mb=cfg.hash_mb,
         )
-        log.info(
-            "TCP analyzer pool ready: %d engines @ %s:%d", pool_size, sf_host, cfg.port
-        )
+        log.info("TCP analyzer pool ready: %d engines @ %s:%d", pool_size, sf_host, cfg.port)
     else:
         pool = await AnalyzerPool.create(
             _stockfish_path(),
@@ -491,6 +477,25 @@ mcp = MCPServer(
     description="Streamable Stockfish chess analysis and move grading MCP server",
     lifespan=_mcp_lifespan,
 )
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def _health(request: Any) -> Any:
+    """Liveness/readiness probe — no auth required, no MCP machinery touched.
+
+    Returns 200 with a minimal payload so compose / orchestrator healthchecks
+    can verify the service is up without engaging the JSON-RPC stack.
+    """
+    from starlette.responses import JSONResponse
+
+    return JSONResponse(
+        {
+            "status": "ok",
+            "service": "chessy-mcp",
+            "version": _package_version(),
+        }
+    )
+
 
 # Multi-Tier Cache (L1 Memory LRU 50k + L2 SQLite WAL Disk Cache) and SingleFlight Coalescer
 _cache: MultiTierCache = MultiTierCache(l1_size=50_000)
@@ -527,11 +532,7 @@ async def _get_analyzer_pool(
 
             mcp_cfg = get_mcp_settings()
             default_pool_size = min(8, max(4, os.cpu_count() or 6))
-            pool_size = (
-                mcp_cfg.pool_size
-                if mcp_cfg.pool_size is not None
-                else default_pool_size
-            )
+            pool_size = mcp_cfg.pool_size if mcp_cfg.pool_size is not None else default_pool_size
             hash_mb = mcp_cfg.hash_mb
             sf_host = mcp_cfg.host
             sf_port = mcp_cfg.port
@@ -691,9 +692,7 @@ def _find_movetext_result(text: str) -> str:
                 if movetext[i : i + len(marker)] == marker:
                     left_ok = i == 0 or movetext[i - 1] in " \t\r\n;"
                     right_idx = i + len(marker)
-                    right_ok = (
-                        right_idx == len(movetext) or movetext[right_idx] in " \t\r\n;"
-                    )
+                    right_ok = right_idx == len(movetext) or movetext[right_idx] in " \t\r\n;"
                     if left_ok and right_ok:
                         return marker
         i += 1
@@ -779,13 +778,9 @@ def _validate_movetext_tokens(
     """Check that all tokens in the active movetext section are valid chess moves or PGN symbols."""
     # 1. Translate figurines in movetext and split attached NAGs (PGN-07) and attached asterisk
     t = _normalize_movetext_figurines(movetext)
-    t = re.sub(
-        r"(\b[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[\+#\?!]*)(\$\d+)", r"\1 \2", t
-    )
+    t = re.sub(r"(\b[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[\+#\?!]*)(\$\d+)", r"\1 \2", t)
     t = re.sub(r"\b(O-O-O|O-O)([\+#\?!]*)(\$\d+)", r"\1\2 \3", t)
-    t = re.sub(
-        r"(\b[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[\+#\?!]*)\*", r"\1 *", t
-    )
+    t = re.sub(r"(\b[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[\+#\?!]*)\*", r"\1 *", t)
     t = re.sub(r"\b(O-O-O|O-O)([\+#\?!]*)\*", r"\1\2 *", t)
     # 2. Normalize castling and en passant notation
     t = re.sub(r"\b0-0-0\b", "O-O-O", t)
@@ -822,9 +817,9 @@ def _validate_movetext_tokens(
     first_move_idx = None
     for i, tok in enumerate(tokens):
         clean_tok = tok.rstrip(".,:;!?").lstrip(".,:;!?")
-        clean_tok = re.sub(
-            r"\s*\(?\s*e\.?p\.?\s*\)?$", "", clean_tok, flags=re.IGNORECASE
-        ).rstrip(".,:;!?")
+        clean_tok = re.sub(r"\s*\(?\s*e\.?p\.?\s*\)?$", "", clean_tok, flags=re.IGNORECASE).rstrip(
+            ".,:;!?"
+        )
         if re.match(r"^\d+[\.\:]*$", tok):
             first_move_idx = i
             break
@@ -844,9 +839,9 @@ def _validate_movetext_tokens(
         if b.is_game_over(claim_draw=False):
             break
         clean_tok = tok.rstrip(".,:;!?").lstrip(".,:;!?")
-        clean_tok = re.sub(
-            r"\s*\(?\s*e\.?p\.?\s*\)?$", "", clean_tok, flags=re.IGNORECASE
-        ).rstrip(".,:;!?")
+        clean_tok = re.sub(r"\s*\(?\s*e\.?p\.?\s*\)?$", "", clean_tok, flags=re.IGNORECASE).rstrip(
+            ".,:;!?"
+        )
         nag_m = re.match(r"^\$([0-9]+)$", clean_tok)
         if nag_m:
             nag_val = int(nag_m.group(1))
@@ -1006,9 +1001,7 @@ def _check_multiple_games(cleaned: str) -> None:
             _validate_variant(_unescape_pgn_tag_value(m.group(2)))
 
     # 1. Multiple markdown fenced code blocks
-    fences = list(
-        re.finditer(r"```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```", cleaned_escapes)
-    )
+    fences = list(re.finditer(r"```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```", cleaned_escapes))
     if len(fences) > 1:
         tagged_fences = [
             m for m in fences if (m.group(1) or "").strip().lower() in ("pgn", "chess")
@@ -1234,9 +1227,7 @@ def _is_canonical_tag_line(line: str) -> bool:
         or stripped.startswith("{")
     ):
         return False
-    return bool(
-        re.match(r'^(?:\[\s*[A-Za-z0-9_]+\s+"(?:[^"\\]|\\.)*"\s*\]\s*)+$', stripped)
-    )
+    return bool(re.match(r'^(?:\[\s*[A-Za-z0-9_]+\s+"(?:[^"\\]|\\.)*"\s*\]\s*)+$', stripped))
 
 
 def _clean_conversational_text(text: str) -> str:
@@ -1332,9 +1323,7 @@ def _clean_conversational_text(text: str) -> str:
         best_cluster = clusters[0]
         has_direct_moves, std_count, cl_len = _cluster_eval(best_cluster)
 
-        if has_direct_moves or (
-            first_mv_in_full is None and (std_count > 0 or cl_len >= 2)
-        ):
+        if has_direct_moves or (first_mv_in_full is None and (std_count > 0 or cl_len >= 2)):
             h_start = best_cluster[0].start()
             h_end = best_cluster[-1].end()
             best_header_str = text[h_start:h_end].strip()
@@ -1382,9 +1371,7 @@ def _clean_conversational_text(text: str) -> str:
             ):
                 end_idx = i
                 break
-            has_chess = bool(
-                re.search(r"\b\d+\s*[\.\:]|[a-h][1-8]|O-O|1-0|0-1|1/2", stripped)
-            )
+            has_chess = bool(re.search(r"\b\d+\s*[\.\:]|[a-h][1-8]|O-O|1-0|0-1|1/2", stripped))
             if not has_chess and stripped:
                 end_idx = i
                 break
@@ -1398,9 +1385,7 @@ def _clean_conversational_text(text: str) -> str:
 
 def _extract_canonical_pgn_text(text: str) -> str:
     """Isolate the canonical PGN text from markdown fences, conversational preambles, and trailers."""
-    cleaned = (
-        text.replace("\u00a0", " ").replace("\u200b", "").replace("\ufeff", "").strip()
-    )
+    cleaned = text.replace("\u00a0", " ").replace("\u200b", "").replace("\ufeff", "").strip()
     # L-04 audit fix: normalize Unicode PGN markers (½-½ etc.) before any
     # further processing so the rest of the parser sees ASCII PGN.
     cleaned = _normalize_unicode_pgn_results(cleaned)
@@ -1495,9 +1480,7 @@ def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
         g = _parse_pgn_game_candidate(norm_text, strict=strict)
         if g is not None:
             if not list(g.mainline_moves()):
-                has_move_tokens = bool(
-                    re.search(r"\b\d+\s*[\.\:]\s*[A-Za-z]", norm_text)
-                )
+                has_move_tokens = bool(re.search(r"\b\d+\s*[\.\:]\s*[A-Za-z]", norm_text))
                 if has_move_tokens:
                     raise ValueError(
                         f"INVALID_PGN: Could not parse legal moves from movetext '{norm_text[:100]}'."
@@ -1623,9 +1606,7 @@ def _parse_move_on_board_with_warning(
     )
     clean_move = re.sub(r"^(\d+[\.\:]+|\.+)\s*", "", clean_move)
     clean_move = clean_move.translate(_FIGURINE_MAP)
-    clean_move = re.sub(
-        r"\s*\(?\s*e\.?p\.?\s*\)?$", "", clean_move, flags=re.IGNORECASE
-    )
+    clean_move = re.sub(r"\s*\(?\s*e\.?p\.?\s*\)?$", "", clean_move, flags=re.IGNORECASE)
 
     # Normalize castling variants
     lower_cand = clean_move.lower()
@@ -1673,9 +1654,7 @@ def _parse_move_on_board_with_warning(
                     )
                 return m, syntax_warning
         except (chess.AmbiguousMoveError, chess.IllegalMoveError) as exc:
-            if "ambiguous" in str(exc).lower() or isinstance(
-                exc, chess.AmbiguousMoveError
-            ):
+            if "ambiguous" in str(exc).lower() or isinstance(exc, chess.AmbiguousMoveError):
                 ambiguous_err = exc
         except (ValueError, chess.InvalidMoveError) as exc:
             if "STRICT" in str(exc):
@@ -1709,11 +1688,7 @@ def _build_board(
     else:
         board = None
         tokens = cleaned.split()
-        if (
-            1 <= len(tokens) <= 6
-            and not cleaned.startswith("[")
-            and not tokens[0].endswith(".")
-        ):
+        if 1 <= len(tokens) <= 6 and not cleaned.startswith("[") and not tokens[0].endswith("."):
             if "/" in cleaned:
                 if len(tokens) >= 5:
                     try:
@@ -1925,9 +1900,7 @@ async def _evaluate_game_position_cached(
                 if bm_obj in b.legal_moves:
                     b_after.push(bm_obj)
                     is_bm_75 = b_after.is_seventyfive_moves()
-                    is_bm_conceded = (
-                        b.halfmove_clock >= 100 and b_after.is_fifty_moves()
-                    )
+                    is_bm_conceded = b.halfmove_clock >= 100 and b_after.is_fifty_moves()
 
                     if is_bm_75 or is_bm_conceded:
                         # Find a win-preserving reset move (capture / pawn move / mate).
@@ -2054,9 +2027,7 @@ async def evaluate_position(
             requested_depth=raw_requested_depth,
             history_complete=history_complete,
         )
-        await metrics.record(
-            "evaluate_position", (time.time() - t0) * 1000, cache_hit=is_hit
-        )
+        await metrics.record("evaluate_position", (time.time() - t0) * 1000, cache_hit=is_hit)
         # L-06: surface input vs canonical FEN so callers can detect when
         # python-chess silently rewrote the EP target or other fields.
         canonical_fen = board.fen()
@@ -2077,22 +2048,17 @@ async def evaluate_position(
                 "requested_depth": raw_requested_depth,
                 "input_fen": cleaned_input if is_fen_input else None,
                 "canonical_fen": canonical_fen,
-                "fen_was_canonicalized": is_fen_input
-                and cleaned_input != canonical_fen,
+                "fen_was_canonicalized": is_fen_input and cleaned_input != canonical_fen,
             }
         )
         if verbosity_mode == VERBOSITY_COMPACT:
             result = _compact_mcpeval(result)
         return result
     except ToolError:
-        await metrics.record(
-            "evaluate_position", (time.time() - t0) * 1000, is_error=True
-        )
+        await metrics.record("evaluate_position", (time.time() - t0) * 1000, is_error=True)
         raise
     except ValueError as exc:
-        await metrics.record(
-            "evaluate_position", (time.time() - t0) * 1000, is_error=True
-        )
+        await metrics.record("evaluate_position", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
         code = "invalid_input"
         if "STRICT" in msg:
@@ -2111,20 +2077,12 @@ async def evaluate_position(
             code = "ambiguous_san"
         elif "GAME_ALREADY_OVER" in msg:
             code = "game_already_over"
-        elif (
-            "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg
-        ):
+        elif "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg:
             code = "invalid_pgn"
-        raise _tool_error(
-            code=code, message=msg, tool="evaluate_position", input=fen
-        ) from exc
+        raise _tool_error(code=code, message=msg, tool="evaluate_position", input=fen) from exc
     except Exception as exc:
-        await metrics.record(
-            "evaluate_position", (time.time() - t0) * 1000, is_error=True
-        )
-        raise _tool_error(
-            code="engine_error", message=str(exc), tool="evaluate_position"
-        ) from exc
+        await metrics.record("evaluate_position", (time.time() - t0) * 1000, is_error=True)
+        raise _tool_error(code="engine_error", message=str(exc), tool="evaluate_position") from exc
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
@@ -2178,9 +2136,7 @@ async def top_moves(
         history_complete = bool(moves)
         rule_status = evaluate_rule_status(board, history_complete=history_complete)
         pool = await _get_analyzer_pool(ctx)
-        engine_name_str = getattr(
-            pool, "engine_version", getattr(pool, "name", "Stockfish")
-        )
+        engine_name_str = getattr(pool, "engine_version", getattr(pool, "name", "Stockfish"))
         legal_move_count = board.legal_moves.count()
 
         if rule_status.terminal is not None:
@@ -2261,8 +2217,7 @@ async def top_moves(
         if cached is not None and len(cached) >= n:
             await metrics.record("top_moves", (time.time() - t0) * 1000, cache_hit=True)
             items = [
-                c.model_copy(update={"requested_depth": raw_requested_depth})
-                for c in cached[:n]
+                c.model_copy(update={"requested_depth": raw_requested_depth}) for c in cached[:n]
             ]
             # Apply compact verbosity to cached candidates too (audit M-05)
             if verbosity_mode == VERBOSITY_COMPACT:
@@ -2349,9 +2304,7 @@ async def top_moves(
                                 if r.cp is not None
                                 else (r.mate * 1000 if r.mate is not None else 0)
                             )
-                            cand_mate_for_mover = (
-                                cand_sign * r.mate if r.mate is not None else None
-                            )
+                            cand_mate_for_mover = cand_sign * r.mate if r.mate is not None else None
                             cand_rule = evaluate_rule_status(
                                 b_cand,
                                 mover_score=cand_mover_score,
@@ -2404,8 +2357,7 @@ async def top_moves(
                             else None,
                             "can_claim_now": cand_can_claim_now,
                             "can_claim_draw": cand_can_claim_draw,
-                            "claim_reasons": cand_claim_reasons_now
-                            or cand_claim_reasons,
+                            "claim_reasons": cand_claim_reasons_now or cand_claim_reasons,
                         },
                     }
                 )
@@ -2415,9 +2367,7 @@ async def top_moves(
             # from any MultiPV result) so `top_moves(n=N)[0]` is stable across N.
             if single_pv_eval and single_pv_eval.best_move:
                 best_uci = single_pv_eval.best_move.lower()
-                already_present = any(
-                    (e.best_move or "").lower() == best_uci for e in res_list
-                )
+                already_present = any((e.best_move or "").lower() == best_uci for e in res_list)
                 if not already_present:
                     # Build a candidate from the single-PV eval the same way
                     b_cand = board.copy(stack=True)
@@ -2488,8 +2438,7 @@ async def top_moves(
                                 else None,
                                 "can_claim_now": cand_can_claim_now,
                                 "can_claim_draw": cand_can_claim_draw,
-                                "claim_reasons": cand_claim_reasons_now
-                                or cand_claim_reasons,
+                                "claim_reasons": cand_claim_reasons_now or cand_claim_reasons,
                             },
                         }
                     )
@@ -2530,9 +2479,7 @@ async def top_moves(
                     return float(sign * eval_item.cp)
                 return 0.0
 
-            has_terminal_cand = any(
-                e.post_terminal_status is not None for e in res_list
-            )
+            has_terminal_cand = any(e.post_terminal_status is not None for e in res_list)
             if board.halfmove_clock >= 100 or has_terminal_cand:
                 res_list.sort(key=_candidate_rank_key, reverse=True)
 
@@ -2542,10 +2489,7 @@ async def top_moves(
         sf_key = f"{cache_key}:n={n}"
         res = cast(list[MCPEval], await _single_flight.do(sf_key, _compute))
         await metrics.record("top_moves", (time.time() - t0) * 1000, cache_hit=False)
-        items = [
-            c.model_copy(update={"requested_depth": raw_requested_depth})
-            for c in res[:n]
-        ]
+        items = [c.model_copy(update={"requested_depth": raw_requested_depth}) for c in res[:n]]
         root_rec_action = _pick_root_recommended_action(items)
         best_action_obj = build_best_action(
             recommended_action=root_rec_action,
@@ -2669,16 +2613,12 @@ async def top_moves(
             code = "ambiguous_san"
         elif "GAME_ALREADY_OVER" in msg:
             code = "game_already_over"
-        elif (
-            "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg
-        ):
+        elif "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg:
             code = "invalid_pgn"
         raise _tool_error(code=code, message=msg, tool="top_moves", input=fen) from exc
     except Exception as exc:
         await metrics.record("top_moves", (time.time() - t0) * 1000, is_error=True)
-        raise _tool_error(
-            code="engine_error", message=str(exc), tool="top_moves"
-        ) from exc
+        raise _tool_error(code="engine_error", message=str(exc), tool="top_moves") from exc
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
@@ -2715,9 +2655,7 @@ async def classify_move(
     depth = max(1, min(depth, 30))
     try:
         board = _build_board(fen, moves or [], strict=strict)
-        chess_move, syntax_warn = _parse_move_on_board_with_warning(
-            board, move, strict=strict
-        )
+        chess_move, syntax_warn = _parse_move_on_board_with_warning(board, move, strict=strict)
 
         cache_key = classify_cache_key(
             board,
@@ -2729,15 +2667,11 @@ async def classify_move(
 
         cached = await _cache.get_classify(cache_key)
         if cached is not None:
-            await metrics.record(
-                "classify_move", (time.time() - t0) * 1000, cache_hit=True
-            )
+            await metrics.record("classify_move", (time.time() - t0) * 1000, cache_hit=True)
             eval_bef = cached.eval_before.model_copy(
                 update={"requested_depth": raw_requested_depth}
             )
-            eval_aft = cached.eval_after.model_copy(
-                update={"requested_depth": raw_requested_depth}
-            )
+            eval_aft = cached.eval_after.model_copy(update={"requested_depth": raw_requested_depth})
             return cached.model_copy(
                 update={
                     "eval_before": eval_bef,
@@ -2849,9 +2783,7 @@ async def classify_move(
                 except Exception:
                     pass
 
-            best_line_san = (
-                pv_to_san(board, eval_before.pv) if eval_before.pv else best_san
-            )
+            best_line_san = pv_to_san(board, eval_before.pv) if eval_before.pv else best_san
             played_continuation: str | None = None
             if eval_after.pv and not board_after.is_game_over():
                 played_continuation = pv_to_san(board_after, eval_after.pv)
@@ -2902,9 +2834,7 @@ async def classify_move(
                 eval_after=eval_after,
                 best_move_san=best_san,
                 best_line_san=best_line_san,
-                best_line_san_truncated=bool(
-                    eval_before.pv and len(eval_before.pv) > 6
-                ),
+                best_line_san_truncated=bool(eval_before.pv and len(eval_before.pv) > 6),
                 played_line_san=played_line_san,
                 played_continuation_san=played_continuation,
                 syntax_warning=None,
@@ -2925,9 +2855,7 @@ async def classify_move(
             return mcp_analysis
 
         res = cast(MCPMoveAnalysis, await _single_flight.do(cache_key, _compute))
-        await metrics.record(
-            "classify_move", (time.time() - t0) * 1000, cache_hit=False
-        )
+        await metrics.record("classify_move", (time.time() - t0) * 1000, cache_hit=False)
         return res.model_copy(update={"syntax_warning": syntax_warn})
     except ToolError:
         await metrics.record("classify_move", (time.time() - t0) * 1000, is_error=True)
@@ -2952,18 +2880,12 @@ async def classify_move(
             code = "ambiguous_san"
         elif "GAME_ALREADY_OVER" in msg:
             code = "game_already_over"
-        elif (
-            "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg
-        ):
+        elif "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg:
             code = "invalid_pgn"
-        raise _tool_error(
-            code=code, message=msg, tool="classify_move", input=move
-        ) from exc
+        raise _tool_error(code=code, message=msg, tool="classify_move", input=move) from exc
     except Exception as exc:
         await metrics.record("classify_move", (time.time() - t0) * 1000, is_error=True)
-        raise _tool_error(
-            code="engine_error", message=str(exc), tool="classify_move"
-        ) from exc
+        raise _tool_error(code="engine_error", message=str(exc), tool="classify_move") from exc
 
 
 def _compute_game_metrics(
@@ -3029,8 +2951,7 @@ def _compute_game_metrics(
                 board_after.is_fifty_moves() and not board_after.is_seventyfive_moves()
             ) or board_after.is_repetition(3)
             is_intended_claim = intended_now and (
-                not board_after.is_game_over(claim_draw=False)
-                or board_after.can_claim_draw
+                not board_after.is_game_over(claim_draw=False) or board_after.can_claim_draw
             )
             if is_intended_claim:
                 played_uci = move.uci()
@@ -3054,17 +2975,13 @@ def _compute_game_metrics(
         mc = score.move_class.value
         cpl = score.centipawn_loss
         win_loss = score.win_loss
-        move_acc = max(
-            0.0, min(100.0, 103.1668 * math.exp(-0.04354 * win_loss) - 3.1669)
-        )
+        move_acc = max(0.0, min(100.0, 103.1668 * math.exp(-0.04354 * win_loss) - 3.1669))
         effective_loss = score.effective_loss
 
         raw_cpl_val = (
             score.centipawn_loss
             if score.centipawn_loss is not None
-            else (
-                score.raw_centipawn_loss if score.raw_centipawn_loss is not None else 0
-            )
+            else (score.raw_centipawn_loss if score.raw_centipawn_loss is not None else 0)
         )
         if is_white:
             if raw_cpl_val is not None:
@@ -3142,21 +3059,13 @@ def _compute_game_metrics(
 
     white_acc = round(sum(white_accs) / len(white_accs), 1) if white_accs else None
     black_acc = round(sum(black_accs) / len(black_accs), 1) if black_accs else None
-    white_raw_acpl = (
-        round(sum(white_raw_cpls) / len(white_raw_cpls), 1) if white_raw_cpls else None
-    )
-    black_raw_acpl = (
-        round(sum(black_raw_cpls) / len(black_raw_cpls), 1) if black_raw_cpls else None
-    )
+    white_raw_acpl = round(sum(white_raw_cpls) / len(white_raw_cpls), 1) if white_raw_cpls else None
+    black_raw_acpl = round(sum(black_raw_cpls) / len(black_raw_cpls), 1) if black_raw_cpls else None
     white_avg_eff = (
-        round(sum(white_eff_losses) / len(white_eff_losses), 1)
-        if white_eff_losses
-        else None
+        round(sum(white_eff_losses) / len(white_eff_losses), 1) if white_eff_losses else None
     )
     black_avg_eff = (
-        round(sum(black_eff_losses) / len(black_eff_losses), 1)
-        if black_eff_losses
-        else None
+        round(sum(black_eff_losses) / len(black_eff_losses), 1) if black_eff_losses else None
     )
     white_acpl = white_avg_eff
     black_acpl = black_avg_eff
@@ -3254,23 +3163,17 @@ async def analyze_game(
             r"\1 \2",
             movetext_section,
         )
-        movetext_section = re.sub(
-            r"\b(O-O-O|O-O)([\+#\?!]*)(\$\d+)", r"\1\2 \3", movetext_section
-        )
+        movetext_section = re.sub(r"\b(O-O-O|O-O)([\+#\?!]*)(\$\d+)", r"\1\2 \3", movetext_section)
         cleaned_movetext = _normalize_movetext_figurines(movetext_section)
         while "{" in cleaned_movetext and "}" in cleaned_movetext:
             prev = cleaned_movetext
-            cleaned_movetext = re.sub(
-                r"\{[^{}]*\}", " ", cleaned_movetext, flags=re.DOTALL
-            )
+            cleaned_movetext = re.sub(r"\{[^{}]*\}", " ", cleaned_movetext, flags=re.DOTALL)
             if cleaned_movetext == prev:
                 break
         cleaned_movetext = re.sub(r";[^\r\n]*", " ", cleaned_movetext)
         while "(" in cleaned_movetext and ")" in cleaned_movetext:
             prev = cleaned_movetext
-            cleaned_movetext = re.sub(
-                r"\([^()]*\)", " ", cleaned_movetext, flags=re.DOTALL
-            )
+            cleaned_movetext = re.sub(r"\([^()]*\)", " ", cleaned_movetext, flags=re.DOTALL)
             if cleaned_movetext == prev:
                 break
 
@@ -3317,9 +3220,7 @@ async def analyze_game(
                         )
                     tok_idx += 1
                     continue
-                if raw_tok in ("1-0", "0-1", "1/2-1/2", "*") or re.match(
-                    r"^\$[0-9]+$", raw_tok
-                ):
+                if raw_tok in ("1-0", "0-1", "1/2-1/2", "*") or re.match(r"^\$[0-9]+$", raw_tok):
                     tok_idx += 1
                     continue
                 break
@@ -3381,28 +3282,19 @@ async def analyze_game(
             else None
         )
         white_elo_val = tags_dict.get("WhiteElo") or (
-            h.get("WhiteElo")
-            if h.get("WhiteElo") and h.get("WhiteElo") != "?"
-            else None
+            h.get("WhiteElo") if h.get("WhiteElo") and h.get("WhiteElo") != "?" else None
         )
         black_elo_val = tags_dict.get("BlackElo") or (
-            h.get("BlackElo")
-            if h.get("BlackElo") and h.get("BlackElo") != "?"
-            else None
+            h.get("BlackElo") if h.get("BlackElo") and h.get("BlackElo") != "?" else None
         )
         time_control_val = tags_dict.get("TimeControl") or (
-            h.get("TimeControl")
-            if h.get("TimeControl") and h.get("TimeControl") != "?"
-            else None
+            h.get("TimeControl") if h.get("TimeControl") and h.get("TimeControl") != "?" else None
         )
         variant_val = tags_dict.get("Variant") or (
             h.get("Variant") if h.get("Variant") and h.get("Variant") != "?" else None
         )
         date_val = (
-            tags_dict.get("Date")
-            or tags_dict.get("UTCDate")
-            or h.get("Date")
-            or h.get("UTCDate")
+            tags_dict.get("Date") or tags_dict.get("UTCDate") or h.get("Date") or h.get("UTCDate")
         )
         if date_val in ("????.??.??", "?"):
             date_val = None
@@ -3446,9 +3338,7 @@ async def analyze_game(
                 )
         if time_control_val is not None and time_control_val not in ("-", "?"):
             if not re.match(r"^\d+(?:\+\d+)?$|^\d+/\d+$", time_control_val):
-                metadata_warnings.append(
-                    f"Invalid TimeControl header tag '{time_control_val}'."
-                )
+                metadata_warnings.append(f"Invalid TimeControl header tag '{time_control_val}'.")
 
         eco_header = tags_dict.get("ECO") or h.get("ECO")
         opening_header = tags_dict.get("Opening") or h.get("Opening")
@@ -3511,11 +3401,7 @@ async def analyze_game(
 
         if result_board is not None:
             result_val = result_board
-            if (
-                result_header
-                and result_header not in ("*", "?")
-                and result_header != result_board
-            ):
+            if result_header and result_header not in ("*", "?") and result_header != result_board:
                 metadata_warnings.append(
                     f"Result header '{result_header}' disagrees with board outcome '{result_board}'; using board outcome."
                 )
@@ -3528,11 +3414,7 @@ async def analyze_game(
                     f"Movetext result '{result_movetext}' disagrees with board outcome '{result_board}'; using board outcome."
                 )
         else:
-            if (
-                result_header_raw
-                and result_movetext
-                and result_header_raw != result_movetext
-            ):
+            if result_header_raw and result_movetext and result_header_raw != result_movetext:
                 metadata_warnings.append(
                     f"Result header '{result_header_raw}' disagrees with movetext result '{result_movetext}'."
                 )
@@ -3547,13 +3429,9 @@ async def analyze_game(
         # Infer result from termination header if result is unstated ('*')
         if (result_val == "*" or result_val is None) and termination_header_val:
             term_low = termination_header_val.lower()
-            if "white resign" in term_low or (
-                "resign" in term_low and "white" in term_low
-            ):
+            if "white resign" in term_low or ("resign" in term_low and "white" in term_low):
                 result_val = "0-1"
-            elif "black resign" in term_low or (
-                "resign" in term_low and "black" in term_low
-            ):
+            elif "black resign" in term_low or ("resign" in term_low and "black" in term_low):
                 result_val = "1-0"
             elif (
                 "white time" in term_low
@@ -3568,13 +3446,11 @@ async def analyze_game(
             ):
                 result_val = "1-0"
             elif "white lost" in term_low or (
-                "white" in term_low
-                and ("illegal" in term_low or "infraction" in term_low)
+                "white" in term_low and ("illegal" in term_low or "infraction" in term_low)
             ):
                 result_val = "0-1"
             elif "black lost" in term_low or (
-                "black" in term_low
-                and ("illegal" in term_low or "infraction" in term_low)
+                "black" in term_low and ("illegal" in term_low or "infraction" in term_low)
             ):
                 result_val = "1-0"
 
@@ -3638,16 +3514,10 @@ async def analyze_game(
                         "threefold_repetition",
                         "dead_position",
                     ) and (
-                        (
-                            norm_term_hdr == "threefold_repetition"
-                            and final_board.is_repetition(3)
-                        )
+                        (norm_term_hdr == "threefold_repetition" and final_board.is_repetition(3))
                         or (
                             norm_term_hdr == "fifty_moves"
-                            and (
-                                final_board.is_fifty_moves()
-                                or final_board.halfmove_clock >= 100
-                            )
+                            and (final_board.is_fifty_moves() or final_board.halfmove_clock >= 100)
                         )
                         or (
                             norm_term_hdr == "fivefold_repetition"
@@ -3689,10 +3559,7 @@ async def analyze_game(
                 else:
                     termination_val = "threefold_repetition"
             elif norm_term_hdr == "fifty_moves":
-                if (
-                    not final_board.is_fifty_moves()
-                    and final_board.halfmove_clock < 100
-                ):
+                if not final_board.is_fifty_moves() and final_board.halfmove_clock < 100:
                     metadata_warnings.append(
                         f"Termination header '{termination_header_val}' contradicts board state (position is not fifty_moves)."
                     )
@@ -3717,9 +3584,7 @@ async def analyze_game(
         is_standard_start = game.board().fen() == chess.STARTING_FEN
 
         pool = await _get_analyzer_pool(ctx)
-        engine_name_str = getattr(
-            pool, "engine_version", getattr(pool, "name", "Stockfish")
-        )
+        engine_name_str = getattr(pool, "engine_version", getattr(pool, "name", "Stockfish"))
 
         if not moves:
             detected_opening, detected_eco = (
@@ -3778,9 +3643,7 @@ async def analyze_game(
 
         eval_pairs = await asyncio.gather(
             *[
-                _evaluate_game_position_cached(
-                    b, depth, pool, requested_depth=raw_requested_depth
-                )
+                _evaluate_game_position_cached(b, depth, pool, requested_depth=raw_requested_depth)
                 for b in positions
             ]
         )
@@ -3801,9 +3664,7 @@ async def analyze_game(
             top_turning_points,
         ) = _compute_game_metrics(positions, moves, evals)
 
-        await metrics.record(
-            "analyze_game", (time.time() - t0) * 1000, cache_hit=all_cached
-        )
+        await metrics.record("analyze_game", (time.time() - t0) * 1000, cache_hit=all_cached)
 
         uci_moves = [m.uci() for m in moves]
         if is_standard_start:
@@ -3879,10 +3740,7 @@ async def analyze_game(
             result_inferred=result_board
             or (
                 result_val
-                if (
-                    result_header_raw in ("*", None)
-                    and result_val in ("1-0", "0-1", "1/2-1/2")
-                )
+                if (result_header_raw in ("*", None) and result_val in ("1-0", "0-1", "1/2-1/2"))
                 else None
             ),
             white_elo=white_elo_val,
@@ -3928,18 +3786,12 @@ async def analyze_game(
             code = "ambiguous_san"
         elif "GAME_ALREADY_OVER" in msg:
             code = "game_already_over"
-        elif (
-            "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg
-        ):
+        elif "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg:
             code = "invalid_pgn"
-        raise _tool_error(
-            code=code, message=msg, tool="analyze_game", input=pgn[:100]
-        ) from exc
+        raise _tool_error(code=code, message=msg, tool="analyze_game", input=pgn[:100]) from exc
     except Exception as exc:
         await metrics.record("analyze_game", (time.time() - t0) * 1000, is_error=True)
-        raise _tool_error(
-            code="engine_error", message=str(exc), tool="analyze_game"
-        ) from exc
+        raise _tool_error(code="engine_error", message=str(exc), tool="analyze_game") from exc
 
 
 class TokenBucketRateLimiter:
@@ -3956,9 +3808,7 @@ class TokenBucketRateLimiter:
         async with self._lock:
             if len(self._buckets) > 10_000:
                 cutoff = now - 3600
-                self._buckets = {
-                    k: v for k, v in self._buckets.items() if v[1] > cutoff
-                }
+                self._buckets = {k: v for k, v in self._buckets.items() if v[1] > cutoff}
                 if len(self._buckets) > 10_000:
                     sorted_items = sorted(
                         self._buckets.items(), key=lambda item: item[1][1], reverse=True
@@ -3998,16 +3848,11 @@ class ASGIRequestLoggerMiddleware:
             host = headers_dict.get(b"host", b"").decode("utf-8", "ignore")
             path = str(scope.get("path", ""))
             method = str(scope.get("method", "")).upper()
-            session_id = headers_dict.get(b"mcp-session-id", b"").decode(
-                "utf-8", "ignore"
-            )
+            session_id = headers_dict.get(b"mcp-session-id", b"").decode("utf-8", "ignore")
 
             client_tuple = cast(tuple[str, int] | None, scope.get("client"))
             fallback_ip = client_tuple[0].strip("[]") if client_tuple else "127.0.0.1"
-            ip = (
-                headers_dict.get(b"x-forwarded-for", b"").decode("utf-8", "ignore")
-                or fallback_ip
-            )
+            ip = headers_dict.get(b"x-forwarded-for", b"").decode("utf-8", "ignore") or fallback_ip
             client_ip = ip.split(",")[0].strip().strip("[]")
 
             if method == "OPTIONS":
@@ -4054,9 +3899,7 @@ class ASGIRequestLoggerMiddleware:
                         },
                     )
                 )
-                await send(
-                    cast(Message, {"type": "http.response.body", "body": response_body})
-                )
+                await send(cast(Message, {"type": "http.response.body", "body": response_body}))
                 return
 
             log.info(
@@ -4098,9 +3941,7 @@ class ASGIRequestLoggerMiddleware:
                 mcp_cfg = get_mcp_settings()
                 auth_token = mcp_cfg.auth_token
                 provided_token = (
-                    headers_dict.get(b"x-chessy-auth", b"")
-                    .decode("utf-8", "ignore")
-                    .strip()
+                    headers_dict.get(b"x-chessy-auth", b"").decode("utf-8", "ignore").strip()
                 )
                 has_valid_token = bool(auth_token) and provided_token == auth_token
 
