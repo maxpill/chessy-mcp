@@ -3913,6 +3913,13 @@ class ASGIRequestLoggerMiddleware:
                 ua,
             )
 
+            # /health is a public probe — exempt from the ChatGPT lock so
+            # compose / orchestrator healthchecks can succeed without
+            # carrying the auth token.
+            if path == "/health":
+                await self.app(scope, receive, send)
+                return
+
             if self.restrict_to_chatgpt:
                 # P1 audit fix: this used to whitelist every client whose
                 # UA contained "curl", "python", "pydantic", or "chessy",
