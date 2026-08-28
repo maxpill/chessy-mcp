@@ -1,0 +1,60 @@
+# Stockfish 18, built from source with -march=native so the engine is
+# compiled for THIS host's CPU (AVX / SSE4.1 / POPCNT as available).
+#
+# The chessy-mcp stack runs on the OVH production box (Intel Xeon E5-1620 v2
+# at the time of writing — Ivy Bridge era, AVX only, no AVX2/BMI2), so the
+# build emits the right ISA token for that CPU via Stockfish's
+# scripts/get_native_properties.sh.
+#
+# Kept separate from the MCP image so a future move to a beefier host only
+# needs a rebuild of THIS image — the Python MCP image is portable.
+
+ARG STOCKFISH_VERSION="sf_18"
+
+FROM --platform=$BUILDPLATFORM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS build
+
+ARG STOCKFISH_VERSION
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates curl tar gzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /tmp/sfbuild \
+    && curl -fsSL "https://codeload.github.com/official-stockfish/Stockfish/tar.gz/refs/tags/${STOCKFISH_VERSION}" \
+         -o /tmp/sfbuild/stockfish.tar.gz \
+    && tar -xzf /tmp/sfbuild/stockfish.tar.gz -C /tmp/sfbuild \
+    && SF_DIR="$(find /tmp/sfbuild -maxdepth 1 -type d -name 'Stockfish-*' | head -n1)" \
+    && cd "${SF_DIR}/src" \
+    # `make build ARCH=native` runs scripts/get_native_properties.sh to pick
+    # the right base ARCH token (e.g. x86-64-avx2) from /proc/cpuinfo. We then
+    # add -march=native via CXXFLAGS so the compiler additionally picks newer
+    # ISA extensions this CPU supports (BMI2, AVX-512, etc.) beyond what the
+    # ARCH token implies — so the engine is optimized for THIS host, not
+    # for a lowest-common-denominator baseline.
+    && CXXFLAGS="-O3 -DNDEBUG -march=native" \
+       CFLAGS="-O3 -DNDEBUG -march=native" \
+       make -j"$(nproc)" build ARCH=native \
+    && /src/src/stockfish --help 2>&1 | head -3 \
+    && cp /src/src/stockfish /usr/local/bin/stockfish \
+    && chmod +x /usr/local/bin/stockfish \
+    && rm -rf /tmp/sfbuild
+
+# ---- runtime stage ----
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates socat libstdc++6 tini \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /usr/local/bin/stockfish /usr/local/bin/stockfish
+
+# Stockfish listens on 9550 — chessy-mcp's Python service connects to it
+# via TCP. socat-fork lets many concurrent MCP requests share one Stockfish
+# process per connection; the MCP pool opens N TCP connections in parallel.
+EXPOSE 9550
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=5 \
+  CMD stockfish --help >/dev/null 2>&1 || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["socat", "-d", "-d", "TCP-LISTEN:9550,fork,reuseaddr",", "EXEC:stockfish"]

@@ -1,0 +1,41 @@
+# Caddy data — TLS state, OCSP cache, etc.
+caddy_data/
+caddy_config/
+
+# Local SQLite WAL cache for Stockfish evaluations.
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# uv
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Build artefacts
+build/
+dist/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,0 +1,94 @@
+# Production stack for chessy-mcp — a single MCP service backed by a
+# single Stockfish sidecar, fronted by Caddy on the public hostname.
+#
+# Compose is built (not pulled) — Komodo runs `docker compose -f
+# docker-compose.prod.yml up -d --build --remove-orphans` on every push to
+# maxpill/chessy-mcp:main. Webhook URL:
+#   http://51.75.119.141:9120/listener/github/stack/chessy-mcp/deploy
+#
+# Bindings:
+#   - 127.0.0.1:9550  → host-side TCP port for Stockfish (kept loopback so
+#     only the MCP container can talk to it)
+#   - 127.0.0.1:9551  → reserved for future use (e.g. a debug console)
+#   - 127.0.0.1:8000  → MCP server HTTP (Caddy on the host proxies to this
+#     through the `mcp-net` user-defined network)
+#
+# The Cloudflare tunnel routes mcp.trychessy.com to a host-side Caddy or
+# the in-stack Caddy here; either way the MCP container is reachable only
+# from this stack's network + the host.
+
+name: chessy-mcp
+
+services:
+  stockfish:
+    build:
+      context: .
+      dockerfile: Dockerfile.stockfish
+    restart: unless-stopped
+    networks:
+      - mcp-net
+    expose:
+      - "9550"
+    healthcheck:
+      test: ["CMD", "stockfish", "--help"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    restart: unless-stopped
+    depends_on:
+      stockfish:
+        condition: service_healthy
+    environment:
+      # MCP server config
+      - CHESS_MCP_TRANSPORT=streamable-http
+      - CHESS_MCP_HOST=0.0.0.0
+      - CHESS_MCP_PORT=8000
+      - CHESS_MCP_LOCK_CHATGPT=true
+      - CHESS_MCP_POOL_SIZE=8
+      - STOCKFISH_HASH_MB=256
+      - STOCKFISH_HOST=stockfish
+      - STOCKFISH_PORT=9550
+      # Auth token shared with the chessy app. The MCP reads this from
+      # .env; the chessy app reads the same secret via its own .env.
+      - CHESS_MCP_AUTH_TOKEN=${CHESS_MCP_AUTH_TOKEN:-}
+      - LOG_LEVEL=INFO
+    networks:
+      - mcp-net
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx,os; httpx.get(f'http://127.0.0.1:{os.environ.get(\"CHESS_MCP_PORT\",\"8000\")}/health', timeout=2).raise_for_status()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      mcp:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9551:80"   # public-facing reverse proxy on the host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - mcp-net
+
+networks:
+  mcp-net:
+    driver: bridge
+    name: chessy-mcp-net
+
+volumes:
+  caddy_data:
+  caddy_config:

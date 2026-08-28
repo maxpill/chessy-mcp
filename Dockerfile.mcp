@@ -1,0 +1,33 @@
+# MCP server image — pure Python, connects to the chessy/stockfish sidecar
+# over TCP at STOCKFISH_HOST:STOCKFISH_PORT. No Stockfish binary baked in.
+
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1 \
+    UVLOOP_DISABLE_IMPORT_ERRORS=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates tini \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Dependency layer — cache uv's resolution across source-only changes.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+# Application code
+COPY mcp_server ./mcp_server
+COPY core ./core
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \
+  CMD python -c "import httpx, os; httpx.get(f'http://127.0.0.1:{os.environ.get(\"CHESS_MCP_PORT\",\"8000\")}/health', timeout=2).raise_for_status()" || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/opt/venv/bin/python", "-m", "mcp_server.server"]
