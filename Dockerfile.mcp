@@ -27,7 +27,7 @@ COPY core ./core
 EXPOSE 8000
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \
-  CMD python -c "import httpx, os; httpx.get(f'http://127.0.0.1:{os.environ.get(\"CHESS_MCP_PORT\",\"8000\")}/health', timeout=2).raise_for_status()" || exit 1
+  CMD /opt/venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)" || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/opt/venv/bin/python", "-m", "mcp_server.server"]
