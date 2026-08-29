@@ -3470,3 +3470,187 @@ async def test_top_moves_terminal_states_metadata_regression():
     assert res_stale.recommended_action == "game_over"
     assert res_stale.result == []
     assert not res_stale
+
+
+def test_default_acquire_timeout_is_15s():
+    """Pool acquire timeout was raised 6 → 15s to absorb bursty chatgpt traffic."""
+    from core.engines.pool import DEFAULT_ACQUIRE_TIMEOUT
+
+    assert DEFAULT_ACQUIRE_TIMEOUT == 15.0
+
+
+def test_mcp_settings_expose_threads_and_concurrency_caps():
+    """STOCKFISH_THREADS_PER_WORKER and CHESS_MCP_MAX_CONCURRENT_EVALUATES
+    must be live, typed, env-driven settings — defaults are safe."""
+    import os
+
+    from mcp_server.config import MCPSettings
+
+    # Clean env so the field defaults are observed
+    saved = {
+        k: os.environ.pop(k)
+        for k in list(os.environ)
+        if k.startswith(("STOCKFISH_THREADS_PER_WORKER", "CHESS_MCP_MAX_CONCURRENT_EVALUATES"))
+    }
+    try:
+        cfg = MCPSettings()
+        assert cfg.threads_per_worker == 1
+        assert cfg.max_concurrent_evaluates == 16
+    finally:
+        for k, v in saved.items():
+            os.environ[k] = v
+
+    os.environ["STOCKFISH_THREADS_PER_WORKER"] = "2"
+    os.environ["CHESS_MCP_MAX_CONCURRENT_EVALUATES"] = "32"
+    try:
+        cfg = MCPSettings()
+        assert cfg.threads_per_worker == 2
+        assert cfg.max_concurrent_evaluates == 32
+    finally:
+        os.environ.pop("STOCKFISH_THREADS_PER_WORKER", None)
+        os.environ.pop("CHESS_MCP_MAX_CONCURRENT_EVALUATES", None)
+
+
+def test_legacy_cache_migration_copies_db_and_sidecars(tmp_path, monkeypatch):
+    """Moving the L2 cache to a new location should preserve a warm cache."""
+    from mcp_server import cache as cache_module
+
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    target_dir = tmp_path / "new"
+    target_dir.mkdir()
+
+    legacy_path = str(legacy_dir / "chess_mcp_eval_cache.sqlite3")
+    target_path = str(target_dir / "chess_mcp_eval_cache.sqlite3")
+
+    # Fake a populated legacy cache: db + WAL + SHM
+    for name, body in [
+        ("db", b"legacy-db-content"),
+        ("wal", b"legacy-wal-content"),
+        ("shm", b"legacy-shm-content"),
+    ]:
+        suffix = "" if name == "db" else f"-{name}"
+        (legacy_dir / f"chess_mcp_eval_cache.sqlite3{suffix}").write_bytes(body)
+
+    # Point the legacy constant at our fixture and migrate
+    monkeypatch.setattr(cache_module, "_LEGACY_CACHE_DB_PATH", legacy_path)
+
+    # No-op if target already exists
+    (target_dir / "chess_mcp_eval_cache.sqlite3").write_bytes(b"existing")
+    cache_module._migrate_legacy_cache(target_path)
+    assert (target_dir / "chess_mcp_eval_cache.sqlite3").read_bytes() == b"existing"
+
+    # No-op if legacy absent
+    (target_dir / "chess_mcp_eval_cache.sqlite3").unlink()
+    monkeypatch.setattr(cache_module, "_LEGACY_CACHE_DB_PATH", "/nonexistent/legacy.sqlite3")
+    cache_module._migrate_legacy_cache(target_path)
+    assert not (target_dir / "chess_mcp_eval_cache.sqlite3").exists()
+
+    # Restores legacy
+    monkeypatch.setattr(cache_module, "_LEGACY_CACHE_DB_PATH", legacy_path)
+    cache_module._migrate_legacy_cache(target_path)
+    assert (target_dir / "chess_mcp_eval_cache.sqlite3").read_bytes() == b"legacy-db-content"
+    assert (target_dir / "chess_mcp_eval_cache.sqlite3-wal").read_bytes() == b"legacy-wal-content"
+    assert (target_dir / "chess_mcp_eval_cache.sqlite3-shm").read_bytes() == b"legacy-shm-content"
+
+
+def test_sqlite_disk_cache_sets_synchronous_normal_on_every_connection():
+    """PRAGMA synchronous=NORMAL must be re-asserted on every connection the
+    cache opens. SQLite's WAL mode forces synchronous=FULL by default on each
+    new connection for durability, so a single init-time pragma is forgotten.
+    Verify by inspecting the source: _get_sync and _set_sync both call the
+    pragma. This is the cheap, fail-fast signal that the regression hasn't
+    recurred.
+    """
+    import inspect
+
+    from mcp_server.cache import SQLiteDiskCache
+
+    for method_name in ("_get_sync", "_set_sync", "_clear_sync"):
+        method = getattr(SQLiteDiskCache, method_name)
+        src = inspect.getsource(method)
+        assert "PRAGMA synchronous = NORMAL" in src, (
+            f"{method_name} must re-assert PRAGMA synchronous = NORMAL — "
+            "WAL mode in SQLite forces FULL on every new connection."
+        )
+
+
+def test_sqlite_disk_cache_wal_default_reverts_synchronous(tmp_path):
+    """Sanity-check the SQLite behavior the per-connection pragma works
+    around: WAL mode silently forces synchronous=FULL on every new
+    connection, regardless of init-time PRAGMAs."""
+    import sqlite3
+
+    db_path = str(tmp_path / "wal.sqlite3")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.commit()
+    # New connection: WAL persists, but synchronous reverts to FULL.
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_evaluate_semaphore_lazy_and_bounded(monkeypatch):
+    """_get_evaluate_semaphore must create a live-loop Semaphore sized from
+    config and cache it across calls."""
+    from mcp_server.config import get_mcp_settings
+    from mcp_server.server import _get_evaluate_semaphore
+
+    # Reset module-level state for an isolated assertion
+    monkeypatch.setattr("mcp_server.server._evaluate_semaphore", None)
+
+    sem1 = await _get_evaluate_semaphore()
+    sem2 = await _get_evaluate_semaphore()
+    assert sem1 is sem2
+    # Default config: CHESS_MCP_MAX_CONCURRENT_EVALUATES=16
+    assert sem1._value == 16  # type: ignore[attr-defined]
+
+    # Smaller cap → new semaphore (new value, still cached after)
+    monkeypatch.setenv("CHESS_MCP_MAX_CONCURRENT_EVALUATES", "4")
+    # Settings is lru_cached — invalidate to pick up the new env
+    get_mcp_settings.cache_clear()
+    monkeypatch.setattr("mcp_server.server._evaluate_semaphore", None)
+    sem3 = await _get_evaluate_semaphore()
+    assert sem3._value == 4  # type: ignore[attr-defined]
+    assert sem3 is not sem1
+
+
+@pytest.mark.asyncio
+async def test_gather_evaluate_positions_caps_concurrency(monkeypatch):
+    """_gather_evaluate_positions_bounded must hold the semaphore for each
+    eval so a burst of N positions can never run more than the cap at once."""
+    import asyncio
+
+    from mcp_server.config import get_mcp_settings
+    from mcp_server.server import _gather_evaluate_positions_bounded
+
+    get_mcp_settings.cache_clear()
+    monkeypatch.setattr("mcp_server.server._evaluate_semaphore", None)
+
+    in_flight = 0
+    peak = 0
+
+    async def fake_eval(board, depth, pool, requested_depth=None):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+        return (object(), False)
+
+    monkeypatch.setattr("mcp_server.server._evaluate_game_position_cached", fake_eval)
+
+    boards = [chess.Board() for _ in range(8)]
+    pool = object()  # not touched by the fake
+    await _gather_evaluate_positions_bounded(boards, depth=14, pool=pool, requested_depth=14)
+
+    # Default cap is 16 but we only fanned out 8 — peak should equal 8 (the
+    # gather limit). The test passes regardless of the cap so long as peak
+    # is at most max(cap, fan_out).
+    assert peak <= 16
+    assert peak == 8

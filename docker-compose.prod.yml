@@ -44,6 +44,12 @@ services:
     depends_on:
       stockfish:
         condition: service_healthy
+    # tmpfs for the L2 SQLite cache — keeps cache reads off the overlayfs
+    # backing /tmp. Size is comfortably above the 116 MB observed cache; raise
+    # if the cache grows. Lost on container restart, but L1 (50k entries in
+    # memory) survives and L2 rebuilds from traffic within an hour.
+    tmpfs:
+      - /cache:size=512m
     environment:
       # MCP server config
       - CHESS_MCP_TRANSPORT=streamable-http
@@ -51,9 +57,13 @@ services:
       - CHESS_MCP_PORT=8000
       - CHESS_MCP_LOCK_CHATGPT=true
       - CHESS_MCP_POOL_SIZE=8
+      - CHESS_MCP_MAX_CONCURRENT_EVALUATES=16
       - STOCKFISH_HASH_MB=256
+      - STOCKFISH_THREADS_PER_WORKER=1
       - STOCKFISH_HOST=stockfish
       - STOCKFISH_PORT=9550
+      # L2 SQLite cache lives on the tmpfs mount above.
+      - CHESS_MCP_CACHE_DB=/cache/chess_mcp_eval_cache.sqlite3
       # Auth token shared with the chessy app. The MCP reads this from
       # .env; the chessy app reads the same secret via its own .env.
       - CHESS_MCP_AUTH_TOKEN=${CHESS_MCP_AUTH_TOKEN:-}

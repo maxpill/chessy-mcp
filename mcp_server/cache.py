@@ -237,6 +237,37 @@ class AsyncLRUCache[T]:
             return len(self._cache)
 
 
+_LEGACY_CACHE_DB_PATH = "/tmp/chess_mcp_eval_cache.sqlite3"
+
+
+def _migrate_legacy_cache(target_path: str) -> None:
+    """Copy an existing legacy on-disk cache into a new location.
+
+    One-shot: copies the main DB and its WAL/SHM sidecars if the target
+    doesn't already exist. Used when the L2 cache is relocated (e.g. from
+    overlay-on-/tmp to a tmpfs mount) to preserve the warm cache across
+    the move. Idempotent — if target_path already exists or the legacy
+    file isn't there, this is a no-op.
+    """
+    if target_path == _LEGACY_CACHE_DB_PATH:
+        return
+    if os.path.exists(target_path):
+        return
+    if not os.path.exists(_LEGACY_CACHE_DB_PATH):
+        return
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+        import shutil
+
+        shutil.copy2(_LEGACY_CACHE_DB_PATH, target_path)
+        for suffix in ("-wal", "-shm"):
+            legacy_side = _LEGACY_CACHE_DB_PATH + suffix
+            if os.path.exists(legacy_side):
+                shutil.copy2(legacy_side, target_path + suffix)
+    except Exception:
+        pass  # best-effort; a missing migration just means a colder first run
+
+
 class SQLiteDiskCache:
     """Persistent on-disk cache using SQLite WAL mode for fast O(1) reads/writes."""
 
@@ -246,6 +277,7 @@ class SQLiteDiskCache:
         default_path = get_mcp_settings().cache_db
         self.db_path = db_path or default_path
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+        _migrate_legacy_cache(self.db_path)
         self._init_db()
 
     def _init_db(self) -> None:
@@ -269,6 +301,11 @@ class SQLiteDiskCache:
         try:
             with sqlite3.connect(self.db_path, timeout=15.0) as conn:
                 conn.execute("PRAGMA busy_timeout = 15000;")
+                # Per-connection PRAGMA: the DB may have been created with
+                # synchronous=FULL by an older build. Re-assert NORMAL on
+                # every connection so existing caches pick up the faster
+                # write path without a manual VACUUM/rebuild.
+                conn.execute("PRAGMA synchronous = NORMAL;")
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS eval_cache (key TEXT PRIMARY KEY, val TEXT NOT NULL, created_at REAL NOT NULL);"
                 )
@@ -282,6 +319,7 @@ class SQLiteDiskCache:
         try:
             with sqlite3.connect(self.db_path, timeout=15.0) as conn:
                 conn.execute("PRAGMA busy_timeout = 15000;")
+                conn.execute("PRAGMA synchronous = NORMAL;")
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS eval_cache (key TEXT PRIMARY KEY, val TEXT NOT NULL, created_at REAL NOT NULL);"
                 )
@@ -303,6 +341,7 @@ class SQLiteDiskCache:
         try:
             with sqlite3.connect(self.db_path, timeout=15.0) as conn:
                 conn.execute("PRAGMA busy_timeout = 15000;")
+                conn.execute("PRAGMA synchronous = NORMAL;")
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS eval_cache (key TEXT PRIMARY KEY, val TEXT NOT NULL, created_at REAL NOT NULL);"
                 )

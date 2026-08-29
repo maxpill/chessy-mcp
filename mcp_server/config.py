@@ -31,6 +31,17 @@ class MCPSettings(BaseSettings):
     host: str | None = Field(default=None, validation_alias="STOCKFISH_HOST")
     port: int = Field(default=0, validation_alias="STOCKFISH_PORT")
     hash_mb: int = Field(default=256, validation_alias="STOCKFISH_HASH_MB")
+    # Threads per Stockfish worker. Default 1 keeps the OVH 4C/8T host at one
+    # logical core per engine process; raise to 2 only if pool_size is dropped
+    # accordingly (or the host has more physical cores than pool_size*threads).
+    threads_per_worker: int = Field(default=1, validation_alias="STOCKFISH_THREADS_PER_WORKER")
+
+    # Cap on concurrent `_evaluate_game_position_cached` calls across all
+    # tools. analyze_game fans out N positions via asyncio.gather; without
+    # a cap, a single mega-burst (depth 30 over 80 plies) can starve every
+    # other request for the full 6 s pool timeout. 16 is comfortably above
+    # the default 8-worker pool so a single request never self-throttles.
+    max_concurrent_evaluates: int = Field(default=16, validation_alias="CHESS_MCP_MAX_CONCURRENT_EVALUATES")
 
     # Multi-tier cache (L1 in-memory + L2 SQLite WAL).
     cache_db: str = Field(default="/tmp/chess_mcp_eval_cache.sqlite3", validation_alias="CHESS_MCP_CACHE_DB")

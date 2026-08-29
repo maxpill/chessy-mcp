@@ -36,7 +36,13 @@ from .types import Eval, MoveAnalysis
 
 log = logging.getLogger("chessy.enginepool")
 
-DEFAULT_ACQUIRE_TIMEOUT = 6.0  # seconds a request waits for a free engine before giving up
+DEFAULT_ACQUIRE_TIMEOUT = 15.0  # seconds a request waits for a free engine before giving up
+
+# History note: was 6.0, raised after the OVH box started logging ~5.8k PoolBusy
+# errors/day under bursty chatgpt traffic. analyze_game fans 80 positions through
+# a pool of 8 workers; with 3-4 concurrent users the queue depth pushes past 6s
+# on cold-cache traffic. 15s is comfortably above normal burst saturation but
+# still fails fast on genuine overload (LLM tool timeouts typically 30-60s).
 
 T = TypeVar("T")
 

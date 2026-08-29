@@ -442,13 +442,14 @@ async def _mcp_lifespan(server: MCPServer) -> AsyncIterator[dict[str, Any]]:
     cfg = get_mcp_settings()
     cpu = os.cpu_count() or 8
     pool_size = cfg.pool_size if cfg.pool_size is not None else min(cpu, 8)
+    threads_per_worker = max(1, cfg.threads_per_worker)
     if sf_host := cfg.host:
         pool: AnalyzerPool | TCPAnalyzerPool = await TCPAnalyzerPool.create(
             sf_host,
             cfg.port,
             size=pool_size,
             name="stockfish",
-            threads=1,
+            threads=threads_per_worker,
             hash_mb=cfg.hash_mb,
         )
         log.info("TCP analyzer pool ready: %d engines @ %s:%d", pool_size, sf_host, cfg.port)
@@ -504,11 +505,51 @@ _single_flight: SingleFlight[Any] = SingleFlight()
 
 # P1 audit fix: bound concurrent evaluate calls so analyze_game at depth 30
 # cannot self-inflict PoolBusy by spawning hundreds of simultaneous
-# waiters. The semaphore is created lazily inside `_get_analyzer_pool()`
-# because pytest-asyncio's per-function event loop means a module-level
-# asyncio.Semaphore() would be bound to whichever loop runs first and
-# explode on subsequent loops. We rebind it every time the pool is
-# (re)created so it always belongs to the live loop.
+# waiters. The semaphore is created lazily on first call so it always
+# belongs to the live event loop (pytest-asyncio's per-function event loop
+# means a module-level asyncio.Semaphore() would be bound to whichever
+# loop runs first and explode on subsequent loops).
+_evaluate_semaphore: asyncio.Semaphore | None = None
+_evaluate_semaphore_lock = asyncio.Lock()
+
+
+async def _get_evaluate_semaphore() -> asyncio.Semaphore:
+    global _evaluate_semaphore
+    async with _evaluate_semaphore_lock:
+        if _evaluate_semaphore is None:
+            from .config import get_mcp_settings
+
+            cfg = get_mcp_settings()
+            _evaluate_semaphore = asyncio.Semaphore(max(1, cfg.max_concurrent_evaluates))
+        return _evaluate_semaphore
+
+
+async def _gather_evaluate_positions_bounded(
+    positions: list[chess.Board],
+    depth: int,
+    pool: AnalyzerPool | TCPAnalyzerPool,
+    *,
+    requested_depth: int,
+) -> list[tuple[MCPEval, bool]]:
+    """Evaluate N positions concurrently, capped by the evaluate semaphore.
+
+    Without the cap a single analyze_game at depth 30 fans out 80 positions
+    via asyncio.gather — each grabbing a worker from the pool. Under
+    concurrent users this self-inflicts PoolBusy and the whole request
+    fails. The semaphore throttles fan-out so a burst can't drown out
+    neighbors. Size is `CHESS_MCP_MAX_CONCURRENT_EVALUATES` (default 16,
+    comfortably above the 8-worker pool so single-request fan-out isn't
+    artificially slowed).
+    """
+    sem = await _get_evaluate_semaphore()
+
+    async def _one(b: chess.Board) -> tuple[MCPEval, bool]:
+        async with sem:
+            return await _evaluate_game_position_cached(
+                b, depth, pool, requested_depth=requested_depth
+            )
+
+    return await asyncio.gather(*[_one(b) for b in positions])
 
 
 async def _get_analyzer_pool(
@@ -542,7 +583,7 @@ async def _get_analyzer_pool(
                     sf_port,
                     size=pool_size,
                     name="stockfish",
-                    threads=1,
+                    threads=mcp_cfg.threads_per_worker,
                     hash_mb=hash_mb,
                 )
             else:
@@ -550,7 +591,7 @@ async def _get_analyzer_pool(
                     _stockfish_path(),
                     size=pool_size,
                     depth=14,
-                    threads=1,
+                    threads=mcp_cfg.threads_per_worker,
                     hash_mb=hash_mb,
                 )
         return _analyzer_pool
@@ -563,13 +604,16 @@ _pool_lock = asyncio.Lock()
 async def close_analyzer_pool() -> None:
     """Gracefully close all engine workers in the pool.
 
-    Idempotent: safe to call from tests and from lifespan teardown.
+    Idempotent: safe to call from tests and from lifespan teardown. Also
+    drops the cached evaluate semaphore so a fresh one is lazily created on
+    the next request — keeps pytest-asyncio's per-function event loop happy.
     """
-    global _analyzer_pool
+    global _analyzer_pool, _evaluate_semaphore
     async with _pool_lock:
         if _analyzer_pool is not None:
             await _analyzer_pool.close()
             _analyzer_pool = None
+    _evaluate_semaphore = None
 
 
 SUPPORTED_VARIANTS = {None, "", "standard", "from position"}
@@ -3641,11 +3685,8 @@ async def analyze_game(
                 mate_penalty_policy="1000_cp_mate_transition",
             )
 
-        eval_pairs = await asyncio.gather(
-            *[
-                _evaluate_game_position_cached(b, depth, pool, requested_depth=raw_requested_depth)
-                for b in positions
-            ]
+        eval_pairs = await _gather_evaluate_positions_bounded(
+            positions, depth, pool, requested_depth=raw_requested_depth
         )
         evals: list[MCPEval] = [ep[0] for ep in eval_pairs]
         all_cached = all(ep[1] for ep in eval_pairs)
