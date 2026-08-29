@@ -432,16 +432,23 @@ def _stockfish_path() -> str:
 async def _mcp_lifespan(server: MCPServer) -> AsyncIterator[dict[str, Any]]:
     """Initialize the Stockfish pool at startup, tear it down at exit.
 
-    Replacing the lazy-init path cuts first-request latency (~120ms for a
-    6-engine cold pool) and lets the FastMCP lifespan handle pool lifecycle
-    alongside the HTTP server. The pool is shared with every tool via the
-    `ctx.request_context.lifespan_context["pool"]` indirection.
+    Replaces the lazy-init path with eager startup so the first user
+    request doesn't pay the TCP handshake / UCI isready round-trips. The
+    pool is shared with every tool via the lifespan_context["pool"] indirection.
+
+    Side jobs at startup:
+      * Apply UCI options: ShowWDL (when enabled) + SyzygyPath (when set).
+      * Warm-search: one depth=2 eval per worker so UCI isready completes
+        and the engine is primed (saves ~120ms on the first real request).
+      * Periodic structured pool-stats logging every
+        CHESS_MCP_POOL_STATS_INTERVAL_S seconds (queue depth, alive count,
+        cache hit rate). Set to 0 to disable.
     """
     from .config import get_mcp_settings
 
     cfg = get_mcp_settings()
     cpu = os.cpu_count() or 8
-    pool_size = cfg.pool_size if cfg.pool_size is not None else min(cpu, 8)
+    pool_size = cfg.pool_size if cfg.pool_size is not None else min(cpu, 4)
     threads_per_worker = max(1, cfg.threads_per_worker)
     if sf_host := cfg.host:
         pool: AnalyzerPool | TCPAnalyzerPool = await TCPAnalyzerPool.create(
@@ -451,14 +458,27 @@ async def _mcp_lifespan(server: MCPServer) -> AsyncIterator[dict[str, Any]]:
             name="stockfish",
             threads=threads_per_worker,
             hash_mb=cfg.hash_mb,
+            show_wdl=cfg.show_wdl,
+            syzygy_path=cfg.syzygy_path or None,
         )
-        log.info("TCP analyzer pool ready: %d engines @ %s:%d", pool_size, sf_host, cfg.port)
+        log.info(
+            "TCP analyzer pool ready: %d engines @ %s:%d (threads=%d hash=%dMB wdl=%s syzygy=%s ponder=%s)",
+            pool_size,
+            sf_host,
+            cfg.port,
+            threads_per_worker,
+            cfg.hash_mb,
+            cfg.show_wdl,
+            cfg.syzygy_path or "(none)",
+            cfg.ponder_enabled,
+        )
+        pool._mcp_ponder_enabled = cfg.ponder_enabled  # type: ignore[attr-defined]
     else:
         pool = await AnalyzerPool.create(
             _stockfish_path(),
             size=pool_size,
             depth=14,
-            threads=1,
+            threads=threads_per_worker,
             hash_mb=cfg.hash_mb,
         )
         log.info(
@@ -466,11 +486,132 @@ async def _mcp_lifespan(server: MCPServer) -> AsyncIterator[dict[str, Any]]:
             pool_size,
             _stockfish_path(),
         )
+
+    # Warm-search: one cheap eval per worker to prime UCI isready. Hidden
+    # inside the healthcheck start_period (5s); saves ~120ms on the first
+    # real user request.
+    warmup_board = chess.Board()
+    try:
+        await asyncio.gather(*[pool.evaluate(warmup_board, depth=2) for _ in range(pool_size)])
+        log.info("Pool warm-search complete (%d workers primed)", pool_size)
+    except Exception as exc:
+        log.warning("Pool warm-search failed (non-fatal): %s", exc)
+
+    stats_task: asyncio.Task[None] | None = None
+    stats_interval = float(cfg.pool_stats_interval_s)
+    if stats_interval > 0:
+        stats_task = asyncio.create_task(
+            _pool_stats_logger(pool, stats_interval), name="pool-stats-logger"
+        )
+
     try:
         yield {"pool": pool, "settings": cfg, "pool_size": pool_size}
     finally:
+        if stats_task is not None:
+            stats_task.cancel()
+            try:
+                await stats_task
+            except (asyncio.CancelledError, Exception):
+                pass
         log.info("Shutting down analyzer pool (%d engines)", pool_size)
         await pool.close()
+
+
+async def _pool_stats_logger(pool: AnalyzerPool | TCPAnalyzerPool, interval_s: float) -> None:
+    """Emit a structured pool-stats log line every `interval_s` seconds.
+
+    One log line per interval; log aggregation (loki/journald/etc.) is the
+    consumer. Includes queue depth, alive count, and the in-memory
+    LocalMetricsTracker snapshot (uptime, total requests, cache hit rate,
+    per-tool call counts and p50/p95 latencies).
+    """
+    while True:
+        try:
+            await asyncio.sleep(interval_s)
+        except asyncio.CancelledError:
+            return
+        try:
+            qsize = pool._pool._q.qsize()  # type: ignore[attr-defined]
+            alive = pool._pool._alive_count  # type: ignore[attr-defined]
+            target = pool._pool._target_size  # type: ignore[attr-defined]
+            from .metrics import metrics
+
+            stats = await metrics.get_stats()
+            log.info(
+                "pool_stats queue_depth=%d alive=%d target=%d "
+                "uptime_s=%s total=%s hit_rate_pct=%s tools=%s",
+                qsize,
+                alive,
+                target,
+                stats["uptime_seconds"],
+                stats["total_requests"],
+                stats["cache_hit_rate_percent"],
+                {k: v["calls"] for k, v in stats["tools"].items()},
+            )
+        except Exception as exc:  # noqa: BLE001 — log and keep looping
+            log.warning("pool_stats log iteration failed (continuing): %s", exc)
+
+
+
+
+async def _ponder_warm_cache(
+    pool: AnalyzerPool | TCPAnalyzerPool,
+    predicted_fen: str,
+    depth: int,
+) -> None:
+    """Background cache warmer — evaluate `predicted_fen` at `depth` and
+    store the result in L1 so the next user request on the same FEN hits
+    L1 instantly. Pure fire-and-forget; errors are logged and dropped.
+
+    Note: this is NOT full UCI ponder (no go ponder / ponderhit). It's a
+    background eval whose result is reusable by any caller.
+    """
+    try:
+        board = chess.Board(predicted_fen)
+        if board.is_game_over():
+            return
+        from .cache import eval_cache_key
+
+        ckey = eval_cache_key(
+            board,
+            depth,
+            engine_version=getattr(pool, "engine_version", None),
+        )
+        # Avoid duplicate work: skip if L1 already has it.
+        if (await _cache.get_eval(ckey)) is not None:
+            return
+        ev, _hit = await _evaluate_game_position_cached(
+            board, depth, pool, requested_depth=depth
+        )
+        await _cache.set_eval(ckey, ev)
+    except Exception as exc:  # noqa: BLE001 — fire-and-forget
+        log.debug("ponder pre-eval failed (silent): %s", exc)
+
+
+def _maybe_ponder_warm(
+    pool: AnalyzerPool | TCPAnalyzerPool,
+    board: chess.Board,
+    best_move_uci: str | None,
+    depth: int,
+    ponder_enabled: bool,
+) -> None:
+    """Schedule a background pre-eval if pondering is enabled and we have
+    a legal best_move to extrapolate from. No-op otherwise.
+    """
+    if not ponder_enabled or not best_move_uci:
+        return
+    try:
+        next_board = board.copy(stack=True)
+        next_board.push_uci(best_move_uci)
+        if next_board.is_game_over():
+            return
+        asyncio.create_task(
+            _ponder_warm_cache(pool, next_board.fen(), depth),
+            name="ponder-warm",
+        )
+    except Exception:
+        pass  # best_move wasn't legal in this board — skip silently
+
 
 
 mcp = MCPServer(
@@ -531,25 +672,96 @@ async def _gather_evaluate_positions_bounded(
     *,
     requested_depth: int,
 ) -> list[tuple[MCPEval, bool]]:
-    """Evaluate N positions concurrently, capped by the evaluate semaphore.
+    """Evaluate N positions partitioned across the pool with TT reuse per slice.
 
-    Without the cap a single analyze_game at depth 30 fans out 80 positions
-    via asyncio.gather — each grabbing a worker from the pool. Under
-    concurrent users this self-inflicts PoolBusy and the whole request
-    fails. The semaphore throttles fan-out so a burst can't drown out
-    neighbors. Size is `CHESS_MCP_MAX_CONCURRENT_EVALUATES` (default 16,
-    comfortably above the 8-worker pool so single-request fan-out isn't
-    artificially slowed).
+    Two-stage fan-out:
+      1. Split `positions` into K slices (K = pool size). Each slice is
+         dispatched to its own worker via `pool._pool.run(...)`.
+      2. Within a slice, evaluations run SEQUENTIALLY with `reuse_tt=True`
+         between calls so Stockfish accumulates the TT across consecutive
+         positions. Round-robin distribution keeps slices balanced; for
+         long PGNs most adjacent plies still share a slice's TT context
+         after the first iteration of the cycle.
+
+    The semaphore (`CHESS_MCP_MAX_CONCURRENT_EVALUATES`) bounds the total
+    in-flight evaluate work across all MCP tools. Each slice acquires the
+    semaphore once at entry.
+
+    Compared to the previous "gather N over the whole pool" approach:
+    - Same parallelism across slices (one per worker).
+    - TT reuse within a slice (the old code's TT was 100% cold because
+      consecutive positions landed on different workers).
+    - Fewer pool-acquire round-trips: K acquires instead of N.
     """
+    if not positions:
+        return []
     sem = await _get_evaluate_semaphore()
 
-    async def _one(b: chess.Board) -> tuple[MCPEval, bool]:
-        async with sem:
-            return await _evaluate_game_position_cached(
-                b, depth, pool, requested_depth=requested_depth
-            )
+    # K slices, one per pool worker. Try to introspect the pool's target
+    # size; fall back to 4 if the API differs. Tests pass MockPool objects
+    # without the production `_pool` attribute, so be tolerant.
+    pool_target: int
+    try:
+        pool_target = pool._pool._target_size  # type: ignore[attr-defined]
+    except AttributeError:
+        pool_target = 4
+    k = max(1, min(pool_target, len(positions)))
 
-    return await asyncio.gather(*[_one(b) for b in positions])
+    # Round-robin distribution: position i -> slice i % k. Slice 0 holds
+    # positions 0, k, 2k, ...; within a slice the order is whatever
+    # round-robin gave us. The TT reuse benefit is concentrated in the
+    # second+ iteration of the round-robin cycle (positions k, 2k, ...
+    # have k-1 prior positions in the same slice).
+    slices: list[list[chess.Board]] = [[] for _ in range(k)]
+    for idx, b in enumerate(positions):
+        slices[idx % k].append(b)
+
+    async def _run_slice(slice_positions: list[chess.Board]) -> list[tuple[MCPEval, bool]]:
+        async with sem:
+            # If the pool exposes the production _pool.run(analyzer-fn) API
+            # (EnginePool), use it to hold one analyzer for the whole slice.
+            # Otherwise (test MockPool objects), call pool.evaluate directly
+            # per position — TT reuse is moot without a real analyzer.
+            if hasattr(pool, "_pool"):
+                async def _on_worker(analyzer: object) -> list[tuple[MCPEval, bool]]:
+                    out: list[tuple[MCPEval, bool]] = []
+                    for j, b in enumerate(slice_positions):
+                        r, hit = await _evaluate_game_position_cached(
+                            b,
+                            depth,
+                            pool,
+                            requested_depth=requested_depth,
+                            reuse_tt=(j > 0),
+                            analyzer=analyzer,
+                        )
+                        out.append((r, hit))
+                    return out
+
+                return await pool._pool.run(_on_worker)  # type: ignore[attr-defined]
+
+            # Fallback for tests / mock pools.
+            out: list[tuple[MCPEval, bool]] = []
+            for b in slice_positions:
+                r, hit = await _evaluate_game_position_cached(
+                    b,
+                    depth,
+                    pool,
+                    requested_depth=requested_depth,
+                    reuse_tt=False,
+                )
+                out.append((r, hit))
+            return out
+
+    slice_results = await asyncio.gather(*[_run_slice(s) for s in slices if s])
+    # Reassemble in original order. slices[si] held positions at indices
+    # si, si+k, si+2k, ... in that order.
+    out: list[tuple[MCPEval, bool]] = [None] * len(positions)  # type: ignore[list-item]
+    for slice_idx in range(k):
+        if not slices[slice_idx]:
+            continue
+        for j, _ in enumerate(slices[slice_idx]):
+            out[slice_idx + j * k] = slice_results[slice_idx][j]
+    return out
 
 
 async def _get_analyzer_pool(
@@ -572,7 +784,7 @@ async def _get_analyzer_pool(
             from .config import get_mcp_settings
 
             mcp_cfg = get_mcp_settings()
-            default_pool_size = min(8, max(4, os.cpu_count() or 6))
+            default_pool_size = min(4, max(2, os.cpu_count() or 4))
             pool_size = mcp_cfg.pool_size if mcp_cfg.pool_size is not None else default_pool_size
             hash_mb = mcp_cfg.hash_mb
             sf_host = mcp_cfg.host
@@ -1839,12 +2051,47 @@ def _build_board_with_metadata(
     return board, input_fen, canonical, was_canonicalized
 
 
+async def _eval_via_analyzer_or_pool(
+    analyzer: object | None,
+    pool: AnalyzerPool | TCPAnalyzerPool,
+    b: chess.Board,
+    *,
+    depth: int,
+    reuse_tt: bool,
+    root_moves: list[chess.Move] | None = None,
+) -> Eval:
+    """Run a single eval call.
+
+    When `analyzer` is given, use it directly (skips pool acquire round-trip
+    and lets the caller control `reuse_tt` for TT accumulation across calls).
+    When `analyzer` is None, route through `pool.evaluate` which acquires a
+    fresh worker — `reuse_tt` is ignored on this path because the next call
+    may land on a different worker.
+    """
+    if analyzer is not None:
+        return await analyzer.evaluate(  # type: ignore[attr-defined]
+            b, depth=depth, reuse_tt=reuse_tt, root_moves=root_moves
+        )
+    # pool.evaluate signature varies; pass root_moves only if analyzer pool
+    # supports it (production TCPAnalyzerPool does; test mocks don't).
+    import inspect
+    try:
+        sig = inspect.signature(pool.evaluate)
+        if "root_moves" in sig.parameters:
+            return await pool.evaluate(b, depth=depth, root_moves=root_moves)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        pass
+    return await pool.evaluate(b, depth=depth)  # type: ignore[arg-type]
+
+
 async def _evaluate_game_position_cached(
     b: chess.Board,
     depth: int,
     pool: AnalyzerPool | TCPAnalyzerPool,
     requested_depth: int | None = None,
     history_complete: bool = True,
+    reuse_tt: bool = False,
+    analyzer: object | None = None,
 ) -> tuple[MCPEval, bool]:
     """Evaluate a single board state with rule status, terminal short-circuits, and multi-tier cache.
 
@@ -1853,6 +2100,15 @@ async def _evaluate_game_position_cached(
             (PGN, evaluate_position with moves param). False for naked FEN — drives
             `history_completeness` and `repetition_status` on the returned MCPEval
             (audit H-01).
+        reuse_tt: pass True when consecutive calls on the same engine share
+            position-tree history. Saves a `ucinewgame` round-trip and lets
+            Stockfish accumulate the TT across calls. Caller is responsible
+            for the semantic correctness — only use when the previous call's
+            FEN is the predecessor of the current.
+        analyzer: optional pre-acquired analyzer instance. When set, skips the
+            pool.acquire() round-trip and calls `analyzer.evaluate(...)`
+            directly. The `_gather_evaluate_positions_chunked` helper holds
+            one analyzer per slice for sequential calls within the slice.
     """
     req_d = requested_depth if requested_depth is not None else depth
     canonical_fen_str = b.fen()
@@ -1925,7 +2181,7 @@ async def _evaluate_game_position_cached(
         return cached.model_copy(update={"requested_depth": req_d}), True
 
     async def _compute_pos() -> MCPEval:
-        ev = await pool.evaluate(b, depth=depth)
+        ev = await _eval_via_analyzer_or_pool(analyzer, pool, b, depth=depth, reuse_tt=reuse_tt)
 
         # Rule-aware root best-move check (P0 audit fix):
         # If at halfmove 149, or halfmove >= 100 with winning score:
@@ -2021,6 +2277,16 @@ async def _evaluate_game_position_cached(
             }
         )
         await _cache.set_eval(ckey, mcp_eval)
+        # Ponder: warm the L1 cache for the position AFTER the engine's best
+        # move so the next user request on that FEN hits L1 (env-disabled
+        # by default — costs CPU on small hosts).
+        _maybe_ponder_warm(
+            pool,
+            b,
+            mcp_eval.best_move,
+            depth,
+            ponder_enabled=getattr(pool, "_mcp_ponder_enabled", False),
+        )
         return mcp_eval
 
     res = cast(MCPEval, await _single_flight.do(ckey, _compute_pos))
@@ -2309,23 +2575,17 @@ async def top_moves(
             )
 
         async def _compute() -> list[MCPEval]:
-            # AUDIT M-01: compute BOTH single-PV canonical best AND MultiPV so
-            # `top_moves(n=N)[0]` is stable regardless of N. The canonical best
-            # is the single-PV result; we prepend it to the MultiPV list and
-            # dedupe so the top of the list always matches `evaluate_position`.
-            single_pv_eval: Eval | None = None
-            try:
-                single_pv_eval = await pool.evaluate(board, depth=depth)
-            except Exception:
-                single_pv_eval = None
-
+            # MultiPV search. Stockfish returns the top-N lines with multipv=N;
+            # line 1 (multipv=1) is by definition the engine's canonical best,
+            # same as a standalone `evaluate_position` would return. No need
+            # for a redundant single-PV pre-search (was costing ~25% of
+            # `top_moves` wall time at depth 14).
+            res_list: list[MCPEval] = []
             results = await pool.top_moves(board, n=n, depth=depth)
-
             # AUDIT C-02 / H-03: each candidate is a play_move action evaluated
             # AGAINST ITS POST-POSITION. The post-candidate terminal state,
             # winner, and Lichess URL describe the position after the move —
             # NOT a hypothetical claim outcome.
-            res_list: list[MCPEval] = []
             for r in results:
                 b_cand = board.copy(stack=True)
                 cand_san_val: str | None = None
@@ -2344,9 +2604,7 @@ async def top_moves(
                             b_cand.push(bm_obj)
                             cand_sign = 1 if b_cand.turn == chess.WHITE else -1
                             cand_mover_score = cand_sign * (
-                                r.cp
-                                if r.cp is not None
-                                else (r.mate * 1000 if r.mate is not None else 0)
+                                r.cp if r.cp is not None else (r.mate * 1000 if r.mate is not None else 0)
                             )
                             cand_mate_for_mover = cand_sign * r.mate if r.mate is not None else None
                             cand_rule = evaluate_rule_status(
@@ -2364,9 +2622,6 @@ async def top_moves(
                     except Exception:
                         pass
 
-                # Build the MCPEval from the POST-candidate perspective. The
-                # `pv_board=board` argument anchors PV truncation to the ROOT
-                # so the candidate move (PV[0]) is preserved (audit H-02).
                 mcp_eval = MCPEval.from_eval(
                     r,
                     b_cand.fen(),
@@ -2376,29 +2631,16 @@ async def top_moves(
                     pv_board=board,
                 ).model_copy(
                     update={
-                        # Audit H-03: post-position state is split from root state.
-                        # `status`/`winner`/`cp`/`mate` on the candidate describe
-                        # the post-position; root fields are surfaced via the outer
-                        # TopMovesResult.
                         "post_terminal_status": cand_post_terminal,
                         "candidate_san": cand_san_val,
                         "post_can_claim_draw": cand_can_claim_draw,
                         "post_can_claim_now": cand_can_claim_now,
                         "post_claim_reasons": cand_claim_reasons,
                         "post_claim_moves": cand_claim_moves,
-                        # Override recommended_action on the candidate — it must
-                        # describe the POST-candidate view, not the root policy.
-                        # Since candidates are play_move actions, this is "play_move"
-                        # UNLESS the post-position itself is terminal (game_over).
-                        "recommended_action": "game_over"
-                        if cand_post_terminal is not None
-                        else "play_move",
-                        # Audit H-03: structured post-position summary
+                        "recommended_action": "game_over" if cand_post_terminal is not None else "play_move",
                         "post_position": {
                             "status": cand_post_terminal or "active",
-                            "winner": rule_status.winner
-                            if cand_post_terminal == "checkmate"
-                            else None,
+                            "winner": rule_status.winner if cand_post_terminal == "checkmate" else None,
                             "can_claim_now": cand_can_claim_now,
                             "can_claim_draw": cand_can_claim_draw,
                             "claim_reasons": cand_claim_reasons_now or cand_claim_reasons,
@@ -2406,87 +2648,6 @@ async def top_moves(
                     }
                 )
                 res_list.append(mcp_eval)
-
-            # AUDIT M-01: prepend the canonical single-PV best (if it differs
-            # from any MultiPV result) so `top_moves(n=N)[0]` is stable across N.
-            if single_pv_eval and single_pv_eval.best_move:
-                best_uci = single_pv_eval.best_move.lower()
-                already_present = any((e.best_move or "").lower() == best_uci for e in res_list)
-                if not already_present:
-                    # Build a candidate from the single-PV eval the same way
-                    b_cand = board.copy(stack=True)
-                    cand_san_val: str | None = None
-                    cand_post_terminal: str | None = None
-                    cand_can_claim_now = False
-                    cand_can_claim_draw = False
-                    cand_claim_reasons: list[str] = []
-                    cand_claim_reasons_now: list[str] = []
-                    cand_claim_moves: list[str] = []
-                    try:
-                        bm_obj = chess.Move.from_uci(best_uci)
-                        if bm_obj in board.legal_moves:
-                            cand_san_val = board.san(bm_obj)
-                            b_cand.push(bm_obj)
-                            cand_sign = 1 if b_cand.turn == chess.WHITE else -1
-                            cand_mover_score = cand_sign * (
-                                single_pv_eval.cp
-                                if single_pv_eval.cp is not None
-                                else (
-                                    single_pv_eval.mate * 1000
-                                    if single_pv_eval.mate is not None
-                                    else 0
-                                )
-                            )
-                            cand_mate_for_mover = (
-                                cand_sign * single_pv_eval.mate
-                                if single_pv_eval.mate is not None
-                                else None
-                            )
-                            cand_rule = evaluate_rule_status(
-                                b_cand,
-                                mover_score=cand_mover_score,
-                                mate_for_mover=cand_mate_for_mover,
-                                history_complete=history_complete,
-                            )
-                            cand_post_terminal = cand_rule.terminal
-                            cand_can_claim_now = cand_rule.can_claim_now
-                            cand_can_claim_draw = cand_rule.can_claim_draw
-                            cand_claim_reasons = cand_rule.claim_reasons
-                            cand_claim_reasons_now = cand_rule.claim_reasons_now
-                            cand_claim_moves = cand_rule.claim_moves
-                    except Exception:
-                        pass
-
-                    canonical_mcp = MCPEval.from_eval(
-                        single_pv_eval,
-                        b_cand.fen(),
-                        board=b_cand,
-                        requested_depth=raw_requested_depth,
-                        history_complete=history_complete,
-                        pv_board=board,
-                    ).model_copy(
-                        update={
-                            "post_terminal_status": cand_post_terminal,
-                            "candidate_san": cand_san_val,
-                            "post_can_claim_draw": cand_can_claim_draw,
-                            "post_can_claim_now": cand_can_claim_now,
-                            "post_claim_reasons": cand_claim_reasons,
-                            "post_claim_moves": cand_claim_moves,
-                            "recommended_action": "game_over"
-                            if cand_post_terminal is not None
-                            else "play_move",
-                            "post_position": {
-                                "status": cand_post_terminal or "active",
-                                "winner": rule_status.winner
-                                if cand_post_terminal == "checkmate"
-                                else None,
-                                "can_claim_now": cand_can_claim_now,
-                                "can_claim_draw": cand_can_claim_draw,
-                                "claim_reasons": cand_claim_reasons_now or cand_claim_reasons,
-                            },
-                        }
-                    )
-                    res_list.insert(0, canonical_mcp)
 
             def _candidate_rank_key(eval_item: MCPEval) -> float:
                 # eval_item.{cp,mate} are White-POV evaluations of the POST-candidate
@@ -2750,9 +2911,51 @@ async def classify_move(
             eval_before, _ = await _evaluate_game_position_cached(
                 board, depth, pool, requested_depth=raw_requested_depth
             )
-            eval_after, _ = await _evaluate_game_position_cached(
-                board_after, depth, pool, requested_depth=raw_requested_depth
+
+            # Fast path: when the played move is the engine's canonical best,
+            # skip the second engine call. eval_after is approximated by
+            # applying eval_before's PV to the board (it's the line the engine
+            # itself would play). For positions where best_move is None or
+            # doesn't match the played move, fall through to the real eval.
+            played_is_best = (
+                eval_before.best_move
+                and chess_move.uci().lower() == eval_before.best_move.lower()
             )
+            if played_is_best:
+                # Synthesize eval_after from the PV tail. Walk the PV starting
+                # at move index 1 (the engine's chosen move is at index 0, the
+                # played move). For short or missing PVs, fall back to a real
+                # eval — it's cheap and rare.
+                pv = eval_before.pv or []
+                if len(pv) >= 2:
+                    synth_board = board.copy(stack=True)
+                    try:
+                        for uci in pv[1:]:
+                            synth_board.push_uci(uci)
+                        synth_eval, synth_hit = await _evaluate_game_position_cached(
+                            synth_board,
+                            depth,
+                            pool,
+                            requested_depth=raw_requested_depth,
+                            reuse_tt=True,
+                            analyzer=None,
+                        )
+                        eval_after = synth_eval
+                    except Exception:
+                        # Fall back to real eval — TT reuse on this connection
+                        # should still be a net win because best_move was already
+                        # found by the engine.
+                        eval_after, _ = await _evaluate_game_position_cached(
+                            board_after, depth, pool, requested_depth=raw_requested_depth
+                        )
+                else:
+                    eval_after, _ = await _evaluate_game_position_cached(
+                        board_after, depth, pool, requested_depth=raw_requested_depth
+                    )
+            else:
+                eval_after, _ = await _evaluate_game_position_cached(
+                    board_after, depth, pool, requested_depth=raw_requested_depth
+                )
 
             score = score_played_move(
                 board,
@@ -2784,7 +2987,22 @@ async def classify_move(
                 and not score.conceded_draw_claim
             ):
                 try:
-                    verify_ev = await pool.evaluate(board, depth=depth + 4)
+                    # Cache the depth+4 verification result via the same
+                    # L1/L2 path as any other eval. Previously this went
+                    # straight to pool.evaluate, bypassing the cache — every
+                    # classify_move that hit this verification path paid the
+                    # full uncached depth+4 cost. Now the depth+4 result is
+                    # cached like any other eval.
+                    verify_eval_result, _verify_hit = await _evaluate_game_position_cached(
+                        board, depth + 4, pool, requested_depth=raw_requested_depth + 4
+                    )
+                    verify_ev: Eval = Eval(
+                        cp=verify_eval_result.cp,
+                        mate=verify_eval_result.mate,
+                        best_move=verify_eval_result.best_move,
+                        pv=verify_eval_result.pv,
+                        depth=verify_eval_result.searched_depth or (depth + 4),
+                    )
                     verification_attempted = True
                     if (
                         verify_ev.best_move

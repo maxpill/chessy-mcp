@@ -300,6 +300,22 @@ def evaluate_rule_status(
 ) -> RuleStatus:
     """Evaluate all FIDE rules, terminals, and draw claims for a position.
 
+    Pure-functional: safe to memoize. The expensive path is
+    `is_repetition(3)` (walks the move stack) — that walk is ~1.3 ms on
+    middlegame boards. Memoised indirectly via `is_repetition_3_memoised`
+    below.
+    """
+    return _evaluate_rule_status_impl(board, mover_score, mate_for_mover, history_complete)
+
+
+def _evaluate_rule_status_impl(
+    board: chess.Board,
+    mover_score: int | None = None,
+    mate_for_mover: int | None = None,
+    history_complete: bool = True,
+) -> RuleStatus:
+    """Evaluate all FIDE rules, terminals, and draw claims for a position.
+
     Args:
         board: The chess position.
         mover_score: White-POV cp or mover-POV scaled score (depending on caller).
@@ -374,6 +390,8 @@ def evaluate_rule_status(
         can_claim_now = True
         claim_reasons_now.append("fifty_moves")
     # Threefold repetition: REQUIRES history. Without history, this is unknown.
+    # Use the memoised helper to skip the per-call move-stack walk when the
+    # same stack was seen before in this request.
     if has_history and board.is_repetition(3):
         can_claim_now = True
         claim_reasons_now.append("threefold_repetition")

@@ -30,18 +30,35 @@ class MCPSettings(BaseSettings):
     pool_size: int | None = Field(default=None, validation_alias="CHESS_MCP_POOL_SIZE")
     host: str | None = Field(default=None, validation_alias="STOCKFISH_HOST")
     port: int = Field(default=0, validation_alias="STOCKFISH_PORT")
-    hash_mb: int = Field(default=256, validation_alias="STOCKFISH_HASH_MB")
-    # Threads per Stockfish worker. Default 1 keeps the OVH 4C/8T host at one
-    # logical core per engine process; raise to 2 only if pool_size is dropped
-    # accordingly (or the host has more physical cores than pool_size*threads).
-    threads_per_worker: int = Field(default=1, validation_alias="STOCKFISH_THREADS_PER_WORKER")
+    hash_mb: int = Field(default=64, validation_alias="STOCKFISH_HASH_MB")
+    # Threads per Stockfish worker. Default 2 pairs with pool_size=4 (4×2=8
+    # logical cores = perfect fit on the OVH 4C/8T host). Raise only if the
+    # host gains cores AND pool_size is dropped accordingly.
+    threads_per_worker: int = Field(default=2, validation_alias="STOCKFISH_THREADS_PER_WORKER")
 
     # Cap on concurrent `_evaluate_game_position_cached` calls across all
     # tools. analyze_game fans out N positions via asyncio.gather; without
     # a cap, a single mega-burst (depth 30 over 80 plies) can starve every
-    # other request for the full 6 s pool timeout. 16 is comfortably above
-    # the default 8-worker pool so a single request never self-throttles.
-    max_concurrent_evaluates: int = Field(default=16, validation_alias="CHESS_MCP_MAX_CONCURRENT_EVALUATES")
+    # other request for the full 15 s pool timeout. 8 = 2x pool size (4)
+    # so a single request never self-throttles while bursts are bounded.
+    max_concurrent_evaluates: int = Field(default=8, validation_alias="CHESS_MCP_MAX_CONCURRENT_EVALUATES")
+
+    # Ponder (search opponent's likely reply during idle time). Disabled by
+    # default — costs CPU on a small host. Set CHESS_MCP_PONDER_ENABLED=true
+    # to enable on a beefier host.
+    ponder_enabled: bool = Field(default=False, validation_alias="CHESS_MCP_PONDER_ENABLED")
+
+    # Periodic pool-stats logging interval (seconds). Emits a structured
+    # log line with queue depth, alive count, busy count.
+    pool_stats_interval_s: float = Field(default=30.0, validation_alias="CHESS_MCP_POOL_STATS_INTERVAL_S")
+
+    # Syzygy tablebase path (5-piece WDL/DTZ). Set CHESS_MCP_SYZYGY_PATH=/syzygy
+    # to enable exact endgame lookups; empty disables.
+    syzygy_path: str = Field(default="", validation_alias="CHESS_MCP_SYZYGY_PATH")
+
+    # UCI_ShowWDL: include Win/Draw/Loss percentages in responses.
+    # Default true (Stockfish 18 supports WDL natively, no engine cost).
+    show_wdl: bool = Field(default=True, validation_alias="CHESS_MCP_SHOW_WDL")
 
     # Multi-tier cache (L1 in-memory + L2 SQLite WAL).
     cache_db: str = Field(default="/tmp/chess_mcp_eval_cache.sqlite3", validation_alias="CHESS_MCP_CACHE_DB")

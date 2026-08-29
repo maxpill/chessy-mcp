@@ -53,11 +53,29 @@ class TCPAnalyzer:
 
     @classmethod
     async def create(
-        cls, host: str, port: int, *, name: str = "stockfish", threads: int = 2, hash_mb: int = 128
+        cls,
+        host: str,
+        port: int,
+        *,
+        name: str = "stockfish",
+        threads: int = 2,
+        hash_mb: int = 128,
+        show_wdl: bool = False,
+        syzygy_path: str | None = None,
     ) -> TCPAnalyzer:
         client = TCPUCIClient(host, port, name=name)
         await client.connect()
-        await client.configure({"Threads": threads, "Hash": hash_mb})
+        # Build UCI option set. Only set options that aren't already at their
+        # compiled-in default (avoids wasted UCI round-trips on every spawn).
+        options: dict[str, int | str] = {"Threads": threads, "Hash": hash_mb}
+        if show_wdl:
+            options["UCI_ShowWDL"] = True
+        if syzygy_path:
+            options["SyzygyPath"] = syzygy_path
+            # Probe deeper — SF18 dev supports up to 7-piece; bump from default 1
+            # so endgame positions actually hit the tablebases. ProbeLimit=7 is max.
+            options["SyzygyProbeLimit"] = 7
+        await client.configure(options)
         return cls(client)
 
     async def evaluate(
@@ -66,6 +84,7 @@ class TCPAnalyzer:
         *,
         depth: int | None = None,
         root_moves: list[chess.Move] | None = None,
+        reuse_tt: bool = False,
     ) -> Eval:
         actual_depth = depth if depth is not None else self._depth
         if board.is_checkmate():
@@ -82,18 +101,29 @@ class TCPAnalyzer:
         fen_str = board.fen()
 
         searchmoves = [m.uci() for m in root_moves] if root_moves else None
-        results = await self._client.analyse(fen_str, actual_depth, multipv=1, searchmoves=searchmoves)
+        results = await self._client.analyse(
+            fen_str, actual_depth, multipv=1, searchmoves=searchmoves, reuse_tt=reuse_tt
+        )
         if not results:
             return Eval()
         return _info_to_eval(results[0], actual_depth, board.turn)
 
-    async def top_moves(self, board: chess.Board, *, n: int = 3, depth: int | None = None) -> list[Eval]:
+    async def top_moves(
+        self,
+        board: chess.Board,
+        *,
+        n: int = 3,
+        depth: int | None = None,
+        reuse_tt: bool = False,
+    ) -> list[Eval]:
         if board.is_game_over():
             return []
         actual_depth = depth if depth is not None else self._depth
         mpv = max(1, n)
         fen_str = board.fen()
-        results = await self._client.analyse(fen_str, actual_depth, multipv=mpv)
+        results = await self._client.analyse(
+            fen_str, actual_depth, multipv=mpv, reuse_tt=reuse_tt
+        )
         out: list[Eval] = []
         for info in results[:n]:
             if not info.get("pv") or info.get("pv") == ["(none)"]:
@@ -131,10 +161,20 @@ class TCPAnalyzerPool:
         name: str = "stockfish",
         threads: int = 1,
         hash_mb: int = 128,
+        show_wdl: bool = False,
+        syzygy_path: str | None = None,
         acquire_timeout: float = DEFAULT_ACQUIRE_TIMEOUT,
     ) -> TCPAnalyzerPool:
         async def factory() -> object:
-            return await TCPAnalyzer.create(host, port, name=name, threads=threads, hash_mb=hash_mb)
+            return await TCPAnalyzer.create(
+                host,
+                port,
+                name=name,
+                threads=threads,
+                hash_mb=hash_mb,
+                show_wdl=show_wdl,
+                syzygy_path=syzygy_path,
+            )
 
         instances = [await factory() for _ in range(max(1, size))]
         engine_name = getattr(instances[0], "name", name) if instances else name
@@ -146,8 +186,11 @@ class TCPAnalyzerPool:
         *,
         depth: int | None = None,
         root_moves: list[chess.Move] | None = None,
+        reuse_tt: bool = False,
     ) -> Eval:
-        return await self._pool.run(lambda a: a.evaluate(board, depth=depth, root_moves=root_moves))  # type: ignore[attr-defined]
+        return await self._pool.run(
+            lambda a: a.evaluate(board, depth=depth, root_moves=root_moves, reuse_tt=reuse_tt)
+        )  # type: ignore[attr-defined]
 
     async def top_moves(self, board: chess.Board, *, n: int = 3, depth: int | None = None) -> list[Eval]:
         return await self._pool.run(lambda a: a.top_moves(board, n=n, depth=depth))  # type: ignore[attr-defined]

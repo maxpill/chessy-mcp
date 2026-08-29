@@ -25,6 +25,11 @@ services:
       context: .
       dockerfile: Dockerfile.stockfish
     restart: unless-stopped
+    # Syzygy 5-piece tablebases (~940 MB, 290 files). Download from
+    # https://syzygy-tables.info/download.txt?source=lichess&max-pieces=5 and
+    # extract to the host path below. Empty/missing dir disables tablebases.
+    volumes:
+      - /etc/komodo/stacks/chessy-mcp/syzygy:/syzygy:ro
     networks:
       - mcp-net
     expose:
@@ -44,26 +49,33 @@ services:
     depends_on:
       stockfish:
         condition: service_healthy
-    # tmpfs for the L2 SQLite cache — keeps cache reads off the overlayfs
-    # backing /tmp. Size is comfortably above the 116 MB observed cache; raise
-    # if the cache grows. Lost on container restart, but L1 (50k entries in
-    # memory) survives and L2 rebuilds from traffic within an hour.
+    # tmpfs for the L2 SQLite cache — 64 MB is plenty (L1 absorbs 50k entries
+    # in memory; L2 is rebuildable from traffic within an hour of restart).
     tmpfs:
-      - /cache:size=512m
+      - /cache:size=64m
     environment:
       # MCP server config
       - CHESS_MCP_TRANSPORT=streamable-http
       - CHESS_MCP_HOST=0.0.0.0
       - CHESS_MCP_PORT=8000
       - CHESS_MCP_LOCK_CHATGPT=true
-      - CHESS_MCP_POOL_SIZE=8
-      - CHESS_MCP_MAX_CONCURRENT_EVALUATES=16
-      - STOCKFISH_HASH_MB=256
-      - STOCKFISH_THREADS_PER_WORKER=1
+      - CHESS_MCP_POOL_SIZE=4
+      - CHESS_MCP_MAX_CONCURRENT_EVALUATES=8
+      - STOCKFISH_HASH_MB=64
+      - STOCKFISH_THREADS_PER_WORKER=2
       - STOCKFISH_HOST=stockfish
       - STOCKFISH_PORT=9550
       # L2 SQLite cache lives on the tmpfs mount above.
       - CHESS_MCP_CACHE_DB=/cache/chess_mcp_eval_cache.sqlite3
+      # Periodic structured pool-stats log line (0 disables).
+      - CHESS_MCP_POOL_STATS_INTERVAL_S=30
+      # UCI_ShowWDL — include Win/Draw/Loss percentages in responses.
+      - CHESS_MCP_SHOW_WDL=true
+      # Ponder disabled by default; enable on bigger hosts only.
+      - CHESS_MCP_PONDER_ENABLED=false
+      # Syzygy tablebases (5-piece WDL/DTZ); empty disables. Mount the TBs
+      # to /syzygy in the stockfish service below to enable.
+      - CHESS_MCP_SYZYGY_PATH=/syzygy
       # Auth token shared with the chessy app. The MCP reads this from
       # .env; the chessy app reads the same secret via its own .env.
       - CHESS_MCP_AUTH_TOKEN=${CHESS_MCP_AUTH_TOKEN:-}
@@ -77,7 +89,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      # Cold MCP startup is sub-second; 5s start_period is generous.
+      start_period: 5s
 
   caddy:
     image: caddy:2-alpine

@@ -42,6 +42,7 @@ class Analyzer:
         *,
         depth: int | None = None,
         root_moves: list[chess.Move] | None = None,
+        reuse_tt: bool = False,
     ) -> Eval:
         actual_depth = depth or self._depth
         if board.is_checkmate():
@@ -58,7 +59,8 @@ class Analyzer:
         board_for_sf = board
 
         async with self._lock:
-            self._engine.send_line("ucinewgame")
+            if not reuse_tt:
+                self._engine.send_line("ucinewgame")
             await self._engine.ping()
             if root_moves:
                 info = await self._engine.analyse(
@@ -81,7 +83,14 @@ class Analyzer:
             depth=info_dict.get("depth", actual_depth),
         )
 
-    async def top_moves(self, board: chess.Board, *, n: int = 3, depth: int | None = None) -> list[Eval]:
+    async def top_moves(
+        self,
+        board: chess.Board,
+        *,
+        n: int = 3,
+        depth: int | None = None,
+        reuse_tt: bool = False,
+    ) -> list[Eval]:
         """The engine's top-n candidate moves (MultiPV), best first."""
         if board.is_game_over():
             return []
@@ -89,7 +98,8 @@ class Analyzer:
         mpv = max(1, n)
         board_for_sf = board
         async with self._lock:
-            self._engine.send_line("ucinewgame")
+            if not reuse_tt:
+                self._engine.send_line("ucinewgame")
             await self._engine.ping()
             infos = await self._engine.analyse(
                 board_for_sf, chess.engine.Limit(depth=actual_depth), multipv=mpv
