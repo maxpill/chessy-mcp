@@ -7,7 +7,7 @@ from typing import Any
 
 import chess
 
-from core.engines.analysis import classify_move, probe_threat
+from core.engines.analysis import classify_move
 from core.engines.pool import DEFAULT_ACQUIRE_TIMEOUT, EnginePool
 from core.engines.types import Eval, MoveAnalysis
 from mcp_server.tcp_client import TCPUCIClient
@@ -133,9 +133,7 @@ class TCPAnalyzer:
         actual_depth = depth if depth is not None else self._depth
         mpv = max(1, n)
         fen_str = board.fen()
-        results = await self._client.analyse(
-            fen_str, actual_depth, multipv=mpv, reuse_tt=reuse_tt
-        )
+        results = await self._client.analyse(fen_str, actual_depth, multipv=mpv, reuse_tt=reuse_tt)
         out: list[Eval] = []
         for info in results[:n]:
             if not info.get("pv") or info.get("pv") == ["(none)"]:
@@ -147,9 +145,6 @@ class TCPAnalyzer:
         self, board: chess.Board, move: chess.Move, *, depth: int | None = None
     ) -> MoveAnalysis:
         return await classify_move(self, board, move, depth=depth)
-
-    async def probe_threat(self, board_after: chess.Board, *, depth: int | None = None) -> Eval | None:
-        return await probe_threat(self, board_after, depth=depth)
 
     async def close(self) -> None:
         await self._client.close()
@@ -188,7 +183,7 @@ class TCPAnalyzerPool:
                 syzygy_path=syzygy_path,
             )
 
-        instances = [await factory() for _ in range(max(1, size))]
+        instances = await asyncio.gather(*[factory() for _ in range(max(1, size))])
         engine_name = getattr(instances[0], "name", name) if instances else name
         return cls(EnginePool(instances, factory, acquire_timeout), name=engine_name)
 
@@ -204,16 +199,15 @@ class TCPAnalyzerPool:
             lambda a: a.evaluate(board, depth=depth, root_moves=root_moves, reuse_tt=reuse_tt)
         )  # type: ignore[attr-defined]
 
-    async def top_moves(self, board: chess.Board, *, n: int = 3, depth: int | None = None) -> list[Eval]:
+    async def top_moves(
+        self, board: chess.Board, *, n: int = 3, depth: int | None = None
+    ) -> list[Eval]:
         return await self._pool.run(lambda a: a.top_moves(board, n=n, depth=depth))  # type: ignore[attr-defined]
 
     async def classify_move(
         self, board: chess.Board, move: chess.Move, *, depth: int | None = None
     ) -> MoveAnalysis:
         return await self._pool.run(lambda a: a.classify_move(board, move, depth=depth))  # type: ignore[attr-defined]
-
-    async def probe_threat(self, board_after: chess.Board, *, depth: int | None = None) -> Eval | None:
-        return await self._pool.run(lambda a: a.probe_threat(board_after, depth=depth))  # type: ignore[attr-defined]
 
     async def close(self) -> None:
         await self._pool.close()

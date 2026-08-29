@@ -154,25 +154,6 @@ class TCPUCIClient:
                 await self._reset_connection()
                 raise
 
-    async def raw_uci_command(self, command: str) -> list[str]:
-        """Send a raw UCI command and collect all response lines until 'readyok' or 'bestmove'."""
-        async with self._lock:
-            await self._ensure_connected()
-            try:
-                await self._send(command)
-                lines: list[str] = []
-                while True:
-                    line = await self._readline(timeout=60)
-                    if line is None:
-                        raise UCIError(f"Engine {self.name} disconnected")
-                    lines.append(line)
-                    if line == "readyok" or line.startswith("bestmove"):
-                        break
-                return lines
-            except BaseException:
-                await self._reset_connection()
-                raise
-
     async def close(self) -> None:
         if self._writer:
             try:

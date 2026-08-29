@@ -8,7 +8,6 @@ import os
 import re
 import subprocess
 import time
-import zlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib import metadata
@@ -17,7 +16,6 @@ from typing import Any, cast
 
 import chess
 
-from mcp.server.context import ServerRequestContext
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -74,49 +72,6 @@ def _tool_error(code: str, message: str | BaseException, tool: str, **kwargs: An
     clean_msg = raw.strip()
     clean_msg = re.sub(r"^(?:\[[A-Za-z0-9_]+\]|[A-Za-z0-9_]+:)\s*", "", clean_msg).strip()
     return ToolError(f"[{code.upper()}] {clean_msg}")
-
-
-# Audit P1: whitelist the docker bridge / loopback network so chessy's own
-# agents (coach / trainer / clara) can reach MCP when CHESS_MCP_LOCK_CHATGPT
-# is set. The lock is intended to constrain public-facing clients
-# (ChatGPT actions, ad-hoc curl, etc.), NOT to block the system's own
-# service-to-service traffic which is already protected by docker network
-# isolation.
-def _is_private_or_loopback_ip(ip: str) -> bool:
-    """Return True iff `ip` is loopback or an RFC1918 private address.
-
-    Accepts dotted-quad IPv4 (with or without an IPv6 `[...]` wrapper that
-    ASGI sometimes uses). Returns False for IPv6 link-local or anything
-    we can't parse — better to err on the side of caution and require
-    auth for an unknown address class.
-    """
-    s = ip.strip()
-    if s.startswith("[") and s.endswith("]"):
-        s = s[1:-1]
-    # Loopback
-    if s == "127.0.0.1" or s == "::1" or s == "localhost":
-        return True
-    # IPv6 unique-local fc00::/7 — covers docker compose default networks
-    if "::" in s and ":" in s.replace("::", "", 1):
-        return False  # not a ULA
-    if s.startswith("fc") or s.startswith("fd"):
-        # Cheap ULA-prefix check (fc00::/7) — exact parsing isn't critical
-        # because docker-compose IPv6 defaults are rare; we err on safety.
-        return True
-    # IPv4
-    parts = s.split(".")
-    if len(parts) == 4:
-        try:
-            a, b, c, d = (int(p) for p in parts)
-        except ValueError:
-            return False
-        if a == 10:
-            return True
-        if a == 172 and 16 <= b <= 31:
-            return True
-        if a == 192 and b == 168:
-            return True
-    return False
 
 
 # Verbosity levels (audit M-05). `compact` strips Lichess URLs/images and
@@ -449,43 +404,7 @@ async def _mcp_lifespan(server: MCPServer) -> AsyncIterator[dict[str, Any]]:
     cfg = get_mcp_settings()
     cpu = os.cpu_count() or 8
     pool_size = cfg.pool_size if cfg.pool_size is not None else min(cpu, 4)
-    threads_per_worker = max(1, cfg.threads_per_worker)
-    if sf_host := cfg.host:
-        pool: AnalyzerPool | TCPAnalyzerPool = await TCPAnalyzerPool.create(
-            sf_host,
-            cfg.port,
-            size=pool_size,
-            name="stockfish",
-            threads=threads_per_worker,
-            hash_mb=cfg.hash_mb,
-            show_wdl=cfg.show_wdl,
-            syzygy_path=cfg.syzygy_path or None,
-        )
-        log.info(
-            "TCP analyzer pool ready: %d engines @ %s:%d (threads=%d hash=%dMB wdl=%s syzygy=%s ponder=%s)",
-            pool_size,
-            sf_host,
-            cfg.port,
-            threads_per_worker,
-            cfg.hash_mb,
-            cfg.show_wdl,
-            cfg.syzygy_path or "(none)",
-            cfg.ponder_enabled,
-        )
-        pool._mcp_ponder_enabled = cfg.ponder_enabled  # type: ignore[attr-defined]
-    else:
-        pool = await AnalyzerPool.create(
-            _stockfish_path(),
-            size=pool_size,
-            depth=14,
-            threads=threads_per_worker,
-            hash_mb=cfg.hash_mb,
-        )
-        log.info(
-            "Subprocess analyzer pool ready: %d engines @ %s",
-            pool_size,
-            _stockfish_path(),
-        )
+    pool: AnalyzerPool | TCPAnalyzerPool = await _create_analyzer_pool(cfg, pool_size=pool_size)
 
     # Warm-search: one cheap eval per worker to prime UCI isready. Hidden
     # inside the healthcheck start_period (5s); saves ~120ms on the first
@@ -552,8 +471,6 @@ async def _pool_stats_logger(pool: AnalyzerPool | TCPAnalyzerPool, interval_s: f
             log.warning("pool_stats log iteration failed (continuing): %s", exc)
 
 
-
-
 async def _ponder_warm_cache(
     pool: AnalyzerPool | TCPAnalyzerPool,
     predicted_fen: str,
@@ -580,9 +497,7 @@ async def _ponder_warm_cache(
         # Avoid duplicate work: skip if L1 already has it.
         if (await _cache.get_eval(ckey)) is not None:
             return
-        ev, _hit = await _evaluate_game_position_cached(
-            board, depth, pool, requested_depth=depth
-        )
+        ev, _hit = await _evaluate_game_position_cached(board, depth, pool, requested_depth=depth)
         await _cache.set_eval(ckey, ev)
     except Exception as exc:  # noqa: BLE001 — fire-and-forget
         log.debug("ponder pre-eval failed (silent): %s", exc)
@@ -611,7 +526,6 @@ def _maybe_ponder_warm(
         )
     except Exception:
         pass  # best_move wasn't legal in this board — skip silently
-
 
 
 mcp = MCPServer(
@@ -707,14 +621,18 @@ async def _gather_evaluate_positions_bounded(
         pool_target = 4
     k = max(1, min(pool_target, len(positions)))
 
-    # Round-robin distribution: position i -> slice i % k. Slice 0 holds
-    # positions 0, k, 2k, ...; within a slice the order is whatever
-    # round-robin gave us. The TT reuse benefit is concentrated in the
-    # second+ iteration of the round-robin cycle (positions k, 2k, ...
-    # have k-1 prior positions in the same slice).
-    slices: list[list[chess.Board]] = [[] for _ in range(k)]
-    for idx, b in enumerate(positions):
-        slices[idx % k].append(b)
+    # Contiguous partition: positions [0:chunk] -> slice 0, [chunk:2*chunk] -> slice 1, ...
+    # Adjacent plies land on the same worker, so Stockfish's TT carries over
+    # across consecutive `reuse_tt=True` calls (round-robin distribution put
+    # positions K-plies apart in the same slice — the TT trees diverged too
+    # far for any useful overlap at depth 14 / 64 MB hash). Last slice gets
+    # the remainder.
+    chunk = math.ceil(len(positions) / k)
+    slices: list[list[chess.Board]] = [
+        list(positions[i : i + chunk]) for i in range(0, len(positions), chunk)
+    ]
+    # Trim to k slices (we may have one fewer if positions divides evenly).
+    slices = slices[:k]
 
     async def _run_slice(slice_positions: list[chess.Board]) -> list[tuple[MCPEval, bool]]:
         async with sem:
@@ -723,6 +641,7 @@ async def _gather_evaluate_positions_bounded(
             # Otherwise (test MockPool objects), call pool.evaluate directly
             # per position — TT reuse is moot without a real analyzer.
             if hasattr(pool, "_pool"):
+
                 async def _on_worker(analyzer: object) -> list[tuple[MCPEval, bool]]:
                     out: list[tuple[MCPEval, bool]] = []
                     for j, b in enumerate(slice_positions):
@@ -753,15 +672,69 @@ async def _gather_evaluate_positions_bounded(
             return out
 
     slice_results = await asyncio.gather(*[_run_slice(s) for s in slices if s])
-    # Reassemble in original order. slices[si] held positions at indices
-    # si, si+k, si+2k, ... in that order.
+    # Reassemble in original order. With contiguous chunks, slice_results[si]
+    # corresponds to positions[si*chunk : si*chunk + len(slices[si])] in order.
     out: list[tuple[MCPEval, bool]] = [None] * len(positions)  # type: ignore[list-item]
-    for slice_idx in range(k):
-        if not slices[slice_idx]:
-            continue
-        for j, _ in enumerate(slices[slice_idx]):
-            out[slice_idx + j * k] = slice_results[slice_idx][j]
+    cursor = 0
+    for slice_result in slice_results:
+        for j, item in enumerate(slice_result):
+            out[cursor + j] = item
+        cursor += len(slice_result)
     return out
+
+
+async def _create_analyzer_pool(
+    cfg: MCPSettings,
+    *,
+    pool_size: int,
+) -> AnalyzerPool | TCPAnalyzerPool:
+    """Single source of truth for analyzer pool creation.
+
+    Used by both the FastMCP lifespan (`_mcp_lifespan`) and the lazy-init
+    fallback in `_get_analyzer_pool` so the two paths cannot drift in their
+    UCI kwargs (the show_wdl/syzygy_path bug shipped in 72e3236 is the kind of
+    drift this function prevents). Returns a pool ready for evaluate/top_moves/
+    classify_move/analyze_game; logs the same "ready" line either way so
+    operators can grep for it regardless of which path built the pool.
+    """
+    threads = max(1, cfg.threads_per_worker)
+    if cfg.host and cfg.port:
+        pool: AnalyzerPool | TCPAnalyzerPool = await TCPAnalyzerPool.create(
+            cfg.host,
+            cfg.port,
+            size=pool_size,
+            name="stockfish",
+            threads=threads,
+            hash_mb=cfg.hash_mb,
+            show_wdl=cfg.show_wdl,
+            syzygy_path=cfg.syzygy_path or None,
+        )
+        log.info(
+            "TCP analyzer pool ready: %d engines @ %s:%d (threads=%d hash=%dMB wdl=%s syzygy=%s ponder=%s)",
+            pool_size,
+            cfg.host,
+            cfg.port,
+            threads,
+            cfg.hash_mb,
+            cfg.show_wdl,
+            cfg.syzygy_path or "(none)",
+            cfg.ponder_enabled,
+        )
+        pool._mcp_ponder_enabled = cfg.ponder_enabled  # type: ignore[attr-defined]
+        return pool
+    pool = await AnalyzerPool.create(
+        _stockfish_path(),
+        size=pool_size,
+        depth=14,
+        threads=threads,
+        hash_mb=cfg.hash_mb,
+    )
+    log.info(
+        "Subprocess analyzer pool ready: %d engines @ %s",
+        pool_size,
+        _stockfish_path(),
+    )
+    return pool
 
 
 async def _get_analyzer_pool(
@@ -784,30 +757,9 @@ async def _get_analyzer_pool(
             from .config import get_mcp_settings
 
             mcp_cfg = get_mcp_settings()
-            default_pool_size = min(4, max(2, os.cpu_count() or 4))
-            pool_size = mcp_cfg.pool_size if mcp_cfg.pool_size is not None else default_pool_size
-            hash_mb = mcp_cfg.hash_mb
-            sf_host = mcp_cfg.host
-            sf_port = mcp_cfg.port
-            if sf_host and sf_port:
-                _analyzer_pool = await TCPAnalyzerPool.create(
-                    sf_host,
-                    sf_port,
-                    size=pool_size,
-                    name="stockfish",
-                    threads=mcp_cfg.threads_per_worker,
-                    hash_mb=hash_mb,
-                    show_wdl=mcp_cfg.show_wdl,
-                    syzygy_path=mcp_cfg.syzygy_path or None,
-                )
-            else:
-                _analyzer_pool = await AnalyzerPool.create(
-                    _stockfish_path(),
-                    size=pool_size,
-                    depth=14,
-                    threads=mcp_cfg.threads_per_worker,
-                    hash_mb=hash_mb,
-                )
+            cpu = os.cpu_count() or 8
+            pool_size = mcp_cfg.pool_size if mcp_cfg.pool_size is not None else min(cpu, 4)
+            _analyzer_pool = await _create_analyzer_pool(mcp_cfg, pool_size=pool_size)
         return _analyzer_pool
 
 
@@ -1685,7 +1637,6 @@ def _extract_game(text: str, strict: bool = False) -> chess.pgn.Game:
     """Extract a chess.pgn.Game from raw, dirty, annotated, or conversational text."""
     _check_multiple_games(text)
     canonical = _extract_canonical_pgn_text(text)
-    _check_multiple_games(canonical)
     return _extract_game_inner(canonical, strict=strict)
 
 
@@ -2076,14 +2027,34 @@ async def _eval_via_analyzer_or_pool(
         )
     # pool.evaluate signature varies; pass root_moves only if analyzer pool
     # supports it (production TCPAnalyzerPool does; test mocks don't).
-    import inspect
-    try:
-        sig = inspect.signature(pool.evaluate)
-        if "root_moves" in sig.parameters:
-            return await pool.evaluate(b, depth=depth, root_moves=root_moves)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        pass
+    if _pool_supports_root_moves(pool):
+        return await pool.evaluate(b, depth=depth, root_moves=root_moves)  # type: ignore[arg-type]
     return await pool.evaluate(b, depth=depth)  # type: ignore[arg-type]
+
+
+_POOL_SUPPORTS_ROOT_MOVES: dict[type, bool] = {}
+
+
+def _pool_supports_root_moves(pool: object) -> bool:
+    """Memoized runtime check for the `root_moves` keyword on pool.evaluate.
+
+    `inspect.signature` walks the function annotations every call; cache by
+    the pool's class — same class always has the same evaluate signature, so
+    per-class caching is correct (and the cache survives instance churn).
+    """
+    cls = type(pool)
+    cached = _POOL_SUPPORTS_ROOT_MOVES.get(cls)
+    if cached is not None:
+        return cached
+    import inspect
+
+    try:
+        sig = inspect.signature(pool.evaluate)  # type: ignore[attr-defined]
+        supports = "root_moves" in sig.parameters
+    except (TypeError, ValueError):
+        supports = False
+    _POOL_SUPPORTS_ROOT_MOVES[cls] = supports
+    return supports
 
 
 async def _evaluate_game_position_cached(
@@ -2606,7 +2577,9 @@ async def top_moves(
                             b_cand.push(bm_obj)
                             cand_sign = 1 if b_cand.turn == chess.WHITE else -1
                             cand_mover_score = cand_sign * (
-                                r.cp if r.cp is not None else (r.mate * 1000 if r.mate is not None else 0)
+                                r.cp
+                                if r.cp is not None
+                                else (r.mate * 1000 if r.mate is not None else 0)
                             )
                             cand_mate_for_mover = cand_sign * r.mate if r.mate is not None else None
                             cand_rule = evaluate_rule_status(
@@ -2639,10 +2612,14 @@ async def top_moves(
                         "post_can_claim_now": cand_can_claim_now,
                         "post_claim_reasons": cand_claim_reasons,
                         "post_claim_moves": cand_claim_moves,
-                        "recommended_action": "game_over" if cand_post_terminal is not None else "play_move",
+                        "recommended_action": "game_over"
+                        if cand_post_terminal is not None
+                        else "play_move",
                         "post_position": {
                             "status": cand_post_terminal or "active",
-                            "winner": rule_status.winner if cand_post_terminal == "checkmate" else None,
+                            "winner": rule_status.winner
+                            if cand_post_terminal == "checkmate"
+                            else None,
                             "can_claim_now": cand_can_claim_now,
                             "can_claim_draw": cand_can_claim_draw,
                             "claim_reasons": cand_claim_reasons_now or cand_claim_reasons,
@@ -2738,65 +2715,6 @@ async def top_moves(
             **_build_identity(pool),
             result=items,
         )
-        # Audit M-05: apply compact verbosity if requested. Compact strips
-        # Lichess URLs, images, and engine_eval/decision_value duplication
-        # from every candidate to reduce LLM context spend (~70% smaller).
-        if verbosity_mode == VERBOSITY_COMPACT:
-            items = [_compact_mcpeval(c) for c in items]
-            return TopMovesResult(
-                status="active",
-                winner=None,
-                recommended_action=root_rec_action,
-                can_claim_draw=rule_status.can_claim_draw,
-                claim_reasons=rule_status.claim_reasons,
-                claim_move=rule_status.claim_move,
-                can_claim_now=rule_status.can_claim_now,
-                claim_reasons_now=rule_status.claim_reasons_now,
-                can_claim_with_intended_move=rule_status.can_claim_with_intended_move,
-                claim_moves=rule_status.claim_moves,
-                best_action_obj=best_action_obj,
-                legal_actions=legal_actions,
-                history_completeness=rule_status.history_completeness,
-                repetition_status=rule_status.repetition_status,
-                requested_depth=raw_requested_depth,
-                searched_depth=depth,
-                requested_n=raw_requested_n,
-                clamped_n=clamped_n,
-                returned_n=len(items),
-                legal_move_count=legal_move_count,
-                canonical_fen=board.fen(),
-                engine="Stockfish",
-                engine_version=engine_name_str,
-                **_build_identity(pool),
-                result=items,
-            )
-        return TopMovesResult(
-            status="active",
-            winner=None,
-            recommended_action=root_rec_action,
-            can_claim_draw=rule_status.can_claim_draw,
-            claim_reasons=rule_status.claim_reasons,
-            claim_move=rule_status.claim_move,
-            can_claim_now=rule_status.can_claim_now,
-            claim_reasons_now=rule_status.claim_reasons_now,
-            can_claim_with_intended_move=rule_status.can_claim_with_intended_move,
-            claim_moves=rule_status.claim_moves,
-            best_action_obj=best_action_obj,
-            legal_actions=legal_actions,
-            history_completeness=rule_status.history_completeness,
-            repetition_status=rule_status.repetition_status,
-            requested_depth=raw_requested_depth,
-            searched_depth=depth,
-            requested_n=raw_requested_n,
-            clamped_n=clamped_n,
-            returned_n=len(items),
-            legal_move_count=legal_move_count,
-            canonical_fen=board.fen(),
-            engine="Stockfish",
-            engine_version=engine_name_str,
-            **_build_identity(pool),
-            result=items,
-        )
     except ToolError:
         await metrics.record("top_moves", (time.time() - t0) * 1000, is_error=True)
         raise
@@ -2863,13 +2781,14 @@ async def classify_move(
     try:
         board = _build_board(fen, moves or [], strict=strict)
         chess_move, syntax_warn = _parse_move_on_board_with_warning(board, move, strict=strict)
+        pool = await _get_analyzer_pool(ctx)
 
         cache_key = classify_cache_key(
             board,
             chess_move.uci(),
             depth,
             action_type=action_type,
-            engine_version=getattr(_analyzer_pool, "engine_version", None),
+            engine_version=getattr(pool, "engine_version", None),
         )
 
         cached = await _cache.get_classify(cache_key)
@@ -2920,8 +2839,7 @@ async def classify_move(
             # itself would play). For positions where best_move is None or
             # doesn't match the played move, fall through to the real eval.
             played_is_best = (
-                eval_before.best_move
-                and chess_move.uci().lower() == eval_before.best_move.lower()
+                eval_before.best_move and chess_move.uci().lower() == eval_before.best_move.lower()
             )
             if played_is_best:
                 # Synthesize eval_after from the PV tail. Walk the PV starting
@@ -3387,7 +3305,6 @@ async def analyze_game(
     try:
         _check_multiple_games(pgn)
         canonical_pgn = _extract_canonical_pgn_text(pgn)
-        _check_multiple_games(canonical_pgn)
         game = _extract_game_inner(canonical_pgn)
 
         positions: list[chess.Board] = []
@@ -4058,7 +3975,7 @@ async def analyze_game(
 class TokenBucketRateLimiter:
     """In-memory thread-safe token bucket rate limiter per client IP."""
 
-    def __init__(self, rate: float = 5.0, capacity: float = 200.0) -> None:
+    def __init__(self, rate: float = 20.0, capacity: float = 500.0) -> None:
         self.rate = rate
         self.capacity = capacity
         self._buckets: dict[str, tuple[float, float]] = {}

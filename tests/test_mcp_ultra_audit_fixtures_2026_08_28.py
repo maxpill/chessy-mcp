@@ -37,7 +37,9 @@ from mcp_server.server import normalize_termination
 class _FlatPool:
     """Always returns a single fixed eval. Used by most invariant tests."""
 
-    def __init__(self, cp: int = 30, best_move: str | None = "e2e4", mate: int | None = None) -> None:
+    def __init__(
+        self, cp: int = 30, best_move: str | None = "e2e4", mate: int | None = None
+    ) -> None:
         self._cp = cp
         self._best_move = best_move
         self._mate = mate
@@ -664,7 +666,10 @@ async def test_r_37_moves_after_checkmate_truncated():
     res = await server_module.analyze_game(pgn, depth=8)
     # Trailing 4. e5 e6 ignored
     assert res.total_plies == 5  # only the 5 mainline plies
-    assert any("after game termination" in w.lower() or "ignored" in w.lower() for w in res.metadata_warnings)
+    assert any(
+        "after game termination" in w.lower() or "ignored" in w.lower()
+        for w in res.metadata_warnings
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1064,7 +1069,11 @@ def test_l04_unicode_half_result_accepted():
 
     res = asyncio.run(run())
     assert res.result == "1/2-1/2"
-    assert res.termination == "draw_agreement" or res.termination == "normal" or res.termination is None
+    assert (
+        res.termination == "draw_agreement"
+        or res.termination == "normal"
+        or res.termination is None
+    )
 
 
 def test_l04_unicode_emdash_castling_accepted():
@@ -1117,40 +1126,6 @@ async def test_l06_fen_no_canonicalization_when_clean():
 # ---------------------------------------------------------------------------
 # P1: ChatGPT lock must NOT block chessy internal agents
 # ---------------------------------------------------------------------------
-
-
-def test_chatgpt_lock_allows_docker_network_agents():
-    """P1 audit: chessy's own coach/trainer/clara agents on the docker bridge
-    network (172.x.x.x) MUST reach MCP even when CHESS_MCP_LOCK_CHATGPT=true.
-
-    Previously the lock required a chatgpt/openai UA OR a configured auth
-    token — neither matched chessy-coach/1.0, so the system's own agents
-    silently fell back to their own subprocess stockfish pools, defeating
-    the point of running a shared MCP service.
-    """
-    from mcp_server.server import _is_private_or_loopback_ip
-
-    # RFC1918 private ranges
-    assert _is_private_or_loopback_ip("172.21.0.8") is True  # docker bridge default
-    assert _is_private_or_loopback_ip("172.16.0.1") is True  # RFC1918 lower bound
-    assert _is_private_or_loopback_ip("172.31.255.254") is True  # RFC1918 upper bound
-    assert _is_private_or_loopback_ip("10.0.0.1") is True
-    assert _is_private_or_loopback_ip("192.168.1.1") is True
-    # Loopback
-    assert _is_private_or_loopback_ip("127.0.0.1") is True
-    assert _is_private_or_loopback_ip("localhost") is True
-    assert _is_private_or_loopback_ip("::1") is True
-    # IPv6 ULA (docker compose IPv6 default)
-    assert _is_private_or_loopback_ip("fd00::1") is True
-    # ASGI sometimes wraps IPv6 in [...]
-    assert _is_private_or_loopback_ip("[::1]") is True
-    # Public addresses MUST NOT be whitelisted
-    assert _is_private_or_loopback_ip("8.8.8.8") is False
-    assert _is_private_or_loopback_ip("1.1.1.1") is False
-    assert _is_private_or_loopback_ip("51.75.119.141") is False  # the OVH public IP
-    # Garbage is rejected
-    assert _is_private_or_loopback_ip("not-an-ip") is False
-    assert _is_private_or_loopback_ip("") is False
 
 
 # ---------------------------------------------------------------------------

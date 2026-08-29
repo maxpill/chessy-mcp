@@ -31,7 +31,6 @@ import chess.engine
 from core import usage
 
 from .analyzer import Analyzer
-from .opponent import StockfishOpponent
 from .types import Eval, MoveAnalysis
 
 log = logging.getLogger("chessy.enginepool")
@@ -188,32 +187,6 @@ class _EnginePool:
 
 
 EnginePool = _EnginePool
-
-
-class OpponentPool:
-    """Drop-in for StockfishOpponent: same select_move(board, target_rating)."""
-
-    name = "stockfish-pool"
-
-    def __init__(self, pool: _EnginePool) -> None:
-        self._pool = pool
-
-    @classmethod
-    async def create(
-        cls, path: str, size: int, acquire_timeout: float = DEFAULT_ACQUIRE_TIMEOUT
-    ) -> OpponentPool:
-        async def factory() -> object:
-            return await StockfishOpponent.create(path)
-
-        instances = [await factory() for _ in range(max(1, size))]
-        log.info("opponent pool ready: %d engines", len(instances))
-        return cls(_EnginePool(instances, factory, acquire_timeout))
-
-    async def select_move(self, board: chess.Board, target_rating: int) -> chess.Move:
-        return await self._pool.run(lambda e: e.select_move(board, target_rating))  # type: ignore[attr-defined]
-
-    async def close(self) -> None:
-        await self._pool.close()
 
 
 class AnalyzerPool:

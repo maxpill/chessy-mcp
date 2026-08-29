@@ -1,7 +1,37 @@
 # Minimal Caddy — just proxy /mcp to the MCP service.
+#
+# Production tuning (2026-08-29):
+#  * flush_interval -1    — flush each SSE chunk to the client immediately.
+#                           Critical for multi-position analyze_game responses
+#                           where the client wants incremental progress, not a
+#                           75s buffer until the last move completes.
+#  * keepalive            — reuse the upstream TCP connection to MCP across
+#                           requests instead of opening a fresh TCP per req.
+#                           Saves ~1ms handshake + avoids TIME_WAIT churn.
+#  * health_uri /health   — mark the upstream unhealthy within ~3s if MCP's
+#                           /health stops responding, so a hang surfaces as
+#                           502 (with lb_try_duration retry) rather than a
+#                           hung TCP socket.
+#  * timeouts             — align with uvicorn's timeout_keep_alive=75s so
+#                           neither side closes a healthy connection mid-request.
+#  * transport http       — explicit; the upstream is plain HTTP inside compose.
 
 http://mcp.trychessy.com {
 	encode zstd gzip
 
-	reverse_proxy mcp:8000
+	reverse_proxy mcp:8000 {
+		flush_interval -1
+		keepalive 30s
+		health_uri /health
+		health_interval 5s
+		health_timeout 3s
+		transport http
+		lb_try_duration 5s
+		lb_try_interval 250ms
+		timeouts {
+			read 75s
+			write 75s
+			dial 5s
+		}
+	}
 }
