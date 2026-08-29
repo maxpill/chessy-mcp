@@ -797,6 +797,8 @@ async def _get_analyzer_pool(
                     name="stockfish",
                     threads=mcp_cfg.threads_per_worker,
                     hash_mb=hash_mb,
+                    show_wdl=mcp_cfg.show_wdl,
+                    syzygy_path=mcp_cfg.syzygy_path or None,
                 )
             else:
                 _analyzer_pool = await AnalyzerPool.create(
