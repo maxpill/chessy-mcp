@@ -75,9 +75,13 @@ class TCPAnalyzer:
         await client.connect()
         # Build UCI option set. Only set options that aren't already at their
         # compiled-in default (avoids wasted UCI round-trips on every spawn).
+        # NOTE: UCI boolean values must be the lowercase strings "true"/"false"
+        # (not Python True/False). Stockfish silently rejects the capitalised
+        # Python repr ("True") and the option stays at its default — which is
+        # why WDL never appeared in the info line in earlier deploys.
         options: dict[str, int | str] = {"Threads": threads, "Hash": hash_mb}
         if show_wdl:
-            options["UCI_ShowWDL"] = True
+            options["UCI_ShowWDL"] = "true"
         if syzygy_path:
             options["SyzygyPath"] = syzygy_path
             # Probe deeper — SF18 dev supports up to 7-piece; bump from default 1
