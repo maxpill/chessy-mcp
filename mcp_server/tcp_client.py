@@ -233,6 +233,14 @@ class TCPUCIClient:
                 elif parts[i + 1] == "mate":
                     info["mate"] = int(parts[i + 2])
                 i += 3
+            elif key == "wdl" and i + 3 < len(parts):
+                # Stockfish 18+ WDL in per-mille (W D L). Only present when
+                # UCI_ShowWDL=true is set on the engine.
+                try:
+                    info["wdl"] = (int(parts[i + 1]), int(parts[i + 2]), int(parts[i + 3]))
+                except ValueError:
+                    pass
+                i += 4
             elif key == "pv":
                 info["pv"] = parts[i + 1 :]
                 break

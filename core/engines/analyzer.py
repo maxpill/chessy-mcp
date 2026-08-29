@@ -75,12 +75,21 @@ class Analyzer:
         pv: list[chess.Move] = info_dict.get("pv", [])
         mate_val = score.mate()
         cp_val = None if mate_val is not None else score.score()
+        # python-chess parses WDL as (w, d, l) when UCI_ShowWDL is on.
+        wdl_raw = None
+        try:
+            wdl_obj = info_dict.get("wdl")  # chess.engine.Cp.wdl() returns tuple
+            if wdl_obj is not None:
+                wdl_raw = (int(wdl_obj[0]), int(wdl_obj[1]), int(wdl_obj[2]))
+        except Exception:  # noqa: BLE001 — wdl not always present
+            wdl_raw = None
         return Eval(
             cp=cp_val,
             mate=mate_val,
             best_move=pv[0].uci() if pv else None,
             pv=[m.uci() for m in pv],
             depth=info_dict.get("depth", actual_depth),
+            wdl=wdl_raw,
         )
 
     async def top_moves(
@@ -112,6 +121,13 @@ class Analyzer:
                 continue
             mate_val = score.mate()
             cp_val = None if mate_val is not None else score.score()
+            wdl_raw = None
+            try:
+                wdl_obj = info.get("wdl")
+                if wdl_obj is not None:
+                    wdl_raw = (int(wdl_obj[0]), int(wdl_obj[1]), int(wdl_obj[2]))
+            except Exception:  # noqa: BLE001
+                wdl_raw = None
             out.append(
                 Eval(
                     cp=cp_val,
@@ -119,6 +135,7 @@ class Analyzer:
                     best_move=pv[0].uci(),
                     pv=[m.uci() for m in pv],
                     depth=info.get("depth", actual_depth),
+                    wdl=wdl_raw,
                 )
             )
         return out

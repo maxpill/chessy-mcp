@@ -14,11 +14,17 @@ from mcp_server.tcp_client import TCPUCIClient
 
 
 def _info_to_eval(info: dict[str, Any], depth: int, turn: chess.Color) -> Eval:
-    """Convert a parsed UCI info dict to an Eval model."""
+    """Convert a parsed UCI info dict to an Eval model.
+
+    WDL is parsed from `info["wdl"]` (W D L per-mille, only present when
+    UCI_ShowWDL=true). The tuple is stored as-is — White-POV. Callers that
+    need mover-POV flip the sign on a per-wdl-component basis.
+    """
     pv: list[str] = [m for m in info.get("pv", []) if m != "(none)"]
     sign = 1 if turn == chess.WHITE else -1
     cp = info.get("cp")
     mate = info.get("mate")
+    wdl = info.get("wdl")
     if mate is not None:
         return Eval(
             cp=None,
@@ -26,6 +32,7 @@ def _info_to_eval(info: dict[str, Any], depth: int, turn: chess.Color) -> Eval:
             best_move=pv[0] if pv else None,
             pv=pv,
             depth=info.get("depth", depth),
+            wdl=wdl,
         )
     return Eval(
         cp=sign * cp if cp is not None else None,
@@ -33,6 +40,7 @@ def _info_to_eval(info: dict[str, Any], depth: int, turn: chess.Color) -> Eval:
         best_move=pv[0] if pv else None,
         pv=pv,
         depth=info.get("depth", depth),
+        wdl=wdl,
     )
 
 

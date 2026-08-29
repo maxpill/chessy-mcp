@@ -109,6 +109,12 @@ class MCPEval(BaseModel):
     post_position: dict[str, Any] | None = None
     lichess_url: str | None = None
     lichess_image: str | None = None
+    # Win/Draw/Loss percentages from Stockfish UCI_ShowWDL — White-POV
+    # (per-mille integers 0..1000). `None` when the engine did not surface
+    # WDL (e.g. UCI_ShowWDL=false or a mate/terminal path). Surfaced as
+    # both a 3-tuple and a structured dict for client convenience.
+    wdl: tuple[int, int, int] | None = None
+    wdl_pct: dict[str, int] | None = None
 
     @property
     def move(self) -> str | None:
@@ -246,12 +252,25 @@ class MCPEval(BaseModel):
             decision_outcome = "draw"
             decision_cp = 0
 
+        # Win/Draw/Loss in per-mille. None when Stockfish didn't surface
+        # WDL (UCI_ShowWDL=false or mate-distance output only). Tuple is
+        # White-POV (W D L); wdl_pct is a client-friendly dict with the
+        # same values scaled to 0-100.
+        wdl_tuple: tuple[int, int, int] | None = ev.wdl
+        wdl_pct_dict: dict[str, int] | None = (
+            {"win": wdl_tuple[0] // 10, "draw": wdl_tuple[1] // 10, "loss": wdl_tuple[2] // 10}
+            if wdl_tuple is not None
+            else None
+        )
+
         engine_eval_dict = {
             "cp": ev.cp,
             "mate": ev.mate,
             "best_move": clean_best_move,
             "pv": clean_pv,
             "depth": depth_val,
+            "wdl": wdl_tuple,
+            "wdl_pct": wdl_pct_dict,
         }
 
         decision_val_dict = {
@@ -312,6 +331,8 @@ class MCPEval(BaseModel):
             post_claim_reasons=rule_status.claim_reasons,
             post_claim_moves=rule_status.claim_moves,
             recommended_action=rule_status.recommended_action,
+            wdl=wdl_tuple,
+            wdl_pct=wdl_pct_dict,
             best_action=rule_status.recommended_action,
             best_action_type=rule_status.recommended_action,
             best_action_obj=best_action_payload,

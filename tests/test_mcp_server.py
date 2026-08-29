@@ -3668,3 +3668,56 @@ async def test_gather_evaluate_positions_caps_concurrency(monkeypatch):
     # be k. Assert peak >= 1 and <= total (we just want no over-shoot).
     assert peak >= 1
     assert peak <= 8
+
+
+def test_tcp_client_parses_wdl_from_info_line():
+    """Stockfish 18+ surfaces `wdl W D L` per-mille when UCI_ShowWDL=true.
+
+    The parser must populate info["wdl"] as a 3-tuple of ints; the Eval
+    type must carry it through; _info_to_eval must propagate it.
+    """
+    from mcp_server.tcp_client import TCPUCIClient
+    from mcp_server.tcp_analyzer import _info_to_eval
+    import chess
+
+    # Direct parser check
+    info = TCPUCIClient._parse_info(
+        "info depth 14 seldepth 16 multipv 1 score cp 48 wdl 600 350 50 nodes 1234"
+    )
+    assert info.get("wdl") == (600, 350, 50)
+    assert info.get("cp") == 48
+
+    # End-to-end through _info_to_eval
+    ev = _info_to_eval(info, depth=14, turn=chess.WHITE)
+    assert ev.cp == 48
+    assert ev.wdl == (600, 350, 50)
+
+    # Missing wdl → None
+    info_no_wdl = TCPUCIClient._parse_info("info depth 14 score cp 48 nodes 1234")
+    assert "wdl" not in info_no_wdl
+    ev2 = _info_to_eval(info_no_wdl, depth=14, turn=chess.WHITE)
+    assert ev2.wdl is None
+
+
+def test_mcpeval_from_eval_carries_wdl():
+    """MCPEval.from_eval must populate wdl + wdl_pct on the model."""
+    from core.engines.types import Eval
+    from mcp_server.models import MCPEval
+    import chess
+
+    b = chess.Board()
+    ev = Eval(cp=48, mate=None, best_move="e2e4", pv=["e2e4", "e7e5"], depth=14, wdl=(600, 350, 50))
+    mcp = MCPEval.from_eval(ev, b.fen(), board=b, requested_depth=14)
+    assert mcp.wdl == (600, 350, 50)
+    assert mcp.wdl_pct == {"win": 60, "draw": 35, "loss": 5}
+    # engine_eval dict also carries both
+    assert mcp.engine_eval["wdl"] == (600, 350, 50)
+    assert mcp.engine_eval["wdl_pct"] == {"win": 60, "draw": 35, "loss": 5}
+
+    # Missing wdl → None on both surfaces
+    ev2 = Eval(cp=48, mate=None, best_move="e2e4", pv=["e2e4"], depth=14)
+    mcp2 = MCPEval.from_eval(ev2, b.fen(), board=b, requested_depth=14)
+    assert mcp2.wdl is None
+    assert mcp2.wdl_pct is None
+    assert mcp2.engine_eval["wdl"] is None
+    assert mcp2.engine_eval["wdl_pct"] is None
