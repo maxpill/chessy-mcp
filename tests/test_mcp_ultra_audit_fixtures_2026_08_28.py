@@ -15,6 +15,7 @@ from typing import Any
 
 import chess
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from core.engines.types import Eval, MoveAnalysis, MoveClass
 from mcp_server import server as server_module
