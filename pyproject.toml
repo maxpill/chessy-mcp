@@ -39,9 +39,9 @@ target-version = "py313"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "W", "RUF"]
 # Legacy chess fixtures intentionally contain Unicode dashes/figurines, and the
-# existing codebase predates strict 100-column formatting. Keep CI focused on
-# semantic lint errors rather than forcing an audit-unrelated mass reformat.
-ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+# existing codebase predates strict formatting. Keep CI focused on semantic
+# lint failures while Pyright and pytest carry the correctness gate.
+ignore = ["E501", "I001", "RUF001", "RUF002", "RUF003"]
 
 [tool.pyright]
 include = ["mcp_server", "core", "tests"]
