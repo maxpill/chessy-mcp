@@ -1,0 +1,108 @@
+name: Chess MCP ultra-audit remediation
+
+on:
+  push:
+    branches:
+      - fix/chess-mcp-ultra-audit-2026-08-30
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      STOCKFISH_PATH: /usr/games/stockfish
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect completed remediation
+        id: guard
+        shell: bash
+        run: |
+          if [ -f tests/test_mcp_ultra_audit_2026_08_30.py ]; then
+            echo "done=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "done=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.done != 'true'
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies and Stockfish
+        if: steps.guard.outputs.done != 'true'
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check uv
+          sudo apt-get update -qq
+          sudo apt-get install -y stockfish
+          test -x "$STOCKFISH_PATH"
+          uv sync --frozen --dev
+
+      - name: Port verified remediation patch
+        if: steps.guard.outputs.done != 'true'
+        shell: bash
+        run: |
+          git clone --quiet --filter=blob:none https://github.com/maxpill/chessy.git /tmp/chessy
+          git -C /tmp/chessy show --format= --binary 8ed146f7e4406fa3f469469fb29bce51d5611c2b -- \
+            backend/mcp_server \
+            backend/core/engines \
+            backend/tests/test_mcp_ultra_audit_2026_08_30.py \
+            backend/tests/test_mcp_server.py \
+            backend/tests/test_mcp_ultra_audit_fixtures_2026_08_28.py \
+            backend/tests/test_mcp_2026_08_28_post_fix_v2.py \
+            > /tmp/remediation.backend.patch
+          sed -e 's#a/backend/#a/#g' -e 's#b/backend/#b/#g' \
+            /tmp/remediation.backend.patch > /tmp/remediation.patch
+          git apply --3way /tmp/remediation.patch
+
+      - name: Compile and lint
+        if: steps.guard.outputs.done != 'true'
+        shell: bash
+        run: |
+          uv run python -m compileall -q mcp_server core/engines tests/test_mcp_ultra_audit_2026_08_30.py
+          uv run ruff check --fix \
+            mcp_server/server.py \
+            mcp_server/models.py \
+            mcp_server/rules.py \
+            mcp_server/actions.py \
+            mcp_server/cache.py \
+            core/engines/analysis.py \
+            core/engines/pool.py \
+            tests/test_mcp_ultra_audit_2026_08_30.py
+          uv run ruff check \
+            mcp_server/server.py \
+            mcp_server/models.py \
+            mcp_server/rules.py \
+            mcp_server/actions.py \
+            mcp_server/cache.py \
+            core/engines/analysis.py \
+            core/engines/pool.py \
+            tests/test_mcp_ultra_audit_2026_08_30.py
+
+      - name: Run focused regressions
+        if: steps.guard.outputs.done != 'true'
+        shell: bash
+        run: |
+          uv run pytest -q -n 0 \
+            tests/test_mcp_ultra_audit_2026_08_30.py \
+            tests/test_mcp_server.py \
+            tests/test_mcp_ultra_audit_fixtures_2026_08_28.py \
+            tests/test_mcp_2026_08_28_post_fix_v2.py \
+            tests/test_mcp_master_audit_p0.py
+
+      - name: Commit verified remediation
+        if: steps.guard.outputs.done != 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mcp_server core/engines tests
+          git diff --cached --check
+          git commit -m "fix: remediate Chess MCP ultra audit"
+          git push origin HEAD:${GITHUB_REF_NAME}
