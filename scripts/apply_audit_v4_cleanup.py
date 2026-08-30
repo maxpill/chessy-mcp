@@ -54,6 +54,14 @@ def clean_server() -> None:
     if old in text:
         text = text.replace(old, new, 1)
 
+    # Strict lint cleanup after the semantic migrations.
+    text = text.replace(
+        "        canonical_fen_str = board.fen()\n        cache_key = top_moves_cache_key(",
+        "        cache_key = top_moves_cache_key(",
+        1,
+    )
+    text = text.replace("synth_eval, synth_hit = await", "synth_eval, _ = await", 1)
+
     path.write_text(text, encoding="utf-8")
 
 
