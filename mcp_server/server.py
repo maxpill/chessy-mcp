@@ -3429,6 +3429,14 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
         )
         movetext_section = re.sub(r"\b(O-O-O|O-O)([\+#\?!]*)(\$\d+)", r"\1\2 \3", movetext_section)
         cleaned_movetext = _normalize_movetext_figurines(movetext_section)
+        if re.search(
+            r"(?:^|\s)\(?e\.?p\.?\)?(?=\s|$)",
+            cleaned_movetext,
+            flags=re.IGNORECASE,
+        ):
+            syntax_warnings.append(
+                "En-passant marker 'e.p.' normalized to canonical SAN."
+            )
         while "{" in cleaned_movetext and "}" in cleaned_movetext:
             prev = cleaned_movetext
             cleaned_movetext = re.sub(r"\{[^{}]*\}", " ", cleaned_movetext, flags=re.DOTALL)
