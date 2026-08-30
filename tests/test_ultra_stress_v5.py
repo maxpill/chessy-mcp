@@ -610,3 +610,51 @@ async def test_residual_nested_candidates_share_outer_build_identity():
     for candidate in cached.result:
         assert candidate.build_sha == cached.build_sha
         assert candidate.engine_config == cached.engine_config
+
+
+@pytest.mark.asyncio
+async def test_residual_rejects_post_seventyfive_move_even_when_board_move_is_legal():
+    pgn = """[SetUp \"1\"]
+[FEN \"7k/8/8/8/8/8/R7/K7 w - - 149 76\"]
+[Result \"1/2-1/2\"]
+
+76. Ra3 Kg7 1/2-1/2
+"""
+    with pytest.raises(ToolError, match="INVALID_PGN"):
+        await server_module.evaluate_position(pgn, depth=1)
+    permissive = await server_module.analyze_game(pgn, depth=1, strict=False)
+    assert permissive.total_plies == 1
+    assert any("after game termination" in w for w in permissive.metadata_warnings)
+    with pytest.raises(ToolError, match="INVALID_PGN"):
+        await server_module.analyze_game(pgn, depth=1, strict=True)
+
+
+@pytest.mark.asyncio
+async def test_residual_rejects_post_insufficient_material_promotion_move():
+    pgn = """[SetUp \"1\"]
+[FEN \"7k/P7/8/8/8/8/8/K7 w - - 0 1\"]
+[Result \"1/2-1/2\"]
+
+1. a8=B Kg7 1/2-1/2
+"""
+    with pytest.raises(ToolError, match="INVALID_PGN"):
+        await server_module.top_moves(pgn, n=1, depth=1)
+    permissive = await server_module.analyze_game(pgn, depth=1, strict=False)
+    assert permissive.total_plies == 1
+    assert any("after game termination" in w for w in permissive.metadata_warnings)
+
+
+@pytest.mark.asyncio
+async def test_residual_rejects_post_fivefold_move_that_is_still_board_legal():
+    pgn = """[Result \"1/2-1/2\"]
+
+1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8
+5. Nf3 Nf6 6. Ng1 Ng8 7. Nf3 Nf6 8. Ng1 Ng8
+9. Nf3 1/2-1/2
+"""
+    with pytest.raises(ToolError, match="INVALID_PGN"):
+        await server_module.evaluate_position(pgn, depth=1)
+    permissive = await server_module.analyze_game(pgn, depth=1, strict=False)
+    assert permissive.total_plies == 16
+    assert permissive.termination == "fivefold_repetition"
+    assert any("after game termination" in w for w in permissive.metadata_warnings)

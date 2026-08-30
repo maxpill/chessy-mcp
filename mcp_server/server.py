@@ -967,7 +967,10 @@ def _normalize_movetext_figurines(text: str) -> str:
 
 
 def _validate_movetext_tokens(
-    movetext: str, start_board: chess.Board | None = None, strict: bool = False
+    movetext: str,
+    start_board: chess.Board | None = None,
+    strict: bool = False,
+    allow_trailing_after_terminal: bool = False,
 ) -> list[str]:
     """Check that all tokens in the active movetext section are valid chess moves or PGN symbols."""
     # 1. Translate figurines in movetext and split attached NAGs (PGN-07) and attached asterisk
@@ -1028,14 +1031,43 @@ def _validate_movetext_tokens(
         return []
 
     invalid_tokens: list[str] = []
-    b = start_board.copy() if start_board else chess.Board()
+    b = start_board.copy(stack=True) if start_board else chess.Board()
     for _idx, tok in enumerate(tokens[first_move_idx:], start=first_move_idx):
-        if b.is_game_over(claim_draw=False):
-            break
         clean_tok = tok.rstrip(".,:;!?").lstrip(".,:;!?")
         clean_tok = re.sub(r"\s*\(?\s*e\.?p\.?\s*\)?$", "", clean_tok, flags=re.IGNORECASE).rstrip(
             ".,:;!?"
         )
+
+        # A legal board move can still exist after automatic game termination
+        # (75-move rule, fivefold repetition, insufficient/dead positions).
+        # python-chess therefore may parse post-terminal movetext without a
+        # parser error. Treat any actual move token after our central terminal
+        # predicate as invalid unless analyze_game explicitly requested the
+        # permissive warn-and-ignore contract.
+        if is_terminal_position(b):
+            if allow_trailing_after_terminal:
+                break
+            if re.match(r"^\d+[\.\:]*$", tok):
+                continue
+            if clean_tok in ("1-0", "0-1", "1/2-1/2", "*"):
+                break
+            if re.match(r"^\$[0-9]+$", clean_tok) or clean_tok in (
+                "!",
+                "?",
+                "!!",
+                "??",
+                "!?",
+                "?!",
+                "e.p.",
+                "e.p",
+                "ep",
+                "(e.p.)",
+                "(e.p)",
+                "(ep)",
+            ):
+                continue
+            invalid_tokens.append(tok)
+            break
         nag_m = re.match(r"^\$([0-9]+)$", clean_tok)
         if nag_m:
             nag_val = int(nag_m.group(1))
@@ -1162,7 +1194,10 @@ def _parse_pgn_game_candidate(
                 return None
 
             invalid_tokens = _validate_movetext_tokens(
-                text, start_board=game.board(), strict=strict
+                text,
+                start_board=game.board(),
+                strict=strict,
+                allow_trailing_after_terminal=allow_trailing_after_terminal,
             )
             if invalid_tokens:
                 raise ValueError(
