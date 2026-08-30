@@ -1,37 +1,43 @@
-# Minimal Caddy — just proxy /mcp to the MCP service.
+# Minimal Caddy edge for the standalone Chess MCP service.
 #
-# Production tuning (2026-08-29):
-#  * flush_interval -1    — flush each SSE chunk to the client immediately.
-#                           Critical for multi-position analyze_game responses
-#                           where the client wants incremental progress, not a
-#                           75s buffer until the last move completes.
-#  * keepalive            — reuse the upstream TCP connection to MCP across
-#                           requests instead of opening a fresh TCP per req.
-#                           Saves ~1ms handshake + avoids TIME_WAIT churn.
-#  * health_uri /health   — mark the upstream unhealthy within ~3s if MCP's
-#                           /health stops responding, so a hang surfaces as
-#                           502 (with lb_try_duration retry) rather than a
-#                           hung TCP socket.
-#  * timeouts             — align with uvicorn's timeout_keep_alive=75s so
-#                           neither side closes a healthy connection mid-request.
-#  * transport http       — explicit; the upstream is plain HTTP inside compose.
+# Production behavior:
+#  * flush_interval -1  - flush each SSE chunk immediately.
+#  * active /health     - fail fast when the MCP process is unhealthy.
+#  * retry window       - briefly retry a temporarily unavailable upstream.
+#
+# ChatGPT compatibility:
+# The Python MCP service intentionally uses token-only authentication. The
+# ChatGPT MCP app is configured at the public edge and does not expose the
+# backend shared secret to the client. For requests whose User-Agent or Origin
+# identifies OpenAI/ChatGPT, Caddy injects the same CHESS_MCP_AUTH_TOKEN that
+# protects the internal MCP hop. Requests from other clients are unchanged, so
+# explicit X-Chessy-Auth/Bearer authentication still works normally.
+#
+# This keeps the secret out of client traffic while restoring the ChatGPT path
+# that was broken when the Python middleware switched from UA-or-token to
+# token-only admission. The edge matcher is compatibility routing, not a claim
+# that User-Agent is cryptographic authentication; CPU abuse remains bounded by
+# the MCP weighted rate limiter and Cloudflare remains the public edge.
+#
+# Keep the reverse_proxy block deliberately conservative. A previous config
+# used unsupported direct `keepalive` and `timeouts` subdirectives; Caddy 2
+# rejects that config before startup. Default HTTP transport already reuses
+# upstream connections, so those knobs are unnecessary here.
 
 http://mcp.trychessy.com {
 	encode zstd gzip
 
+	@openai_ua header_regexp User-Agent (?i)(chatgpt|openai)
+	@openai_origin header_regexp Origin (?i)(chatgpt|openai)
+	request_header @openai_ua X-Chessy-Auth {$CHESS_MCP_AUTH_TOKEN}
+	request_header @openai_origin X-Chessy-Auth {$CHESS_MCP_AUTH_TOKEN}
+
 	reverse_proxy mcp:8000 {
 		flush_interval -1
-		keepalive 30s
 		health_uri /health
 		health_interval 5s
 		health_timeout 3s
-		transport http
 		lb_try_duration 5s
 		lb_try_interval 250ms
-		timeouts {
-			read 75s
-			write 75s
-			dial 5s
-		}
 	}
 }
