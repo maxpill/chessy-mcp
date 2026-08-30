@@ -1,0 +1,37 @@
+name: Apply audit v4 regression alignment
+
+on:
+  push:
+    branches:
+      - fix/chess-mcp-ultra-audit-2026-08-30
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[audit-v4-regressions-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply source and regression alignment
+        run: python scripts/apply_audit_v4_regression_alignment.py
+      - name: Compile
+        run: python -m compileall -q mcp_server tests
+      - name: Commit alignment
+        shell: bash
+        run: |
+          if git diff --quiet -- mcp_server tests; then
+            echo "No regression alignment changes required"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mcp_server tests
+          git commit -m "fix: align audit v4 regressions [audit-v4-regressions-applied]"
+          git push origin HEAD:${GITHUB_REF_NAME}
