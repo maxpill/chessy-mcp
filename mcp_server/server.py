@@ -17,15 +17,11 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import chess
-
-from mcp.server.mcpserver import Context
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
-
-log = logging.getLogger("chessy_mcp.server")
 
 from core.engines.analyzer import pv_to_san
 from core.engines.openings import lookup_opening
@@ -62,6 +58,8 @@ from mcp_server.rules import (
 )
 from mcp_server.tcp_analyzer import TCPAnalyzerPool
 from mcp_server.urls import lichess_urls
+
+log = logging.getLogger("chessy_mcp.server")
 
 
 def _format_exception(exc: BaseException) -> str:
@@ -443,7 +441,7 @@ async def _pool_stats_logger(pool: AnalyzerPool | TCPAnalyzerPool, interval_s: f
                 stats["cache_hit_rate_percent"],
                 {k: v["calls"] for k, v in stats["tools"].items()},
             )
-        except Exception as exc:  # noqa: BLE001 — log and keep looping
+        except Exception as exc:
             log.warning("pool_stats log iteration failed (continuing): %s", exc)
 
 
@@ -477,6 +475,9 @@ async def _ponder_warm_cache(
         log.debug("ponder pre-eval failed: %s", exc)
 
 
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
 def _maybe_ponder_warm(
     pool: AnalyzerPool | TCPAnalyzerPool,
     board: chess.Board,
@@ -493,10 +494,12 @@ def _maybe_ponder_warm(
         next_board.push_uci(best_move_uci)
         if next_board.is_game_over(claim_draw=False):
             return
-        asyncio.create_task(
+        task = asyncio.create_task(
             _ponder_warm_cache(pool, next_board, depth, history_complete),
             name="ponder-warm",
         )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
     except Exception:
         pass
 
