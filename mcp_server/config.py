@@ -19,65 +19,57 @@ class MCPSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",
-        # No env_prefix — the existing names (`CHESS_MCP_POOL_SIZE`,
+        # No env_prefix - the existing names (`CHESS_MCP_POOL_SIZE`,
         # `STOCKFISH_HASH_MB`, `CHESS_MCP_TRANSPORT`, etc.) are the contract.
         case_sensitive=False,
     )
 
-    # Engine transport — when both `host` and `port` are set, the MCP server
+    # Engine transport - when both `host` and `port` are set, the MCP server
     # connects to a pre-existing Stockfish over TCP (e.g. behind socat) instead
     # of spawning its own subprocesses.
     pool_size: int | None = Field(default=None, validation_alias="CHESS_MCP_POOL_SIZE")
     host: str | None = Field(default=None, validation_alias="STOCKFISH_HOST")
     port: int = Field(default=0, validation_alias="STOCKFISH_PORT")
     hash_mb: int = Field(default=64, validation_alias="STOCKFISH_HASH_MB")
-    # Threads per Stockfish worker. Default 2 pairs with pool_size=4 (4×2=8
-    # logical cores = perfect fit on the OVH 4C/8T host). Raise only if the
-    # host gains cores AND pool_size is dropped accordingly.
+    # Threads per Stockfish worker. Default 2 pairs with pool_size=4 (4x2=8
+    # logical cores = a good fit on the current production host).
     threads_per_worker: int = Field(default=2, validation_alias="STOCKFISH_THREADS_PER_WORKER")
 
     # Cap on concurrent `_evaluate_game_position_cached` calls across all
-    # tools. analyze_game fans out N positions via asyncio.gather; without
-    # a cap, a single mega-burst (depth 30 over 80 plies) can starve every
-    # other request for the full 15 s pool timeout. 8 = 2x pool size (4)
-    # so a single request never self-throttles while bursts are bounded.
+    # tools. The game analyzer fans out positions, so admission is bounded.
     max_concurrent_evaluates: int = Field(default=8, validation_alias="CHESS_MCP_MAX_CONCURRENT_EVALUATES")
 
     # Ponder (search opponent's likely reply during idle time). Disabled by
-    # default — costs CPU on a small host. Set CHESS_MCP_PONDER_ENABLED=true
-    # to enable on a beefier host.
+    # default because it consumes spare CPU.
     ponder_enabled: bool = Field(default=False, validation_alias="CHESS_MCP_PONDER_ENABLED")
 
-    # Periodic pool-stats logging interval (seconds). Emits a structured
-    # log line with queue depth, alive count, busy count.
+    # Periodic pool-stats logging interval (seconds).
     pool_stats_interval_s: float = Field(default=30.0, validation_alias="CHESS_MCP_POOL_STATS_INTERVAL_S")
 
-    # Syzygy tablebase path (5-piece WDL/DTZ). Set CHESS_MCP_SYZYGY_PATH=/syzygy
-    # to enable exact endgame lookups; empty disables.
+    # Syzygy tablebase path. Empty disables tablebases.
     syzygy_path: str = Field(default="", validation_alias="CHESS_MCP_SYZYGY_PATH")
 
-    # UCI_ShowWDL: include Win/Draw/Loss percentages in responses.
-    # Default true (Stockfish 18 supports WDL natively, no engine cost).
+    # UCI_ShowWDL: include White-POV Win/Draw/Loss data in responses.
     show_wdl: bool = Field(default=True, validation_alias="CHESS_MCP_SHOW_WDL")
 
     # Multi-tier cache (L1 in-memory + L2 SQLite WAL).
     cache_db: str = Field(default="/tmp/chess_mcp_eval_cache.sqlite3", validation_alias="CHESS_MCP_CACHE_DB")
 
-    # Transport — stdio (ChatGPT) or streamable HTTP (web/agents).
+    # Transport - stdio or streamable HTTP.
     transport: str = Field(default="stdio", validation_alias="CHESS_MCP_TRANSPORT")
     http_host: str = Field(default="0.0.0.0", validation_alias="CHESS_MCP_HOST")
     http_port: int = Field(default=8000, validation_alias="CHESS_MCP_PORT")
 
-    # Bearer token gating for HTTP transport. Empty = no auth.
+    # Shared secret for HTTP transport. Empty means no configured credential.
     auth_token: str = Field(default="", validation_alias="CHESS_MCP_AUTH_TOKEN")
 
-    # When true, lock the server down to ChatGPT's MCP client only (extra origin
-    # check on the streamable HTTP transport).
+    # When true, every non-health HTTP request must present the configured
+    # token. User-Agent and Origin strings are never treated as credentials.
     lock_chatgpt: bool = Field(default=False, validation_alias="CHESS_MCP_LOCK_CHATGPT")
 
 
 class BuildMetadata(BaseSettings):
-    """Build-time metadata injected by CI / docker. Read from top-level env vars."""
+    """Build-time metadata injected by CI or Docker."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
