@@ -3649,7 +3649,10 @@ async def analyze_game(
 
         # Validate game result consistency against final board state
         final_board = positions[-1]
-        rule_final = evaluate_rule_status(final_board)
+        # positions[] was reconstructed from the complete PGN mainline, so repetition
+        # history is authoritative here. Do not downgrade a previously detected fivefold
+        # repetition to generic game_over during final result reconciliation.
+        rule_final = evaluate_rule_status(final_board, history_complete="complete")
         result_board: str | None = None
         if rule_final.terminal is not None:
             if rule_final.terminal == "checkmate":
