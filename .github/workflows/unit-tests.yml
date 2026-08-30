@@ -1,10 +1,31 @@
-name: Chess MCP Unit Tests
+name: Chess MCP Manual Diagnostics
 
 on:
   workflow_dispatch:
+    inputs:
+      target_url:
+        description: Public MCP base URL to probe
+        required: true
+        default: https://mcp.trychessy.com
+        type: string
+      expected_sha:
+        description: Expected deployed git SHA; blank means this workflow commit
+        required: false
+        default: ""
+        type: string
+      run_unit_tests:
+        description: Run the full pytest suite
+        required: true
+        default: true
+        type: boolean
+      run_production_diagnostics:
+        description: Probe DNS, TLS, health, MCP transport and all four tools
+        required: true
+        default: true
+        type: boolean
 
 concurrency:
-  group: chess-mcp-unit-tests-${{ github.ref }}
+  group: chess-mcp-manual-diagnostics-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -12,6 +33,7 @@ permissions:
 
 jobs:
   unit-tests:
+    if: ${{ inputs.run_unit_tests }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
@@ -33,5 +55,76 @@ jobs:
           test -x "$STOCKFISH_PATH"
           uv sync --frozen --dev
 
-      - name: Run unit tests
+      - name: Run full pytest suite
         run: uv run pytest -q
+
+  production-diagnostics:
+    if: ${{ inputs.run_production_diagnostics }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TARGET_URL: ${{ inputs.target_url }}
+      EXPECTED_SHA_INPUT: ${{ inputs.expected_sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv and runtime dependencies
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check uv
+          uv sync --frozen
+
+      - name: Resolve expected deployment SHA
+        id: deployment
+        shell: bash
+        run: |
+          if [ -n "$EXPECTED_SHA_INPUT" ]; then
+            expected="$EXPECTED_SHA_INPUT"
+          else
+            expected="${GITHUB_SHA}"
+          fi
+          echo "expected_sha=$expected" >> "$GITHUB_OUTPUT"
+          echo "Expected deployment SHA: $expected"
+
+      - name: Probe production end to end
+        id: production_probe
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run python scripts/production_probe.py \
+            --target "$TARGET_URL" \
+            --expected-sha "${{ steps.deployment.outputs.expected_sha }}" \
+            --depth 6 2>&1 | tee production-diagnostics.log
+
+      - name: Write diagnostics to job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Chess MCP production diagnostics"
+            echo
+            echo "Target: \`$TARGET_URL\`"
+            echo
+            echo "Expected SHA: \`${{ steps.deployment.outputs.expected_sha }}\`"
+            echo
+            echo '```text'
+            if [ -f production-diagnostics.log ]; then
+              tail -n 200 production-diagnostics.log
+            else
+              echo "Production probe did not produce a log."
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload production diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chess-mcp-production-diagnostics-${{ github.run_id }}
+          path: production-diagnostics.log
+          if-no-files-found: warn
+          retention-days: 14
