@@ -9,9 +9,6 @@ def replace_once(path: str, old: str, new: str) -> None:
     p.write_text(text.replace(old, new, 1))
 
 
-# Keep Pyright strict for semantic typing, but do not fail CI on style-only
-# diagnostics that Ruff already owns or on Python 3.13 decorator migration
-# notices. Unknown/invalid/missing type diagnostics remain strict.
 replace_once(
     "pyproject.toml",
     'typeCheckingMode = "strict"\n',
@@ -105,7 +102,7 @@ replace_once(
 replace_once(
     "mcp_server/server.py",
     "def _format_exception(exc: BaseException) -> str:\n    if isinstance(exc, (ExceptionGroup, BaseExceptionGroup)):\n        sub_msgs = [_format_exception(e) for e in exc.exceptions]\n        return \"; \".join(sub_msgs) if sub_msgs else str(exc)\n    return str(exc)\n",
-    "def _format_exception(exc: BaseException) -> str:\n    if isinstance(exc, BaseExceptionGroup):\n        group = cast(BaseExceptionGroup[BaseException], exc)\n        sub_msgs = [_format_exception(e) for e in group.exceptions]\n        return \"; \".join(sub_msgs) if sub_msgs else str(exc)\n    return str(exc)\n",
+    "def _format_exception(exc: BaseException) -> str:\n    if isinstance(exc, BaseExceptionGroup):\n        group = cast(BaseExceptionGroup[BaseException], exc)\n        sub_msgs = [_format_exception(e) for e in group.exceptions]\n        return \"; \".join(sub_msgs) if sub_msgs else str(group)\n    return str(exc)\n",
 )
 replace_once(
     "mcp_server/server.py",
