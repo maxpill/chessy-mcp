@@ -5,19 +5,17 @@
 #  * active /health     - fail fast when the MCP process is unhealthy.
 #  * retry window       - briefly retry a temporarily unavailable upstream.
 #
-# ChatGPT compatibility:
-# The Python MCP service intentionally uses token-only authentication. The
-# ChatGPT MCP app is configured at the public edge and does not expose the
-# backend shared secret to the client. For requests whose User-Agent or Origin
-# identifies OpenAI/ChatGPT, Caddy injects the same CHESS_MCP_AUTH_TOKEN that
-# protects the internal MCP hop. Requests from other clients are unchanged, so
-# explicit X-Chessy-Auth/Bearer authentication still works normally.
+# Authentication boundary:
+# The public hostname is already reached through the Cloudflare tunnel and this
+# Caddy instance is the trusted gateway to the private mcp:8000 service. Caddy
+# therefore authenticates the internal hop by injecting CHESS_MCP_AUTH_TOKEN on
+# every proxied request. The Python MCP service stays token-only and cannot be
+# called directly from another container without the secret.
 #
-# This keeps the secret out of client traffic while restoring the ChatGPT path
-# that was broken when the Python middleware switched from UA-or-token to
-# token-only admission. The edge matcher is compatibility routing, not a claim
-# that User-Agent is cryptographic authentication; CPU abuse remains bounded by
-# the MCP weighted rate limiter and Cloudflare remains the public edge.
+# Do not key this handoff off User-Agent or Origin. The ChatGPT MCP transport
+# does not guarantee an OpenAI/ChatGPT-identifying value there, and those fields
+# are spoofable anyway. Public admission and abuse control belong at the edge;
+# the MCP service additionally applies its weighted per-client rate limiter.
 #
 # Keep the reverse_proxy block deliberately conservative. A previous config
 # used unsupported direct `keepalive` and `timeouts` subdirectives; Caddy 2
@@ -27,10 +25,7 @@
 http://mcp.trychessy.com {
 	encode zstd gzip
 
-	@openai_ua header_regexp User-Agent (?i)(chatgpt|openai)
-	@openai_origin header_regexp Origin (?i)(chatgpt|openai)
-	request_header @openai_ua X-Chessy-Auth {$CHESS_MCP_AUTH_TOKEN}
-	request_header @openai_origin X-Chessy-Auth {$CHESS_MCP_AUTH_TOKEN}
+	request_header X-Chessy-Auth {$CHESS_MCP_AUTH_TOKEN}
 
 	reverse_proxy mcp:8000 {
 		flush_interval -1
