@@ -1,0 +1,34 @@
+name: Diagnose live MCP
+
+on:
+  push:
+    branches:
+      - diag/live-mcp-2026-08-30
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: DNS and public edge probes
+        shell: bash
+        run: |
+          set +e
+          echo '=== DNS ==='
+          getent ahosts mcp.trychessy.com || true
+          getent ahosts webhook-komodo.trychessy.com || true
+          echo '=== MCP health ==='
+          curl -sSvk --max-time 15 -D - https://mcp.trychessy.com/health -o /tmp/health.body
+          cat /tmp/health.body || true
+          echo
+          echo '=== MCP GET ==='
+          curl -sSvk --max-time 15 -D - https://mcp.trychessy.com/mcp -o /tmp/mcp.body
+          cat /tmp/mcp.body || true
+          echo
+          echo '=== Komodo webhook host GET only, no deploy ==='
+          curl -sSvk --max-time 15 -D - https://webhook-komodo.trychessy.com/listener/github/stack/chessy-mcp/deploy -o /tmp/hook.body
+          cat /tmp/hook.body || true
+          echo
