@@ -86,7 +86,14 @@ _LOGIC_FILES = (
     "mcp_server/cache.py",
     "mcp_server/rules.py",
     "mcp_server/models.py",
+    "mcp_server/actions.py",
     "mcp_server/server.py",
+    "mcp_server/tcp_analyzer.py",
+    "mcp_server/tcp_client.py",
+    "core/engines/analyzer.py",
+    "core/engines/analysis.py",
+    "core/engines/grading.py",
+    "core/winprob.py",
 )
 
 
@@ -117,7 +124,7 @@ _LOGIC_HASH = _compute_logic_hash()
 
 def _resolve_cache_version() -> str:
     """Compose the cache version from build SHA, package version, and logic hash."""
-    return f"v13+{_git_sha()}+{_package_version()}+{_LOGIC_HASH}"
+    return f"v14+{_git_sha()}+{_package_version()}+{_LOGIC_HASH}"
 
 
 CACHE_VERSION = _resolve_cache_version()
@@ -198,19 +205,30 @@ def canonical_fen(board: chess.Board) -> str:
     return board.fen()
 
 
-def eval_cache_key(board: chess.Board, depth: int, engine_version: str | None = None) -> str:
+def eval_cache_key(
+    board: chess.Board,
+    depth: int,
+    engine_version: str | None = None,
+    history_completeness: str = "incomplete",
+) -> str:
     """Generate canonical cache key for position evaluation."""
     fp = history_fingerprint(board)
     ev = _resolve_engine_version(engine_version)
-    return f"mcp:{CACHE_VERSION}:eng={ev}:eval:{board.fen()}{fp}:{depth}"
+    return f"mcp:{CACHE_VERSION}:eng={ev}:eval:hist={history_completeness}:{board.fen()}{fp}:{depth}"
 
 
-def top_moves_cache_key(board: chess.Board, depth: int, n: int = 1, engine_version: str | None = None) -> str:
+def top_moves_cache_key(
+    board: chess.Board,
+    depth: int,
+    n: int = 1,
+    engine_version: str | None = None,
+    history_completeness: str = "incomplete",
+) -> str:
     """Generate canonical cache key for MultiPV top moves."""
     fp = history_fingerprint(board)
     n_part = f":n={n}" if n is not None else ""
     ev = _resolve_engine_version(engine_version)
-    return f"mcp:{CACHE_VERSION}:eng={ev}:top:{board.fen()}{fp}:{depth}{n_part}"
+    return f"mcp:{CACHE_VERSION}:eng={ev}:top:hist={history_completeness}:{board.fen()}{fp}:{depth}{n_part}"
 
 
 def classify_cache_key(
@@ -219,12 +237,13 @@ def classify_cache_key(
     depth: int,
     action_type: str = "play_move",
     engine_version: str | None = None,
+    history_completeness: str = "incomplete",
 ) -> str:
     """Generate canonical cache key for move classification."""
     fp = history_fingerprint(board)
     act_part = f":{action_type}" if action_type and action_type != "play_move" else ""
     ev = _resolve_engine_version(engine_version)
-    return f"mcp:{CACHE_VERSION}:eng={ev}:classify:{board.fen()}{fp}:{move_uci}:{depth}{act_part}"
+    return f"mcp:{CACHE_VERSION}:eng={ev}:classify:hist={history_completeness}:{board.fen()}{fp}:{move_uci}:{depth}{act_part}"
 
 
 class AsyncLRUCache[T]:
