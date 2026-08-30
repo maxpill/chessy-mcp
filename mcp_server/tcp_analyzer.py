@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import chess
 
@@ -194,13 +194,13 @@ class TCPAnalyzerPool:
         reuse_tt: bool = False,
     ) -> Eval:
         return await self._pool.run(
-            lambda a: a.evaluate(
+            lambda a: cast(TCPAnalyzer, a).evaluate(
                 board,
                 depth=depth,
                 root_moves=root_moves,
                 reuse_tt=reuse_tt,
             )
-        )  # type: ignore[attr-defined]
+        )
 
     async def top_moves(
         self,
@@ -210,8 +210,8 @@ class TCPAnalyzerPool:
         depth: int | None = None,
     ) -> list[Eval]:
         return await self._pool.run(
-            lambda a: a.top_moves(board, n=n, depth=depth)
-        )  # type: ignore[attr-defined]
+            lambda a: cast(TCPAnalyzer, a).top_moves(board, n=n, depth=depth)
+        )
 
     async def classify_move(
         self,
@@ -221,8 +221,8 @@ class TCPAnalyzerPool:
         depth: int | None = None,
     ) -> MoveAnalysis:
         return await self._pool.run(
-            lambda a: a.classify_move(board, move, depth=depth)
-        )  # type: ignore[attr-defined]
+            lambda a: cast(TCPAnalyzer, a).classify_move(board, move, depth=depth)
+        )
 
     async def close(self) -> None:
         await self._pool.close()
