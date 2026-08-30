@@ -1,0 +1,53 @@
+name: Apply strict Pyright fixes
+
+on:
+  push:
+    branches:
+      - fix/chess-mcp-ultra-audit-2026-08-30
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[strict-pyright-fix-applied]') }}
+    runs-on: ubuntu-latest
+    env:
+      STOCKFISH_PATH: /usr/games/stockfish
+      BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install uv and Stockfish
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check uv
+          sudo apt-get update -qq
+          sudo apt-get install -y stockfish
+          uv sync --frozen --dev
+      - name: Apply strict typing fixes
+        run: python scripts/apply_strict_pyright_fixes.py
+      - name: Compile
+        run: uv run python -m compileall -q mcp_server core tests
+      - name: Ruff
+        run: uv run ruff check mcp_server core
+      - name: Pytest
+        run: uv run pytest -q
+      - name: Strict Pyright
+        run: uv run pyright mcp_server core
+      - name: Commit fixes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml core mcp_server
+          if git diff --cached --quiet; then
+            echo "No source change required"
+            exit 0
+          fi
+          git commit -m "fix: make production code pass strict Pyright [strict-pyright-fix-applied]"
+          git push origin HEAD:${GITHUB_REF_NAME}
