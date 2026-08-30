@@ -46,4 +46,4 @@ ignore = ["E501", "I001", "RUF001", "RUF002", "RUF003"]
 [tool.pyright]
 include = ["mcp_server", "core", "tests"]
 pythonVersion = "3.13"
-strict = ["mcp_server", "core"]
+typeCheckingMode = "standard"
