@@ -59,6 +59,7 @@ from mcp_server.rules import (
 from mcp_server.tcp_analyzer import TCPAnalyzerPool
 from mcp_server.urls import lichess_urls
 
+
 log = logging.getLogger("chessy_mcp.server")
 
 
@@ -2478,7 +2479,6 @@ async def top_moves(
                 result=[],
             )
 
-        canonical_fen_str = board.fen()
         cache_key = top_moves_cache_key(
             board,
             depth,
@@ -2878,7 +2878,7 @@ async def classify_move(
                     try:
                         for uci in pv[1:]:
                             synth_board.push_uci(uci)
-                        synth_eval, synth_hit = await _evaluate_game_position_cached(
+                        synth_eval, _ = await _evaluate_game_position_cached(
                             synth_board,
                             depth,
                             pool,
