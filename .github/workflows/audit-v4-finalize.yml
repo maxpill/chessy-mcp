@@ -1,0 +1,67 @@
+name: Finalize audit v4 action errors
+
+on:
+  push:
+    branches:
+      - fix/chess-mcp-ultra-audit-2026-08-30
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: ${{ !contains(github.event.head_commit.message, '[audit-v4-action-errors]') }}
+    runs-on: ubuntu-latest
+    env:
+      STOCKFISH_PATH: /usr/games/stockfish
+      BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check uv
+          sudo apt-get update -qq
+          sudo apt-get install -y stockfish
+          uv sync --frozen --dev
+      - name: Patch classify action error codes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('mcp_server/server.py')
+          text = path.read_text(encoding='utf-8')
+          start = text.index('async def classify_move(')
+          prefix = text[:start]
+          tail = text[start:]
+          old = '''        code = "invalid_input"\n        if "STRICT" in msg:\n            code = "strict_validation_error"\n'''
+          new = '''        code = "invalid_input"\n        if "INVALID_ACTION_TYPE" in msg:\n            code = "invalid_action_type"\n        elif "ILLEGAL_ACTION" in msg:\n            code = "illegal_action"\n        elif "STRICT" in msg:\n            code = "strict_validation_error"\n'''
+          if old not in tail:
+              raise SystemExit('classify error mapping block not found')
+          tail = tail.replace(old, new, 1)
+          path.write_text(prefix + tail, encoding='utf-8')
+          PY
+      - name: Closure tests
+        run: uv run pytest -q tests/test_audit_v4_closure.py
+      - name: Full pytest
+        run: uv run pytest -q
+      - name: Ruff
+        run: uv run ruff check mcp_server core
+      - name: Pyright
+        run: uv run pyright mcp_server core
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mcp_server/server.py
+          if git diff --cached --quiet; then
+            echo "No source change required"
+            exit 0
+          fi
+          git commit -m "fix: preserve action-specific error codes [audit-v4-action-errors]"
+          git push origin HEAD:${GITHUB_REF_NAME}
