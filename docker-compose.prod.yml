@@ -3,12 +3,14 @@
 #
 # Compose is built (not pulled) - Komodo runs `docker compose -f
 # docker-compose.prod.yml up -d --build --remove-orphans` on every push to
-# maxpill/chessy-mcp:main. Webhook URL:
-#   http://51.75.119.141:9120/listener/github/stack/chessy-mcp/deploy
+# maxpill/chessy-mcp:main. Public webhook URL:
+#   https://webhook-komodo.trychessy.com/listener/github/stack/chessy-mcp/deploy
 #
-# Set BUILD_SHA to the checked-out git commit before invoking Compose. The
-# value is baked into the image and also passed at runtime so every MCP
-# response exposes a deployment identity even though .git is not in the image.
+# BUILD_SHA and CHESSY_PACKAGE_VERSION are stamped into the stack .env by
+# scripts/deploy-helper.sh, which the Komodo stack runs as pre_deploy.
+# Both are baked into the image (build arg) and passed at runtime so every
+# MCP response exposes the deployment identity even though .git is not in
+# the image.
 
 name: chessy-mcp
 
