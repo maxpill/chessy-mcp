@@ -1,0 +1,37 @@
+name: Apply collision-safe history fingerprint fix
+
+on:
+  push:
+    branches:
+      - fix/chess-mcp-ultra-audit-2026-08-30
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[history-fingerprint-fix-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply fix
+        run: python scripts/apply_history_fingerprint_safety_fix.py
+      - name: Compile
+        run: python -m compileall -q mcp_server/cache.py tests/test_mcp_server.py
+      - name: Commit fix
+        shell: bash
+        run: |
+          if git diff --quiet -- mcp_server/cache.py tests/test_mcp_server.py; then
+            echo "No source change required"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mcp_server/cache.py tests/test_mcp_server.py
+          git commit -m "fix: make history fingerprint collision-safe [history-fingerprint-fix-applied]"
+          git push origin HEAD:${GITHUB_REF_NAME}
