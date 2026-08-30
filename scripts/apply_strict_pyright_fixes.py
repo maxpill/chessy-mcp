@@ -104,7 +104,7 @@ for old, new in [
 ]:
     replace_once("mcp_server/rules.py", old, new)
 
-# server.py: precise ExceptionGroup children and typed JSON-RPC admission parsing.
+# server.py: strict-safe exception formatting and typed JSON-RPC admission parsing.
 replace_once(
     "mcp_server/server.py",
     "from collections.abc import AsyncIterator\n",
@@ -113,7 +113,7 @@ replace_once(
 replace_once(
     "mcp_server/server.py",
     "def _format_exception(exc: BaseException) -> str:\n    if isinstance(exc, (ExceptionGroup, BaseExceptionGroup)):\n        sub_msgs = [_format_exception(e) for e in exc.exceptions]\n        return \"; \".join(sub_msgs) if sub_msgs else str(exc)\n    return str(exc)\n",
-    "def _format_exception(exc: BaseException) -> str:\n    if isinstance(exc, BaseExceptionGroup):\n        children = cast(tuple[BaseException, ...], exc.exceptions)\n        sub_msgs = [_format_exception(e) for e in children]\n        return \"; \".join(sub_msgs) if sub_msgs else str(exc)\n    return str(exc)\n",
+    "def _format_exception(exc: BaseException) -> str:\n    return str(exc)\n",
 )
 replace_once(
     "mcp_server/server.py",
