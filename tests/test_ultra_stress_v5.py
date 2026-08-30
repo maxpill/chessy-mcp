@@ -130,7 +130,6 @@ INVALID_FENS = [
     "k7/8/8/8/8/8/8/KK6 w - - 0 1",
     "kk6/8/8/8/8/8/8/K7 w - - 0 1",
     "4k3/8/8/8/8/8/PPPPPPPP/P3K3 w - - 0 1",
-    "4k3/p7/8/8/8/8/8/4K3 w - - 0 1",
     "4k3/8/8/8/8/8/8/P3K3 w - - 0 1",
     "4k3/8/8/8/8/8/8/4K3 x - - 0 1",
     "4k3/8/8/8/8/8/8/4K3 w K - 0 1",
@@ -143,7 +142,6 @@ INVALID_FENS = [
     "4k3/8/8/8/8/8/8/4K3 white - - 0 1",
     "4k3/8/8/8/8/8/8/4K3 w z - 0 1",
     "4k3/8/8/8/8/8/8/4K3 w - z9 0 1",
-    "4k3/8/8/8/8/8/8/4K3 w - - 0",
 ]
 
 
@@ -151,6 +149,11 @@ INVALID_FENS = [
 def test_invalid_fen_matrix_is_rejected(fen: str):
     with pytest.raises(ValueError):
         server_module._build_board(fen, [])
+
+
+def test_five_field_epd_like_position_is_tolerated_and_canonicalized():
+    board = server_module._build_board("4k3/8/8/8/8/8/8/4K3 w - - 0", [])
+    assert board.fen() == "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
 
 
 TERMINATION_CASES = [

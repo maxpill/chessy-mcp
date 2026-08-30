@@ -1911,6 +1911,26 @@ def _build_board(
                         ) from exc
             try:
                 b = chess.Board(cleaned)
+                if len(tokens) >= 3:
+                    raw_castling = tokens[2]
+                    if raw_castling != "-":
+                        if not re.fullmatch(r"[KQkq]+", raw_castling) or len(set(raw_castling)) != len(raw_castling):
+                            raise ValueError(
+                                f"INVALID_FEN: Castling rights in FEN '{cleaned}' are malformed."
+                            )
+                        actual_rights: set[str] = set()
+                        if b.has_kingside_castling_rights(chess.WHITE):
+                            actual_rights.add("K")
+                        if b.has_queenside_castling_rights(chess.WHITE):
+                            actual_rights.add("Q")
+                        if b.has_kingside_castling_rights(chess.BLACK):
+                            actual_rights.add("k")
+                        if b.has_queenside_castling_rights(chess.BLACK):
+                            actual_rights.add("q")
+                        if set(raw_castling) != actual_rights:
+                            raise ValueError(
+                                f"INVALID_FEN: Castling rights in FEN '{cleaned}' are inconsistent with king/rook placement."
+                            )
                 if b.is_valid() or b.status() == chess.STATUS_VALID:
                     board = b
                 elif "/" in cleaned:
@@ -2314,8 +2334,8 @@ async def evaluate_position(
     t0 = time.time()
     raw_requested_depth = depth
     depth = max(1, min(depth, 30))
-    verbosity_mode = _resolve_verbosity(verbosity)
     try:
+        verbosity_mode = _resolve_verbosity(verbosity)
         board = _build_board(fen, moves or [], strict=strict)
         pool = await _get_analyzer_pool(ctx)
         # History completeness is derived from whether the caller had the move
@@ -2365,7 +2385,9 @@ async def evaluate_position(
         await metrics.record("evaluate_position", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
         code = "invalid_input"
-        if "STRICT" in msg:
+        if "INVALID_VERBOSITY" in msg:
+            code = "invalid_verbosity"
+        elif "STRICT" in msg:
             code = "strict_validation_error"
         elif "UNSUPPORTED_VARIANT" in msg:
             code = "unsupported_variant"
@@ -2433,8 +2455,8 @@ async def top_moves(
     depth = max(1, min(depth, 30))
     clamped_n = max(1, min(n, 20))
     n = clamped_n
-    verbosity_mode = _resolve_verbosity(verbosity)
     try:
+        verbosity_mode = _resolve_verbosity(verbosity)
         board = _build_board(fen, moves or [], strict=strict)
         # evaluate_position with explicit moves has full history; naked FEN doesn't.
         history_complete = _history_provenance_for_input(fen, moves)
@@ -2747,7 +2769,9 @@ async def top_moves(
         await metrics.record("top_moves", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
         code = "invalid_input"
-        if "STRICT" in msg:
+        if "INVALID_VERBOSITY" in msg:
+            code = "invalid_verbosity"
+        elif "STRICT" in msg:
             code = "strict_validation_error"
         elif "UNSUPPORTED_VARIANT" in msg:
             code = "unsupported_variant"
@@ -4002,7 +4026,9 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
         await metrics.record("analyze_game", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
         code = "invalid_input"
-        if "STRICT" in msg:
+        if "INVALID_VERBOSITY" in msg:
+            code = "invalid_verbosity"
+        elif "STRICT" in msg:
             code = "strict_validation_error"
         elif "UNSUPPORTED_VARIANT" in msg:
             code = "unsupported_variant"
