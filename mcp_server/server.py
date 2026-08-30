@@ -3091,7 +3091,11 @@ async def classify_move(
         await metrics.record("classify_move", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
         code = "invalid_input"
-        if "STRICT" in msg:
+        if "INVALID_ACTION_TYPE" in msg:
+            code = "invalid_action_type"
+        elif "ILLEGAL_ACTION" in msg:
+            code = "illegal_action"
+        elif "STRICT" in msg:
             code = "strict_validation_error"
         elif "UNSUPPORTED_VARIANT" in msg:
             code = "unsupported_variant"
