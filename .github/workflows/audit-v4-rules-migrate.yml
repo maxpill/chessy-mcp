@@ -1,0 +1,37 @@
+name: Apply audit v4 rules migration
+
+on:
+  push:
+    branches:
+      - fix/chess-mcp-ultra-audit-2026-08-30
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: ${{ !contains(github.event.head_commit.message, '[audit-v4-rules-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Apply migration
+        run: python scripts/apply_audit_v4_rules.py
+      - name: Compile changed module
+        run: python -m py_compile mcp_server/rules.py mcp_server/actions.py
+      - name: Commit migration
+        shell: bash
+        run: |
+          if git diff --quiet -- mcp_server/rules.py; then
+            echo "No migration changes required"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mcp_server/rules.py
+          git commit -m "fix: audit v4 rules semantics [audit-v4-rules-applied]"
+          git push origin HEAD:${GITHUB_REF_NAME}
