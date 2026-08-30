@@ -142,12 +142,12 @@ async def test_analyze_game_populates_l1_cache_for_evaluate_position():
     # Positions: startpos, after e4, after e5 = 3 positions evaluated
     assert pool.eval_calls == 3
 
-    # Now evaluate start position directly - should hit L1 cache!
-    start_eval = await server_module.evaluate_position(
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", depth=14
-    )
+    # Evaluate the same *known-root* start position directly. ``startpos`` has
+    # complete history, matching the complete PGN root cached by analyze_game.
+    # A naked equivalent FEN is intentionally a different semantic cache key
+    # because pre-FEN repetition history is unknowable.
+    start_eval = await server_module.evaluate_position("startpos", depth=14)
     assert start_eval.cp == 15
-    # eval_calls should NOT have increased!
     assert pool.eval_calls == 3
 
 
