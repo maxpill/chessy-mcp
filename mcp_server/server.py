@@ -562,6 +562,7 @@ async def _gather_evaluate_positions_bounded(
     pool: AnalyzerPool | TCPAnalyzerPool,
     *,
     requested_depth: int,
+    history_complete: str = "complete",
 ) -> list[tuple[MCPEval, bool]]:
     """Evaluate N positions partitioned across the pool with TT reuse per slice.
 
@@ -629,6 +630,7 @@ async def _gather_evaluate_positions_bounded(
                             requested_depth=requested_depth,
                             reuse_tt=(j > 0),
                             analyzer=analyzer,
+                            history_complete=history_complete,
                         )
                         out.append((r, hit))
                     return out
@@ -644,6 +646,7 @@ async def _gather_evaluate_positions_bounded(
                     pool,
                     requested_depth=requested_depth,
                     reuse_tt=False,
+                    history_complete=history_complete,
                 )
                 out.append((r, hit))
             return out
@@ -3178,7 +3181,9 @@ def _compute_game_metrics(
             )
             if is_intended_claim:
                 played_uci = move.uci()
-                rule_before = evaluate_rule_status(board_before)
+                rule_before = evaluate_rule_status(
+                    board_before, history_complete="complete"
+                )
                 valid_for_intended = (
                     rule_before.can_claim_with_intended_move
                     and played_uci in rule_before.intended_claim_ucis
@@ -3885,7 +3890,11 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             )
 
         eval_pairs = await _gather_evaluate_positions_bounded(
-            positions, depth, pool, requested_depth=raw_requested_depth
+            positions,
+            depth,
+            pool,
+            requested_depth=raw_requested_depth,
+            history_complete="complete",
         )
         evals: list[MCPEval] = [ep[0] for ep in eval_pairs]
         all_cached = all(ep[1] for ep in eval_pairs)
