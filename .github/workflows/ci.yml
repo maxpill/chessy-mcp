@@ -1,16 +1,16 @@
-name: Chess MCP ultra-audit verification
+name: Chess MCP CI
 
 on:
   push:
     branches:
-      - fix/chess-mcp-ultra-audit-2026-08-30
+      - main
   pull_request:
     branches:
       - main
   workflow_dispatch:
 
 concurrency:
-  group: chess-mcp-ultra-audit-${{ github.ref }}
+  group: chess-mcp-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
