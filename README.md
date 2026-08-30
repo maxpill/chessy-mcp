@@ -30,20 +30,32 @@ long as this image has been (re)built on the host that's running it.
 
 The stack lives in a separate Komodo stack at
 `/etc/komodo/stacks/chessy-mcp/` and is deployed on push to `main` via a
-GitHub webhook to:
+GitHub webhook to the public tunnel:
 
 ```
-http://51.75.119.141:9120/listener/github/stack/chessy-mcp/deploy
+https://webhook-komodo.trychessy.com/listener/github/stack/chessy-mcp/deploy
 ```
 
-The `.env` file (gitignored) holds `CHESS_MCP_AUTH_TOKEN`. Generate with:
+The stack has `webhook_force_deploy = true` so every push to `main`
+runs `docker compose up -d --build --remove-orphans`. The Komodo stack
+`pre_deploy` step calls `scripts/deploy-helper.sh` which stamps the
+checked-out HEAD into the stack `.env` as `BUILD_SHA` so the running
+container and every cached eval report the correct deployment identity
+(rather than the `unknown` default the compose substitution falls back
+to when nothing has set it).
+
+`file_paths` includes both `docker-compose.prod.yml` and `Caddyfile`
+so a Caddy-only change is enough to trigger change detection.
+
+The `.env` file (gitignored) holds `CHESS_MCP_AUTH_TOKEN` plus the
+pool/hash/threads tunables. Generate the token with:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 …and put the same value in the chessy app's `.env` so the coach runtime
-can authenticate.
+can authenticate against the shared edge.
 
 ## Local development
 
@@ -83,4 +95,3 @@ primary consumer, and this server is sized for that workload.
   requests share one Stockfish call via the `SingleFlight` helper.
 - **Multi-tier cache (L1 memory LRU + L2 SQLite WAL)** absorbs repeat
   positions / top-moves queries.
-# Last verified 12:51:02
