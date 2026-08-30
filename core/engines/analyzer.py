@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from typing import Any, cast
 
 import chess
 import chess.engine
@@ -11,14 +13,15 @@ from .types import Eval
 __all__ = ["Analyzer", "pv_to_san"]
 
 
-def _white_pov_wdl(info: dict[str, object]) -> tuple[int, int, int] | None:
+def _white_pov_wdl(info: Mapping[str, Any]) -> tuple[int, int, int] | None:
     """Return engine WDL in White POV, matching the CP and mate contract."""
     try:
         raw = info.get("wdl")
         if raw is None:
             return None
-        white = raw.white() if hasattr(raw, "white") else raw
-        return int(white[0]), int(white[1]), int(white[2])  # type: ignore[index]
+        raw_any = cast(Any, raw)
+        white = raw_any.white() if hasattr(raw_any, "white") else raw_any
+        return int(white[0]), int(white[1]), int(white[2])
     except (TypeError, ValueError, IndexError, AttributeError):
         return None
 
@@ -28,7 +31,7 @@ class Analyzer:
 
     def __init__(
         self,
-        transport: chess.engine.SubprocessTransport,
+        transport: asyncio.SubprocessTransport,
         engine: chess.engine.UciProtocol,
         depth: int,
     ) -> None:
@@ -81,7 +84,10 @@ class Analyzer:
                 info = await self._engine.analyse(board, limit, multipv=1)
 
         info_dict = info[0] if isinstance(info, list) else info
-        score = info_dict["score"].white()
+        score_obj = info_dict.get("score")
+        if score_obj is None:
+            return Eval(cp=None, mate=None, best_move=None, pv=[], depth=info_dict.get("depth", actual_depth))
+        score = score_obj.white()
         pv: list[chess.Move] = info_dict.get("pv", [])
         mate_val = score.mate()
         cp_val = None if mate_val is not None else score.score()
@@ -119,7 +125,10 @@ class Analyzer:
 
         out: list[Eval] = []
         for info in infos[:n]:
-            score = info["score"].white()
+            score_obj = info.get("score")
+            if score_obj is None:
+                continue
+            score = score_obj.white()
             pv: list[chess.Move] = info.get("pv", [])
             if not pv:
                 continue
