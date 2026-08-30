@@ -1,10 +1,9 @@
 # Minimal Caddy edge for the standalone Chess MCP service.
 #
-# Production tuning:
+# Production behavior:
 #  * flush_interval -1  - flush each SSE chunk immediately.
-#  * keepalive 30s      - reuse upstream TCP connections.
-#  * health_uri /health - fail fast when the MCP process is unhealthy.
-#  * 75s read/write     - aligned with uvicorn keep-alive behavior.
+#  * active /health     - fail fast when the MCP process is unhealthy.
+#  * retry window       - briefly retry a temporarily unavailable upstream.
 #
 # ChatGPT compatibility:
 # The Python MCP service intentionally uses token-only authentication. The
@@ -19,6 +18,11 @@
 # token-only admission. The edge matcher is compatibility routing, not a claim
 # that User-Agent is cryptographic authentication; CPU abuse remains bounded by
 # the MCP weighted rate limiter and Cloudflare remains the public edge.
+#
+# Keep the reverse_proxy block deliberately conservative. A previous config
+# used unsupported direct `keepalive` and `timeouts` subdirectives; Caddy 2
+# rejects that config before startup. Default HTTP transport already reuses
+# upstream connections, so those knobs are unnecessary here.
 
 http://mcp.trychessy.com {
 	encode zstd gzip
@@ -30,17 +34,10 @@ http://mcp.trychessy.com {
 
 	reverse_proxy mcp:8000 {
 		flush_interval -1
-		keepalive 30s
 		health_uri /health
 		health_interval 5s
 		health_timeout 3s
-		transport http
 		lb_try_duration 5s
 		lb_try_interval 250ms
-		timeouts {
-			read 75s
-			write 75s
-			dial 5s
-		}
 	}
 }
