@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - diag/live-mcp-2026-08-30
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
