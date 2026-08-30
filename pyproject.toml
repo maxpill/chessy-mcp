@@ -44,6 +44,6 @@ select = ["E", "F", "I", "B", "UP", "W", "RUF"]
 ignore = ["E501", "I001", "RUF001", "RUF002", "RUF003"]
 
 [tool.pyright]
-include = ["mcp_server", "core", "tests"]
+include = ["mcp_server", "core"]
 pythonVersion = "3.13"
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
