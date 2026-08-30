@@ -21,7 +21,6 @@ jobs:
       STOCKFISH_THREADS_PER_WORKER: '1'
       STOCKFISH_HASH_MB: '32'
       CHESS_MCP_POOL_SIZE: '2'
-      CHESS_MCP_MAX_CONCURRENT_EVALUATES: '4'
       BUILD_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +47,7 @@ jobs:
         run: |
           uv run python scripts/apply_extreme_audit_patch_2026_08_31.py
           uv run python scripts/apply_extreme_audit_patch_v2_2026_08_31.py
+          uv run python scripts/apply_extreme_audit_patch_v3_2026_08_31.py
 
       - name: Reject whitespace and syntax damage
         run: |
@@ -114,7 +114,7 @@ jobs:
           test "$after" -eq "$before"
 
       - name: Ruff
-        run: uv run ruff check mcp_server core tests/test_extreme_audit_2026_08_31.py
+        run: uv run ruff check mcp_server core tests/test_extreme_audit_2026_08_31.py tests/test_mcp_ultra_audit_fixtures_2026_08_28.py
 
       - name: Pyright
         run: uv run pyright mcp_server core
@@ -124,13 +124,13 @@ jobs:
         run: |
           set -euxo pipefail
           git diff --check
-          if git diff --quiet -- mcp_server/server.py mcp_server/models.py; then
-            echo 'No uncommitted source patch remains.'
+          if git diff --quiet -- mcp_server/server.py mcp_server/models.py tests/test_extreme_audit_2026_08_31.py tests/test_mcp_ultra_audit_fixtures_2026_08_28.py; then
+            echo 'No uncommitted source/test patch remains.'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add mcp_server/server.py mcp_server/models.py
+          git add mcp_server/server.py mcp_server/models.py tests/test_extreme_audit_2026_08_31.py tests/test_mcp_ultra_audit_fixtures_2026_08_28.py
           git commit -m 'fix: harden Chess MCP validation and response contracts'
           git push origin HEAD:audit/extreme-validation-2026-08-31
 
