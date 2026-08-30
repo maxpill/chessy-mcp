@@ -50,16 +50,15 @@ class ChessActionType(StrEnum):
 
 @dataclass
 class RuleStatus:
-    terminal: str | None = (
-        None  # "checkmate", "stalemate", "insufficient_material", "seventyfive_moves", "fivefold_repetition", "dead_position", "game_over", or None
-    )
-    winner: str | None = None  # "white", "black", or None
+    terminal: str | None = None
+    winner: str | None = None
     can_claim_now: bool = False
     claim_reasons_now: list[str] = field(default_factory=list)
     can_claim_with_intended_move: bool = False
     intended_claim_moves: list[chess.Move] = field(default_factory=list)
     intended_claim_sans: list[str] = field(default_factory=list)
     intended_claim_ucis: list[str] = field(default_factory=list)
+    intended_claim_reasons_by_uci: dict[str, list[str]] = field(default_factory=dict)
     claim_reasons: list[str] = field(default_factory=list)
     can_claim_draw: bool = False
     claim_moves: list[str] = field(default_factory=list)
@@ -67,26 +66,11 @@ class RuleStatus:
     claim_move_uci: str | None = None
     claim_move_san: str | None = None
     recommended_action: str = "play_move"
-    # history_dependent_status / requires_move_stack / fen_sufficient_for_status
-    # are LEGACY fields (kept for backward compatibility). The audit recommends
-    # `history_completeness` + `repetition_status` as the canonical replacement;
-    # we expose both, and `evaluate_rule_status` populates them in lock-step.
     history_dependent_status: bool = False
     requires_move_stack: bool = False
     fen_sufficient_for_status: bool = True
-    # Canonical history semantics (audit 10.5 / H-01):
-    #   history_completeness:
-    #     "complete"       — full move stack was available
-    #     "incomplete"     — FEN-only, no move stack
-    #     "not_required"   — no history-dependent rule applies to this position
-    #   repetition_status:
-    #     "unknown"        — naked FEN; can't tell without history
-    #     "none"           — history-aware check: no repetition concern
-    #     "threefold_claimable" — 3-fold reachable (claim available now or with intended move)
-    #     "fivefold"       — automatic fivefold repetition reached (terminal)
-    history_completeness: str = "complete"
-    repetition_status: str = "none"
-
+    history_completeness: str = "incomplete"
+    repetition_status: str = "unknown"
 
 def is_locked_dead_position(board: chess.Board) -> bool:
     """Detect dead positions caused by completely locked pawn structures
@@ -198,76 +182,56 @@ def is_locked_dead_position(board: chess.Board) -> bool:
 
 
 def _can_side_force_checkmate(board: chess.Board, color: chess.Color) -> bool:
-    """P1 audit fix: sound FIDE mating-possibility check for `color`.
+    """Conservative FIDE mating-possibility predicate.
 
-    python-chess's `has_insufficient_material(color)` only inspects the
-    STATIC material on the board. It answers the wrong question for FIDE
-    Laws 5.1.2 / 6.9 / 7.5.5, which require checking whether the declared
-    winning player can EVER deliver checkmate by any series of legal moves
-    in the current position. Returns True when checkmate is reachable.
-
-    Implementation: delegate to a small per-color material/position analysis.
-    A side is unable to deliver checkmate iff:
-      - it has at most a lone king (no pieces at all), OR
-      - it has only K+B vs K with the bishop on the wrong complex (same-color
-        square as the opponent king's starting promotion square AND the
-        opponent king can avoid the corner via stalemate/shielding), OR
-      - it has only K+N vs K (impossible to mate — needs two knights with
-        cooperation, which the lone king can always break).
-
-    For everything else (K+Q, K+R, K+P, K+B vs K with correct complex, K+N+N
-    vs K, multi-piece combinations) we conservatively allow checkmate.
+    False is returned only when checkmate is impossible by every legal
+    continuation. This matters for Laws 5.1.2, 6.9 and 7.5.5 because a false
+    negative converts a win on time, resignation or rules infraction into a draw.
     """
-    # Find pieces of `color` (other than king)
-    has_pawns = bool(board.pieces(chess.PAWN, color))
-    has_queens = bool(board.pieces(chess.QUEEN, color))
-    has_rooks = bool(board.pieces(chess.ROOK, color))
-    has_bishops = bool(board.pieces(chess.BISHOP, color))
-    n_knights = len(board.pieces(chess.KNIGHT, color))
+    pawns = len(board.pieces(chess.PAWN, color))
+    rooks = len(board.pieces(chess.ROOK, color))
+    queens = len(board.pieces(chess.QUEEN, color))
+    bishops = list(board.pieces(chess.BISHOP, color))
+    knights = len(board.pieces(chess.KNIGHT, color))
 
-    if has_pawns or has_queens or has_rooks:
-        # Pawn, queen, or rook: theoretically can deliver mate (queen/rook
-        # against a bare king is mate-able; pawn promotes).
+    if not (pawns or rooks or queens or bishops or knights):
+        return False
+    if pawns or rooks or queens:
         return True
 
-    if has_bishops:
-        # K+B vs K: mate-able iff the bishop can attack the corner the king
-        # can be forced into. python-chess does NOT evaluate bishop color.
-        # Conservative: assume mate-able unless the bishop color rules make
-        # it impossible — for an arbitrary bishop color, mate is achievable
-        # in the correct corner complex. We trust this for the common case.
-        # The truly impossible K+B vs K cases (K+Bishop on a1, K on a8 — same
-        # color square where opponent king is trapped in wrong corner) are
-        # vanishingly rare in tournament PGNs that would hit this validation.
+    opponent_nonking = sum(
+        len(board.pieces(pt, not color))
+        for pt in (chess.PAWN, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN)
+    )
+
+    # Opponent material can legally block escape squares. Therefore K+N or
+    # K+B is not generally impossible when the opponent is not a bare king.
+    if opponent_nonking:
         return True
 
-    if n_knights >= 2:
-        # K+N+N vs K is mate-able.
+    # From here the opponent is a bare king.
+    if knights >= 2:
         return True
-
-    if n_knights == 1:
-        # K+N vs K: impossible to mate.
+    if knights == 1 and not bishops:
         return False
 
-    # No pawns/queens/rooks/bishops/knights: bare king vs whatever.
+    if bishops:
+        if len(bishops) == 1 and knights == 0:
+            return False
+        if knights:
+            return True
+        complexes = {
+            (chess.square_rank(sq) + chess.square_file(sq)) & 1
+            for sq in bishops
+        }
+        return len(complexes) >= 2
+
     return False
 
 
 def can_checkmate(board: chess.Board, color: chess.Color) -> bool:
-    """Sound FIDE mating-possibility check for `color` (audit P1 fix).
-
-    Returns True iff `color` can deliver checkmate by some series of legal
-    moves in `board`. Replaces python-chess's `has_insufficient_material`
-    which is too narrow for FIDE Laws 5.1.2 / 6.9 / 7.5.5.
-
-    This is conservative: it returns True for every configuration that
-    COULD lead to mate (queens/rooks/pawns/bishops/two-knights) and only
-    returns False for the strictly impossible cases (lone king, K+N vs K).
-    Callers that need a more nuanced check should consult an external
-    tablebase.
-    """
+    """Return whether `color` can mate by some legal continuation."""
     return _can_side_force_checkmate(board, color)
-
 
 def is_terminal_position(board: chess.Board) -> bool:
     """Single source of truth for "the position is game over".
@@ -292,40 +256,65 @@ def is_terminal_position(board: chess.Board) -> bool:
     return False
 
 
+def choose_recommended_action(
+    board: chess.Board,
+    *,
+    can_claim_now: bool,
+    can_claim_with_intended_move: bool,
+    mover_score: int | None = None,
+    mate_for_mover: int | None = None,
+) -> str:
+    """Choose one canonical legal root action for every MCP endpoint."""
+    if not (can_claim_now or can_claim_with_intended_move):
+        return "play_move"
+    if mate_for_mover is not None and mate_for_mover > 0:
+        return "play_move"
+
+    piece_vals = {
+        chess.PAWN: 100,
+        chess.KNIGHT: 300,
+        chess.BISHOP: 300,
+        chess.ROOK: 500,
+        chess.QUEEN: 900,
+    }
+    mover_mat = sum(
+        len(board.pieces(pt, board.turn)) * value
+        for pt, value in piece_vals.items()
+    )
+    opp_mat = sum(
+        len(board.pieces(pt, not board.turn)) * value
+        for pt, value in piece_vals.items()
+    )
+    is_down_material = opp_mat - mover_mat >= 200
+
+    if mover_score is None:
+        claim_preferred = is_down_material
+    else:
+        claim_preferred = not (mover_score > 50 and not is_down_material)
+
+    if not claim_preferred:
+        return "play_move"
+    if can_claim_now:
+        return "claim_draw"
+    return "claim_draw_with_intended_move"
+
+
 def evaluate_rule_status(
     board: chess.Board,
     mover_score: int | None = None,
     mate_for_mover: int | None = None,
-    history_complete: bool = True,
+    history_complete: str | bool = "incomplete",
 ) -> RuleStatus:
-    """Evaluate all FIDE rules, terminals, and draw claims for a position.
+    """Evaluate terminal rules and optional draw claims with explicit history provenance."""
+    if isinstance(history_complete, bool):
+        history_state = "complete" if history_complete else "incomplete"
+    else:
+        history_state = history_complete
+    if history_state not in {"complete", "partial", "incomplete", "not_required"}:
+        raise ValueError(f"INVALID_HISTORY_PROVENANCE: {history_state}")
 
-    Pure-functional: safe to memoize. The expensive path is
-    `is_repetition(3)` (walks the move stack) — that walk is ~1.3 ms on
-    middlegame boards. Memoised indirectly via `is_repetition_3_memoised`
-    below.
-    """
-    return _evaluate_rule_status_impl(board, mover_score, mate_for_mover, history_complete)
-
-
-def _evaluate_rule_status_impl(
-    board: chess.Board,
-    mover_score: int | None = None,
-    mate_for_mover: int | None = None,
-    history_complete: bool = True,
-) -> RuleStatus:
-    """Evaluate all FIDE rules, terminals, and draw claims for a position.
-
-    Args:
-        board: The chess position.
-        mover_score: White-POV cp or mover-POV scaled score (depending on caller).
-        mate_for_mover: Mate distance from the mover's POV; positive = forced win.
-        history_complete: True when the caller had access to the full move stack
-            (PGN, evaluate_position with moves param). False for naked FEN. Drives
-            `history_completeness` and `repetition_status` on the returned
-            RuleStatus (audit H-01).
-    """
-    has_history = history_complete
+    has_history = history_state in {"complete", "partial"}
+    full_history = history_state == "complete"
 
     def _make(
         terminal: str | None,
@@ -341,160 +330,123 @@ def _evaluate_rule_status_impl(
             history_dependent_status=history_dep,
             requires_move_stack=history_dep,
             fen_sufficient_for_status=not history_dep,
-            history_completeness="complete" if has_history else "incomplete",
+            history_completeness=(
+                "not_required"
+                if terminal in {
+                    "checkmate",
+                    "stalemate",
+                    "insufficient_material",
+                    "seventyfive_moves",
+                    "dead_position",
+                }
+                else history_state
+            ),
             repetition_status=repetition,
         )
 
-    # 1. Checkmate
     if board.is_checkmate():
         winner = "black" if board.turn == chess.WHITE else "white"
-        return _make("checkmate", winner=winner, repetition="none")
-
-    # 2. Stalemate
+        return _make("checkmate", winner=winner)
     if board.is_stalemate():
         return _make("stalemate")
-
-    # 3. Insufficient material
     if board.is_insufficient_material():
         return _make("insufficient_material")
-
-    # 4. Seventy-five moves rule (automatic terminal)
     if board.is_seventyfive_moves():
         return _make("seventyfive_moves")
-
-    # 5. Fivefold repetition (automatic terminal) — REQUIRES history
     if has_history and board.is_fivefold_repetition():
         return _make(
             "fivefold_repetition",
             history_dep=True,
             repetition="fivefold",
         )
-
-    # 6. Dead position (locked pawn barrier)
     if is_locked_dead_position(board):
         return _make("dead_position")
-
-    # 7. Other game over
-    if board.is_game_over():
+    if board.is_game_over(claim_draw=False):
         return _make("game_over")
 
-    # Active position: Evaluate Draw Claims.
-    # IMPORTANT (audit H-01): repetition claims depend on history. Without
-    # history, we MUST NOT report threefold-related claims. The 50-move and
-    # 75-move rules, however, are detectable from the halfmove counter alone
-    # (no history needed). We split the check accordingly.
     can_claim_now = False
     claim_reasons_now: list[str] = []
-    # 50/75-move: derivable from halfmove_counter alone, no history required.
     if board.is_fifty_moves():
         can_claim_now = True
         claim_reasons_now.append("fifty_moves")
-    # Threefold repetition: REQUIRES history. Without history, this is unknown.
-    # Use the memoised helper to skip the per-call move-stack walk when the
-    # same stack was seen before in this request.
     if has_history and board.is_repetition(3):
         can_claim_now = True
         claim_reasons_now.append("threefold_repetition")
 
-    # Intended claims with a declared legal move.
     intended_claim_moves: list[chess.Move] = []
     intended_claim_sans: list[str] = []
     intended_claim_ucis: list[str] = []
-    claim_reasons_intended: list[str] = []
+    intended_claim_reasons: list[str] = []
+    intended_claim_reasons_by_uci: dict[str, list[str]] = {}
 
-    # Intended 50-move claims: halfmove-counter based, no history needed.
     for cand in board.legal_moves:
-        cand_san: str | None = None
         cand_uci = cand.uci()
-        cand_is_intended_50 = False
-        cand_is_intended_3fold = False
+        intended_50 = False
+        intended_3 = False
 
         if "fifty_moves" not in claim_reasons_now:
-            # If move does not reset halfmove and halfmove + 1 >= 100
             is_pawn = board.piece_type_at(cand.from_square) == chess.PAWN
             is_capture = board.is_capture(cand)
-            if not is_pawn and not is_capture:
-                if board.halfmove_clock + 1 >= 100:
-                    cand_is_intended_50 = True
+            if not is_pawn and not is_capture and board.halfmove_clock + 1 >= 100:
+                intended_50 = True
 
-        # Intended threefold: REQUIRES history.
         if "threefold_repetition" not in claim_reasons_now and has_history:
-            b_sub = board.copy(stack=True)
-            b_sub.push(cand)
-            if b_sub.is_repetition(3):
-                cand_is_intended_3fold = True
+            child = board.copy(stack=True)
+            child.push(cand)
+            if child.is_repetition(3):
+                intended_3 = True
 
-        if cand_is_intended_50 or cand_is_intended_3fold:
-            intended_claim_moves.append(cand)
-            try:
-                cand_san = board.san(cand)
-            except Exception:
-                cand_san = cand_uci
-            intended_claim_sans.append(cand_san)
-            intended_claim_ucis.append(cand_uci)
-            if cand_is_intended_50 and "fifty_moves" not in claim_reasons_intended:
-                claim_reasons_intended.append("fifty_moves")
-            if cand_is_intended_3fold and "threefold_repetition" not in claim_reasons_intended:
-                claim_reasons_intended.append("threefold_repetition")
+        if not (intended_50 or intended_3):
+            continue
+
+        try:
+            cand_san = board.san(cand)
+        except Exception:
+            cand_san = cand_uci
+
+        reasons: list[str] = []
+        if intended_50:
+            reasons.append("fifty_moves")
+            if "fifty_moves" not in intended_claim_reasons:
+                intended_claim_reasons.append("fifty_moves")
+        if intended_3:
+            reasons.append("threefold_repetition")
+            if "threefold_repetition" not in intended_claim_reasons:
+                intended_claim_reasons.append("threefold_repetition")
+
+        intended_claim_moves.append(cand)
+        intended_claim_sans.append(cand_san)
+        intended_claim_ucis.append(cand_uci)
+        intended_claim_reasons_by_uci[cand_uci] = reasons
 
     can_claim_with_intended_move = bool(intended_claim_moves)
-    all_claim_reasons = list(dict.fromkeys(claim_reasons_now + claim_reasons_intended))
+    all_claim_reasons = list(
+        dict.fromkeys(claim_reasons_now + intended_claim_reasons)
+    )
     can_claim_draw = can_claim_now or can_claim_with_intended_move
-
     claim_move_san = intended_claim_sans[0] if intended_claim_sans else None
     claim_move_uci = intended_claim_ucis[0] if intended_claim_ucis else None
 
-    # Recommended action logic:
-    # Game-theoretic ordering: WIN > DRAW > LOSS. A forced mate for the mover
-    # strictly dominates any optional draw claim — claiming a draw while a mate
-    # in N exists is logically incoherent. The mate_for_mover parameter is the
-    # engine-reported positive mate distance (None = unknown, positive = forced
-    # win). When present and positive, NEVER recommend a claim regardless of
-    # material deficits.
-    piece_vals = {chess.PAWN: 100, chess.KNIGHT: 300, chess.BISHOP: 300, chess.ROOK: 500, chess.QUEEN: 900}
-    mover_mat = sum(len(board.pieces(pt, board.turn)) * val for pt, val in piece_vals.items())
-    opp_mat = sum(len(board.pieces(pt, not board.turn)) * val for pt, val in piece_vals.items())
-    is_down_mat = opp_mat - mover_mat >= 200
+    recommended_action = choose_recommended_action(
+        board,
+        can_claim_now=can_claim_now,
+        can_claim_with_intended_move=can_claim_with_intended_move,
+        mover_score=mover_score,
+        mate_for_mover=mate_for_mover,
+    )
 
-    has_forced_win = mate_for_mover is not None and mate_for_mover > 0
-
-    recommended_action = "play_move"
-    if has_forced_win:
-        is_claim_recommended = False
-    elif mover_score is not None:
-        if mover_score > 50 and not is_down_mat:
-            is_claim_recommended = False
-        else:
-            is_claim_recommended = True
-    else:
-        is_claim_recommended = is_down_mat
-
-    if not has_forced_win:
-        if can_claim_now:
-            if is_claim_recommended:
-                recommended_action = "claim_draw"
-        elif can_claim_with_intended_move:
-            if is_claim_recommended:
-                recommended_action = "claim_draw_with_intended_move"
-
-    requires_stack = bool("threefold_repetition" in all_claim_reasons)
-    # repetition_status enum:
-    #   "fivefold"                 — automatic terminal reached (handled above)
-    #   "threefold_claimable"      — claim is reachable now or with intended move
-    #   "none"                     — full history, no repetition concern
-    #   "unknown"                  — naked FEN, history was not available
-    #                                (audit H-01: ALWAYS report unknown when
-    #                                history is incomplete, even if no claim
-    #                                is currently visible — the caller cannot
-    #                                distinguish "no repetition" from "we don't
-    #                                know if there's repetition" without history)
-    if not has_history:
-        repetition_status = "unknown"
-    elif requires_stack or can_claim_draw:
+    repetition_proven = bool(
+        "threefold_repetition" in claim_reasons_now
+        or "threefold_repetition" in intended_claim_reasons
+    )
+    if repetition_proven:
         repetition_status = "threefold_claimable"
-    else:
+    elif full_history:
         repetition_status = "none"
+    else:
+        repetition_status = "unknown"
 
+    requires_stack = repetition_proven
     return RuleStatus(
         terminal=None,
         winner=None,
@@ -504,6 +456,7 @@ def _evaluate_rule_status_impl(
         intended_claim_moves=intended_claim_moves,
         intended_claim_sans=intended_claim_sans,
         intended_claim_ucis=intended_claim_ucis,
+        intended_claim_reasons_by_uci=intended_claim_reasons_by_uci,
         claim_reasons=all_claim_reasons,
         can_claim_draw=can_claim_draw,
         claim_moves=intended_claim_sans,
@@ -514,10 +467,9 @@ def _evaluate_rule_status_impl(
         history_dependent_status=requires_stack,
         requires_move_stack=requires_stack,
         fen_sufficient_for_status=not requires_stack,
-        history_completeness="complete" if has_history else "incomplete",
+        history_completeness=history_state,
         repetition_status=repetition_status,
     )
-
 
 def truncate_pv_at_terminal(board: chess.Board, pv_uci: list[str]) -> list[str]:
     """Ensure a principal variation (PV) does not continue past an automatic terminal state."""
