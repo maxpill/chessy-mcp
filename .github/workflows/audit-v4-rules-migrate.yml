@@ -1,4 +1,4 @@
-name: Apply audit v4 semantic migrations
+name: Apply audit v4 server migration
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   migrate:
-    if: ${{ !contains(github.event.head_commit.message, '[audit-v4-migrations-applied]') }}
+    if: ${{ !contains(github.event.head_commit.message, '[audit-v4-server-applied]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,28 +19,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Apply migrations
-        run: |
-          python scripts/apply_audit_v4_rules.py
-          python scripts/apply_audit_v4_semantics.py
-          python scripts/apply_audit_v4_server.py
+      - name: Apply server migration
+        run: python scripts/apply_audit_v4_server.py
       - name: Compile changed modules
         run: >-
           python -m py_compile
+          mcp_server/server.py
           mcp_server/rules.py
           mcp_server/actions.py
           mcp_server/models.py
           mcp_server/cache.py
-          mcp_server/server.py
-      - name: Commit migrations
+          core/engines/analysis.py
+          core/engines/analyzer.py
+          core/engines/pool.py
+          mcp_server/tcp_analyzer.py
+      - name: Commit migration
         shell: bash
         run: |
-          if git diff --quiet -- mcp_server/rules.py mcp_server/models.py mcp_server/cache.py mcp_server/server.py; then
-            echo "No migration changes required"
+          if git diff --quiet -- mcp_server/server.py; then
+            echo "No server migration changes required"
             exit 0
           fi
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+maxpill@users.noreply.github.com"
-          git add mcp_server/rules.py mcp_server/models.py mcp_server/cache.py mcp_server/server.py
-          git commit -m "fix: audit v4 server and semantic invariants [audit-v4-migrations-applied]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mcp_server/server.py
+          git commit -m "fix: audit v4 server invariants [audit-v4-server-applied]"
           git push origin HEAD:${GITHUB_REF_NAME}
