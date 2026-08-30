@@ -41,15 +41,15 @@ jobs:
         run: uv run ruff check mcp_server core
       - name: Strict Pyright
         run: uv run pyright mcp_server core
-      - name: Commit hardened tests
+      - name: Commit hardened tests and parser fix
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tests/test_mcp_ultra_audit_fixtures_2026_08_28.py
+          git add mcp_server/server.py tests/test_mcp_ultra_audit_fixtures_2026_08_28.py
           if git diff --cached --quiet; then
-            echo "No test change required"
+            echo "No change required"
             exit 0
           fi
-          git commit -m "test: harden audit v4 parser and ranking regressions [audit-v4-tests-applied]"
+          git commit -m "fix: close audit v4 parser and ranking regressions [audit-v4-tests-applied]"
           git push origin HEAD:${GITHUB_REF_NAME}
