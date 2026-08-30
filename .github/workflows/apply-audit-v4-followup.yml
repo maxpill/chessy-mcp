@@ -5,7 +5,7 @@ on:
     branches:
       - fix/chess-mcp-ultra-audit-2026-08-30
     paths:
-      - scripts/apply_audit_v4_followup.py
+      - scripts/apply_audit_v4_followup_v2.py
       - .github/workflows/apply-audit-v4-followup.yml
 
 permissions:
@@ -37,7 +37,7 @@ jobs:
           uv sync --frozen --dev
 
       - name: Apply follow-up fixes
-        run: python scripts/apply_audit_v4_followup.py
+        run: python scripts/apply_audit_v4_followup_v2.py
 
       - name: Compile
         run: uv run python -m compileall -q mcp_server core tests
