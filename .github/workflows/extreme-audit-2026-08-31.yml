@@ -44,7 +44,10 @@ jobs:
           uv sync --frozen --dev
 
       - name: Apply audited source fixes
-        run: uv run python scripts/apply_extreme_audit_patch_2026_08_31.py
+        shell: bash
+        run: |
+          uv run python scripts/apply_extreme_audit_patch_2026_08_31.py
+          uv run python scripts/apply_extreme_audit_patch_v2_2026_08_31.py
 
       - name: Reject whitespace and syntax damage
         run: |
