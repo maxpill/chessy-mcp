@@ -204,6 +204,8 @@ class AnalyzerPool:
         depth: int = 12,
         threads: int = 1,
         hash_mb: int = 128,
+        show_wdl: bool = False,
+        syzygy_path: str | None = None,
         acquire_timeout: float = DEFAULT_ACQUIRE_TIMEOUT,
     ) -> AnalyzerPool:
         async def factory() -> object:
@@ -212,6 +214,8 @@ class AnalyzerPool:
                 depth=depth,
                 threads=threads,
                 hash_mb=hash_mb,
+                show_wdl=show_wdl,
+                syzygy_path=syzygy_path,
             )
 
         instances = [await factory() for _ in range(max(1, size))]

@@ -2642,25 +2642,32 @@ async def test_audit_11_opening_parent_child_suppressed_warning():
 
 @pytest.mark.asyncio
 async def test_audit_12_mcp_eval_history_dependent_status():
-    """Item 12 / Bug 7: 50-move rule status is in FEN (requires_move_stack=False, lichess reproduces=True); repetition requires move stack."""
-    # Active board without repetition/50-move -> history_dependent_status is False, lichess_url_reproduces_history is True
+    """Incomplete FEN history must not pretend that repetition has been excluded."""
+    # A naked active FEN can prove board-local rules, but it cannot prove that
+    # no earlier repetition occurred. The response therefore explicitly asks
+    # for a move stack instead of claiming that the FEN reproduces all rule state.
     b = chess.Board()
     b.push_san("e4")
     b.push_san("e5")
     ev = MCPEval.from_eval(Eval(cp=20, best_move="g1f3", pv=["g1f3"], depth=14), b.fen(), board=b)
-    assert ev.history_dependent_status is False
-    assert ev.lichess_url_reproduces_history is True
-    assert ev.requires_move_stack is False
-    assert ev.fen_sufficient_for_status is True
+    assert ev.repetition_status == "unknown"
+    assert ev.history_dependent_status is True
+    assert ev.lichess_url_reproduces_history is False
+    assert ev.requires_move_stack is True
+    assert ev.fen_sufficient_for_status is False
 
-    # 50-move rule claimable -> halfmove clock in FEN, history_dependent_status is False, lichess reproduces=True
+    # The halfmove clock proves a 50-move claim from the FEN, but it still does
+    # not prove that threefold repetition is absent. Claimability is known; the
+    # complete set of history-dependent reasons is not.
     b_50 = chess.Board()
     b_50.halfmove_clock = 100
     ev_50 = MCPEval.from_eval(Eval(cp=0, best_move="e2e4", pv=["e2e4"], depth=14), b_50.fen(), board=b_50)
-    assert ev_50.history_dependent_status is False
-    assert ev_50.lichess_url_reproduces_history is True
-    assert ev_50.requires_move_stack is False
-    assert ev_50.fen_sufficient_for_status is True
+    assert "fifty_moves" in ev_50.claim_reasons_now
+    assert ev_50.repetition_status == "unknown"
+    assert ev_50.history_dependent_status is True
+    assert ev_50.lichess_url_reproduces_history is False
+    assert ev_50.requires_move_stack is True
+    assert ev_50.fen_sufficient_for_status is False
 
     # Repetition -> requires history stack
     b_rep = chess.Board()

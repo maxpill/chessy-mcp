@@ -70,23 +70,7 @@ def _played_eval_after(
     """
     move_uci = move.uci()
 
-    if move_uci.lower() == (eval_before.best_move or "").lower():
-        loss = 0
-        played_pv = eval_before.pv
-        if board_after.is_checkmate():
-            eval_after = Eval(cp=None, mate=0, depth=0)
-        elif board_after.is_game_over(claim_draw=False):
-            eval_after = Eval(cp=0, depth=0)
-        else:
-            tail = played_pv[1:] if len(played_pv) > 1 else []
-            eval_after = Eval(
-                cp=eval_before.cp,
-                mate=eval_before.mate,
-                best_move=tail[0] if tail else None,
-                pv=tail,
-                depth=actual_depth,
-            )
-        return eval_after, played_pv, loss
+    is_engine_best = move_uci.lower() == (eval_before.best_move or "").lower()
 
     if board_after.is_checkmate():
         return Eval(cp=None, mate=0, depth=0), [move_uci], 0
@@ -102,6 +86,9 @@ def _played_eval_after(
 
     eval_after = eval_after_lookup
     played_pv = [move_uci] + (eval_after.pv or [])
+
+    if is_engine_best:
+        return eval_after, played_pv, 0
 
     if eval_before.mate is not None and eval_after.mate is not None:
         if sign * eval_before.mate > 0 and sign * eval_after.mate > 0:
@@ -141,11 +128,7 @@ async def classify_move(
     board_after = board.copy(stack=True)
     board_after.push(move)
 
-    if (
-        move.uci().lower() == (eval_before.best_move or "").lower()
-        or board_after.is_checkmate()
-        or board_after.is_game_over(claim_draw=False)
-    ):
+    if board_after.is_checkmate() or board_after.is_game_over(claim_draw=False):
         eval_after, played_pv, loss = _played_eval_after(
             move=move,
             board_after=board_after,

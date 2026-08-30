@@ -709,6 +709,8 @@ async def _create_analyzer_pool(
         depth=14,
         threads=threads,
         hash_mb=cfg.hash_mb,
+        show_wdl=cfg.show_wdl,
+        syzygy_path=cfg.syzygy_path or None,
     )
     log.info(
         "Subprocess analyzer pool ready: %d engines @ %s",
@@ -820,6 +822,7 @@ def normalize_termination(term: str | None) -> str | None:
         r"|\bout\s+of\s+time\b"
         r"|\bflag\s*(?:fell|fell|fall|dropped)\b"
         r"|\blost\s+on\s+time\b"
+        r"|\b(?:white|black)\s+(?:wins?|won)\s+on\s+time\b"
         r"|\bclock\s+(?:flagged|expired)\b",
         t,
     ):
@@ -2865,50 +2868,17 @@ async def classify_move(
                 board, depth, pool, requested_depth=raw_requested_depth, history_complete=history_complete
             )
 
-            # Fast path: when the played move is the engine's canonical best,
-            # skip the second engine call. eval_after is approximated by
-            # applying eval_before's PV to the board (it's the line the engine
-            # itself would play). For positions where best_move is None or
-            # doesn't match the played move, fall through to the real eval.
-            played_is_best = (
-                eval_before.best_move and chess_move.uci().lower() == eval_before.best_move.lower()
+            # Correctness first: eval_after must describe the immediate
+            # post-move position. Reusing the root PV tail or root score can
+            # misstate finite-depth CP and mate distance. Engine/cache layers
+            # remain responsible for performance reuse.
+            eval_after, _ = await _evaluate_game_position_cached(
+                board_after,
+                depth,
+                pool,
+                requested_depth=raw_requested_depth,
+                history_complete=history_complete,
             )
-            if played_is_best:
-                # Synthesize eval_after from the PV tail. Walk the PV starting
-                # at move index 1 (the engine's chosen move is at index 0, the
-                # played move). For short or missing PVs, fall back to a real
-                # eval — it's cheap and rare.
-                pv = eval_before.pv or []
-                if len(pv) >= 2:
-                    synth_board = board.copy(stack=True)
-                    try:
-                        for uci in pv[1:]:
-                            synth_board.push_uci(uci)
-                        synth_eval, _ = await _evaluate_game_position_cached(
-                            synth_board,
-                            depth,
-                            pool,
-                            requested_depth=raw_requested_depth,
-                            reuse_tt=True,
-                            analyzer=None,
-                            history_complete=history_complete,
-                        )
-                        eval_after = synth_eval
-                    except Exception:
-                        # Fall back to real eval — TT reuse on this connection
-                        # should still be a net win because best_move was already
-                        # found by the engine.
-                        eval_after, _ = await _evaluate_game_position_cached(
-                            board_after, depth, pool, requested_depth=raw_requested_depth, history_complete=history_complete
-                        )
-                else:
-                    eval_after, _ = await _evaluate_game_position_cached(
-                        board_after, depth, pool, requested_depth=raw_requested_depth, history_complete=history_complete
-                    )
-            else:
-                eval_after, _ = await _evaluate_game_position_cached(
-                    board_after, depth, pool, requested_depth=raw_requested_depth, history_complete=history_complete
-                )
 
             score = score_played_move(
                 board,
@@ -3335,8 +3305,8 @@ def _infer_result_from_termination(termination: str | None) -> str | None:
         return None
 
     winner_patterns = (
-        (r"\bwhite\s+wins?\b.*\b(?:time|resignation|resigns?)\b", "1-0"),
-        (r"\bblack\s+wins?\b.*\b(?:time|resignation|resigns?)\b", "0-1"),
+        (r"\bwhite\s+(?:wins?|won)\b.*\b(?:time|resignation|resigns?)\b", "1-0"),
+        (r"\bblack\s+(?:wins?|won)\b.*\b(?:time|resignation|resigns?)\b", "0-1"),
         (r"\bwon\s+by\s+white\b", "1-0"),
         (r"\bwon\s+by\s+black\b", "0-1"),
     )

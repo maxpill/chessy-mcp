@@ -48,9 +48,17 @@ class Analyzer:
         depth: int = 12,
         threads: int = 2,
         hash_mb: int = 128,
+        show_wdl: bool = False,
+        syzygy_path: str | None = None,
     ) -> Analyzer:
         transport, engine = await chess.engine.popen_uci(path)
-        await engine.configure({"Threads": threads, "Hash": hash_mb})
+        options: dict[str, int | str] = {"Threads": threads, "Hash": hash_mb}
+        if show_wdl:
+            options["UCI_ShowWDL"] = "true"
+        if syzygy_path:
+            options["SyzygyPath"] = syzygy_path
+            options["SyzygyProbeLimit"] = 7
+        await engine.configure(options)
         return cls(transport, engine, depth)
 
     async def evaluate(

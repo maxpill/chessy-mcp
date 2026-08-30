@@ -444,7 +444,7 @@ def evaluate_rule_status(
     else:
         repetition_status = "unknown"
 
-    requires_stack = repetition_proven
+    requires_stack = repetition_proven or repetition_status == "unknown"
     return RuleStatus(
         terminal=None,
         winner=None,
@@ -524,6 +524,7 @@ def validate_mating_possibility(
             r"|\bout\s+of\s+time\b"
             r"|\bflag\s*(?:fell|fall|dropped)\b"
             r"|\blost\s+on\s+time\b"
+            r"|\b(?:white|black)\s+(?:wins?|won)\s+on\s+time\b"
             r"|\bclock\s+(?:flagged|expired)\b",
             term_clean,
         )

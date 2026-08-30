@@ -20,7 +20,10 @@ T = TypeVar("T")
 
 
 def _git_sha() -> str:
-    """Best-effort git HEAD sha for the working tree; 'unknown' if not a git repo."""
+    """Return the deployed build SHA, falling back to the local git HEAD."""
+    env_sha = os.environ.get("BUILD_SHA") or os.environ.get("CHESSY_BUILD_SHA")
+    if env_sha and env_sha.strip():
+        return env_sha.strip()
     try:
         out = (
             subprocess.check_output(
