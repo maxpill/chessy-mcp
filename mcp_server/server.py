@@ -1121,7 +1121,11 @@ def _truncate_movetext_at_result(text: str) -> str:
     return text
 
 
-def _parse_pgn_game_candidate(text: str, strict: bool = False) -> chess.pgn.Game | None:
+def _parse_pgn_game_candidate(
+    text: str,
+    strict: bool = False,
+    allow_trailing_after_terminal: bool = False,
+) -> chess.pgn.Game | None:
     try:
         masked_for_tags = _mask_comments_and_escapes(text)
         for m in TAG_PAIR_REGEX.finditer(masked_for_tags):
@@ -1173,9 +1177,14 @@ def _parse_pgn_game_candidate(text: str, strict: bool = False) -> chess.pgn.Game
                     if b.is_game_over(claim_draw=False):
                         reached_game_over = True
                         break
-                if not reached_game_over:
+                if reached_game_over:
+                    if not allow_trailing_after_terminal:
+                        raise ValueError(
+                            "INVALID_PGN: Movetext contains moves after automatic game termination."
+                        )
+                else:
                     raise ValueError(
-                        f"Invalid PGN syntax or illegal move in game: {game.errors[0]}"
+                        f"INVALID_PGN: Invalid PGN syntax or illegal move in game: {game.errors[0]}"
                     )
 
             return game
@@ -1617,14 +1626,26 @@ def _extract_canonical_pgn_text(text: str) -> str:
     return _strip_pgn_escape_lines(cleaned)
 
 
-def _extract_game(text: str, strict: bool = False) -> chess.pgn.Game:
-    """Extract a chess.pgn.Game from raw, dirty, annotated, or conversational text."""
+def _extract_game(
+    text: str,
+    strict: bool = False,
+    allow_trailing_after_terminal: bool = False,
+) -> chess.pgn.Game:
+    """Extract one game and reject hidden post-terminal moves by default."""
     _check_multiple_games(text)
     canonical = _extract_canonical_pgn_text(text)
-    return _extract_game_inner(canonical, strict=strict)
+    return _extract_game_inner(
+        canonical,
+        strict=strict,
+        allow_trailing_after_terminal=allow_trailing_after_terminal,
+    )
 
 
-def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
+def _extract_game_inner(
+    cleaned: str,
+    strict: bool = False,
+    allow_trailing_after_terminal: bool = False,
+) -> chess.pgn.Game:
     masked_cleaned = _mask_comments_and_escapes(cleaned)
     for m in TAG_PAIR_REGEX.finditer(masked_cleaned):
         if m.group(1).lower() == "variant":
@@ -1670,7 +1691,11 @@ def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
             else:
                 break
     if header_end > 0:
-        g = _parse_pgn_game_candidate(norm_text, strict=strict)
+        g = _parse_pgn_game_candidate(
+            norm_text,
+            strict=strict,
+            allow_trailing_after_terminal=allow_trailing_after_terminal,
+        )
         if g is not None:
             if not list(g.mainline_moves()):
                 has_move_tokens = bool(re.search(r"\b\d+\s*[\.\:]\s*[A-Za-z]", norm_text))
@@ -1681,7 +1706,11 @@ def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
             return g
 
     # 2. Direct parse attempt
-    g = _parse_pgn_game_candidate(norm_text, strict=strict)
+    g = _parse_pgn_game_candidate(
+            norm_text,
+            strict=strict,
+            allow_trailing_after_terminal=allow_trailing_after_terminal,
+        )
     if g is not None:
         if not list(g.mainline_moves()):
             has_move_tokens = bool(re.search(r"\b\d+\s*[\.\:]\s*[A-Za-z]", norm_text))
@@ -1695,7 +1724,11 @@ def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
     for move_match in re.finditer(r"\b1\s*[\.\:]\s*[A-Za-z]", norm_text):
         sub_movetext = norm_text[move_match.start() :]
         try:
-            g = _parse_pgn_game_candidate(sub_movetext, strict=strict)
+            g = _parse_pgn_game_candidate(
+                sub_movetext,
+                strict=strict,
+                allow_trailing_after_terminal=allow_trailing_after_terminal,
+            )
             if g is not None and list(g.mainline_moves()):
                 return g
         except Exception:
@@ -1953,7 +1986,7 @@ def _build_board(
                 board = None
 
     if board is None:
-        game = _extract_game(cleaned)
+        game = _extract_game(cleaned, strict=strict)
         board = game.board()
         if not board.is_valid() or board.status() != chess.STATUS_VALID:
             raise ValueError(
@@ -2664,6 +2697,8 @@ async def top_moves(
                         "recommended_action": "game_over"
                         if cand_post_terminal is not None
                         else "play_move",
+                        "build_sha": _build_sha(),
+                        "engine_config": _engine_config(pool),
                         "post_position": {
                             "status": cand_post_terminal or "active",
                             "winner": cand_winner if cand_post_terminal == "checkmate" else None,
@@ -3386,7 +3421,11 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     try:
         _check_multiple_games(pgn)
         canonical_pgn = _extract_canonical_pgn_text(pgn)
-        game = _extract_game_inner(canonical_pgn)
+        game = _extract_game_inner(
+            canonical_pgn,
+            strict=strict,
+            allow_trailing_after_terminal=not strict,
+        )
 
         positions: list[chess.Board] = []
         moves: list[chess.Move] = []
@@ -4257,8 +4296,16 @@ def _build_app(restrict_chatgpt: bool) -> ASGIApp:
     Order matters: outermost runs first on the way in, last on the way out.
     """
     from starlette.middleware.gzip import GZipMiddleware
+    from .config import get_mcp_settings
 
-    security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    cfg = get_mcp_settings()
+    allowed_hosts = [item.strip() for item in cfg.allowed_hosts.split(",") if item.strip()]
+    allowed_origins = [item.strip() for item in cfg.allowed_origins.split(",") if item.strip()]
+    security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=cfg.dns_rebinding_protection,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    )
     base = mcp.streamable_http_app(transport_security=security)
     # GZip is innermost so the JSON-RPC envelope sees the uncompressed payload;
     # analyze_game payloads (multi-MB for long PGNs) benefit ~6× on the wire.

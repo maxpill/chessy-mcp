@@ -70,8 +70,8 @@ primary consumer, and this server is sized for that workload.
 
 ## Performance
 
-- **Stockfish pool size** defaults to `min(cpu_count, 8)` — sized to the
-  OVH production box (8 cores Xeon E5-1620 v2).
+- **Stockfish pool size** defaults to `min(cpu_count, 4)` when not explicitly
+  configured. Production pins 4 workers with 2 Stockfish threads each.
 - **Lifespan-managed pool**: the FastMCP `lifespan` context initializes
   the pool at startup so the first request doesn't pay a 100ms+
   cold-pool penalty.

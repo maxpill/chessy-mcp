@@ -550,3 +550,63 @@ async def test_real_stockfish_analyze_fools_mate_metadata():
         await server_module._cache.clear()
         await pool.close()
         server_module._analyzer_pool = old_pool
+
+
+# Residual audit closure: findings present in v1-v3 but not explicit in the v4 41-test map.
+def test_residual_dns_rebinding_settings_are_enforced(monkeypatch):
+    from mcp.server.transport_security import TransportSecurityMiddleware
+    from mcp_server.config import get_mcp_settings
+
+    monkeypatch.setenv("CHESS_MCP_DNS_REBINDING_PROTECTION", "true")
+    monkeypatch.setenv("CHESS_MCP_ALLOWED_HOSTS", "mcp.trychessy.com,localhost:*")
+    monkeypatch.setenv("CHESS_MCP_ALLOWED_ORIGINS", "https://chatgpt.com")
+    get_mcp_settings.cache_clear()
+    try:
+        cfg = get_mcp_settings()
+        settings = server_module.TransportSecuritySettings(
+            enable_dns_rebinding_protection=cfg.dns_rebinding_protection,
+            allowed_hosts=[item.strip() for item in cfg.allowed_hosts.split(",") if item.strip()],
+            allowed_origins=[item.strip() for item in cfg.allowed_origins.split(",") if item.strip()],
+        )
+        middleware = TransportSecurityMiddleware(settings)
+        assert middleware._validate_host("mcp.trychessy.com") is True
+        assert middleware._validate_host("localhost:8000") is True
+        assert middleware._validate_host("attacker.example") is False
+        assert middleware._validate_origin("https://chatgpt.com") is True
+        assert middleware._validate_origin("https://evil.example") is False
+    finally:
+        get_mcp_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_residual_position_tools_reject_moves_after_automatic_terminal():
+    bad = "1. f3 e5 2. g4 Qh4# 3. e4"
+    with pytest.raises(ToolError, match="INVALID_PGN"):
+        await server_module.evaluate_position(bad, depth=1)
+    with pytest.raises(ToolError, match="INVALID_PGN"):
+        await server_module.top_moves(bad, n=1, depth=1)
+    with pytest.raises(ToolError, match="INVALID_PGN"):
+        await server_module.classify_move(bad, "e4", depth=1)
+
+
+@pytest.mark.asyncio
+async def test_residual_analyze_game_warns_permissive_and_rejects_strict_trailing_move():
+    bad = "1. f3 e5 2. g4 Qh4# 3. e4"
+    permissive = await server_module.analyze_game(bad, depth=1, strict=False)
+    assert permissive.total_plies == 4
+    assert any("after game termination" in w for w in permissive.metadata_warnings)
+    with pytest.raises(ToolError, match="INVALID_PGN"):
+        await server_module.analyze_game(bad, depth=1, strict=True)
+
+
+@pytest.mark.asyncio
+async def test_residual_nested_candidates_share_outer_build_identity():
+    result = await server_module.top_moves("startpos", n=3, depth=1)
+    assert result.result
+    for candidate in result.result:
+        assert candidate.build_sha == result.build_sha
+        assert candidate.engine_config == result.engine_config
+    cached = await server_module.top_moves("startpos", n=3, depth=1)
+    for candidate in cached.result:
+        assert candidate.build_sha == cached.build_sha
+        assert candidate.engine_config == cached.engine_config

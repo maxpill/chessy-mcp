@@ -67,6 +67,20 @@ class MCPSettings(BaseSettings):
     # token. User-Agent and Origin strings are never treated as credentials.
     lock_chatgpt: bool = Field(default=False, validation_alias="CHESS_MCP_LOCK_CHATGPT")
 
+    # MCP transport DNS-rebinding protection. Enabled by default for HTTP.
+    # Host/Origin allowlists use the exact and `host:*` wildcard-port semantics
+    # implemented by the official MCP Python SDK.
+    dns_rebinding_protection: bool = Field(
+        default=True, validation_alias="CHESS_MCP_DNS_REBINDING_PROTECTION"
+    )
+    allowed_hosts: str = Field(
+        default="localhost:*,127.0.0.1:*,[::1]:*,testserver,testserver:*",
+        validation_alias="CHESS_MCP_ALLOWED_HOSTS",
+    )
+    allowed_origins: str = Field(
+        default="", validation_alias="CHESS_MCP_ALLOWED_ORIGINS"
+    )
+
 
 class BuildMetadata(BaseSettings):
     """Build-time metadata injected by CI or Docker."""

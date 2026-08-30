@@ -49,6 +49,9 @@ services:
       - CHESS_MCP_HOST=0.0.0.0
       - CHESS_MCP_PORT=8000
       - CHESS_MCP_LOCK_CHATGPT=true
+      - CHESS_MCP_DNS_REBINDING_PROTECTION=true
+      - CHESS_MCP_ALLOWED_HOSTS=mcp.trychessy.com,mcp.trychessy.com:*,mcp,mcp:8000,localhost:*,127.0.0.1:*
+      - CHESS_MCP_ALLOWED_ORIGINS=https://chatgpt.com,https://chat.openai.com,https://platform.openai.com,http://mcp.trychessy.com,https://mcp.trychessy.com
       - CHESS_MCP_POOL_SIZE=4
       - CHESS_MCP_MAX_CONCURRENT_EVALUATES=8
       - STOCKFISH_HASH_MB=64

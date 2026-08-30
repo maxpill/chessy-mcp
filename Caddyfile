@@ -1,10 +1,9 @@
 # Minimal Caddy — just proxy /mcp to the MCP service.
 #
 # Production tuning (2026-08-29):
-#  * flush_interval -1    — flush each SSE chunk to the client immediately.
-#                           Critical for multi-position analyze_game responses
-#                           where the client wants incremental progress, not a
-#                           75s buffer until the last move completes.
+#  * flush_interval -1    - avoid proxy buffering for streamable HTTP/SSE
+#                           traffic. analyze_game currently returns one completed
+#                           tool result; this does not imply per-position progress.
 #  * keepalive            — reuse the upstream TCP connection to MCP across
 #                           requests instead of opening a fresh TCP per req.
 #                           Saves ~1ms handshake + avoids TIME_WAIT churn.
