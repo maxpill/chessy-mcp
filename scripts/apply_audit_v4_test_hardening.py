@@ -1,5 +1,16 @@
 from pathlib import Path
 
+# R-19: accepting the optional e.p. marker is intentional, but normalization
+# must be visible to callers and to strict-mode validation instead of happening
+# silently between the PGN reader and token validator.
+server_path = Path("mcp_server/server.py")
+server_text = server_path.read_text()
+old_ep_hook = '''        cleaned_movetext = _normalize_movetext_figurines(movetext_section)\n        while "{" in cleaned_movetext and "}" in cleaned_movetext:\n'''
+new_ep_hook = '''        cleaned_movetext = _normalize_movetext_figurines(movetext_section)\n        if re.search(\n            r"(?:^|\\s)\\(?e\\.?p\\.?\\)?(?=\\s|$)",\n            cleaned_movetext,\n            flags=re.IGNORECASE,\n        ):\n            syntax_warnings.append(\n                "En-passant marker 'e.p.' normalized to canonical SAN."\n            )\n        while "{" in cleaned_movetext and "}" in cleaned_movetext:\n'''
+if old_ep_hook not in server_text:
+    raise SystemExit("analyze_game movetext normalization hook not found")
+server_path.write_text(server_text.replace(old_ep_hook, new_ep_hook, 1))
+
 path = Path("tests/test_mcp_ultra_audit_fixtures_2026_08_28.py")
 text = path.read_text()
 
@@ -71,9 +82,10 @@ async def test_r_21_castle_aliases():
     """R-21: O-O and 0-0 must both parse and move king/rook correctly."""
     server_module._analyzer_pool = _FlatPool(cp=0, best_move="e1g1")  # type: ignore
     for san in ("O-O", "0-0"):
-        pgn = f"1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. {san} {san} *"
+        # Both castles are legal: Black first clears g8 with ...Nf6 and f8 with ...Be7.
+        pgn = f"1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. {san} Be7 5. Re1 {san} *"
         res = await server_module.analyze_game(pgn, depth=8)
-        assert res.total_plies == 8
+        assert res.total_plies == 10
 
         final_board = server_module._build_board(pgn, [])
         assert final_board.piece_at(chess.G1) == chess.Piece(chess.KING, chess.WHITE)
