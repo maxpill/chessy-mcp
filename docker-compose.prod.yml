@@ -83,6 +83,10 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:9551:80"
+    environment:
+      # The edge injects this secret only for OpenAI/ChatGPT-identified traffic.
+      # It must be the same value used by the token-only MCP middleware above.
+      - CHESS_MCP_AUTH_TOKEN=${CHESS_MCP_AUTH_TOKEN:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
