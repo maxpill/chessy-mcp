@@ -1,14 +1,19 @@
-# MCP server image — pure Python, connects to the chessy/stockfish sidecar
+# MCP server image - pure Python, connects to the chessy/stockfish sidecar
 # over TCP at STOCKFISH_HOST:STOCKFISH_PORT. No Stockfish binary baked in.
 
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+
+ARG BUILD_SHA=unknown
+ARG CHESSY_PACKAGE_VERSION=0.1.0
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
-    UVLOOP_DISABLE_IMPORT_ERRORS=1
+    UVLOOP_DISABLE_IMPORT_ERRORS=1 \
+    BUILD_SHA=${BUILD_SHA} \
+    CHESSY_PACKAGE_VERSION=${CHESSY_PACKAGE_VERSION}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates tini \
@@ -16,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Dependency layer — cache uv's resolution across source-only changes.
+# Dependency layer - cache uv's resolution across source-only changes.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
