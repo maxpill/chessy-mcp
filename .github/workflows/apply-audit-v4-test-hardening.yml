@@ -31,6 +31,19 @@ jobs:
           uv sync --frozen --dev
       - name: Apply hardened regressions
         run: python scripts/apply_audit_v4_test_hardening.py
+      - name: Keep post-castle rook on f1
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("tests/test_mcp_ultra_audit_fixtures_2026_08_28.py")
+          text = p.read_text()
+          old = 'pgn = f"1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. {san} Be7 5. Re1 {san} *"'
+          new = 'pgn = f"1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. {san} Be7 5. d3 {san} *"'
+          if old not in text:
+              raise SystemExit("castling fixture line not found")
+          p.write_text(text.replace(old, new, 1))
+          PY
       - name: Compile
         run: uv run python -m compileall -q mcp_server core tests
       - name: Hardened tests
