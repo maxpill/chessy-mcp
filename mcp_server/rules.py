@@ -299,6 +299,49 @@ def choose_recommended_action(
     return "claim_draw_with_intended_move"
 
 
+def choose_recommended_action(
+    board: chess.Board,
+    *,
+    can_claim_now: bool,
+    can_claim_with_intended_move: bool,
+    mover_score: int | None = None,
+    mate_for_mover: int | None = None,
+) -> str:
+    """Choose one canonical legal root action for every MCP endpoint."""
+    if not (can_claim_now or can_claim_with_intended_move):
+        return "play_move"
+    if mate_for_mover is not None and mate_for_mover > 0:
+        return "play_move"
+
+    piece_vals = {
+        chess.PAWN: 100,
+        chess.KNIGHT: 300,
+        chess.BISHOP: 300,
+        chess.ROOK: 500,
+        chess.QUEEN: 900,
+    }
+    mover_mat = sum(
+        len(board.pieces(pt, board.turn)) * value
+        for pt, value in piece_vals.items()
+    )
+    opp_mat = sum(
+        len(board.pieces(pt, not board.turn)) * value
+        for pt, value in piece_vals.items()
+    )
+    is_down_material = opp_mat - mover_mat >= 200
+
+    if mover_score is None:
+        claim_preferred = is_down_material
+    else:
+        claim_preferred = not (mover_score > 50 and not is_down_material)
+
+    if not claim_preferred:
+        return "play_move"
+    if can_claim_now:
+        return "claim_draw"
+    return "claim_draw_with_intended_move"
+
+
 def evaluate_rule_status(
     board: chess.Board,
     mover_score: int | None = None,
