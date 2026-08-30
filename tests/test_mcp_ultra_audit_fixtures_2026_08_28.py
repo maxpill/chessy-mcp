@@ -1071,8 +1071,8 @@ async def test_m05_verbosity_aliases():
     for v in ("compact", "minimal", "min"):
         res = await server_module.evaluate_position("startpos", depth=10, verbosity=v)
         assert res.lichess_url is None
-    # Unknown values are rejected instead of silently changing semantics.
-    with pytest.raises(ValueError, match="INVALID_VERBOSITY"):
+    # Public tools normalize validation failures into structured ToolError.
+    with pytest.raises(ToolError, match="INVALID_VERBOSITY"):
         await server_module.evaluate_position("startpos", depth=10, verbosity="unknown-mode")
 
 
