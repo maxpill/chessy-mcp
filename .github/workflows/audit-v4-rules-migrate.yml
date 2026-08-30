@@ -23,6 +23,7 @@ jobs:
         run: |
           python scripts/apply_audit_v4_rules.py
           python scripts/apply_audit_v4_semantics.py
+          python scripts/apply_audit_v4_server.py
       - name: Compile changed modules
         run: >-
           python -m py_compile
@@ -30,15 +31,16 @@ jobs:
           mcp_server/actions.py
           mcp_server/models.py
           mcp_server/cache.py
+          mcp_server/server.py
       - name: Commit migrations
         shell: bash
         run: |
-          if git diff --quiet -- mcp_server/rules.py mcp_server/models.py mcp_server/cache.py; then
+          if git diff --quiet -- mcp_server/rules.py mcp_server/models.py mcp_server/cache.py mcp_server/server.py; then
             echo "No migration changes required"
             exit 0
           fi
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add mcp_server/rules.py mcp_server/models.py mcp_server/cache.py
-          git commit -m "fix: audit v4 semantic invariants [audit-v4-migrations-applied]"
+          git config user.email "41898282+maxpill@users.noreply.github.com"
+          git add mcp_server/rules.py mcp_server/models.py mcp_server/cache.py mcp_server/server.py
+          git commit -m "fix: audit v4 server and semantic invariants [audit-v4-migrations-applied]"
           git push origin HEAD:${GITHUB_REF_NAME}
