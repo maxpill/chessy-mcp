@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import chess
+import chess.pgn
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
@@ -1934,6 +1935,7 @@ def _build_board(
         for move in game.mainline_moves():
             board.push(move)
 
+    assert board is not None
     for move_str in moves or []:
         move, _ = _parse_move_on_board_with_warning(board, move_str, strict=strict)
         board.push(move)
@@ -3352,7 +3354,7 @@ def _infer_result_from_termination(termination: str | None) -> str | None:
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
-async def analyze_game(
+async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     pgn: str,
     depth: int = 14,
     strict: bool = False,
