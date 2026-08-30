@@ -435,8 +435,15 @@ def score_played_move(
 
     canonical_best_action = eval_before.best_action or rule_before.recommended_action
 
-    # 1. Delivered Checkmate (mover wins)
-    if board_after.is_checkmate() and board_after.turn != board_before.turn:
+    # 1. Delivered Checkmate (mover wins). Only a play_move action actually
+    # executes ``move``. Draw claims are procedural actions made instead of
+    # playing the supplied move, so a mating placeholder/intended move must
+    # not cause a claim to be misclassified as a mating play.
+    if (
+        action_type == "play_move"
+        and board_after.is_checkmate()
+        and board_after.turn != board_before.turn
+    ):
         return PlayedMoveScore(
             move_class=MoveClass.BEST,
             centipawn_loss=0,
@@ -459,8 +466,13 @@ def score_played_move(
             claim_moves=rule_before.claim_moves,
         )
 
-    # 2. Checkmate delivered against mover (mover is in checkmate)
-    if board_after.is_checkmate() and board_after.turn == board_before.turn:
+    # 2. Checkmate delivered against mover. As above, post-move terminal
+    # consequences apply only when the requested action is play_move.
+    if (
+        action_type == "play_move"
+        and board_after.is_checkmate()
+        and board_after.turn == board_before.turn
+    ):
         return PlayedMoveScore(
             move_class=MoveClass.BLUNDER,
             centipawn_loss=1000,
@@ -529,7 +541,7 @@ def score_played_move(
                 move_class=MoveClass.BLUNDER,
                 centipawn_loss=None,
                 raw_centipawn_loss=None,
-                raw_centipawn_delta=raw_board_delta,
+                raw_centipawn_delta=0,
                 mate_distance_loss=None,
                 effective_loss=1000,
                 loss_kind="outcome_penalty",
@@ -552,7 +564,7 @@ def score_played_move(
             move_class=MoveClass.BEST,
             centipawn_loss=0,
             raw_centipawn_loss=0,
-            raw_centipawn_delta=raw_board_delta,
+            raw_centipawn_delta=0,
             mate_distance_loss=0,
             effective_loss=0,
             loss_kind="none",

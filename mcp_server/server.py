@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import io
 import ipaddress
 import json
@@ -854,6 +855,26 @@ def normalize_termination(term: str | None) -> str | None:
     if re.search(r"\bdraw\s+by\s+agreement\b|\bagreement\b", t):
         return "draw_agreement"
     return None
+
+
+_TIME_CONTROL_STAGE_RE = re.compile(r"^(?:\d+|\d+/\d+|\d+\+\d+|\*\d+)$")
+
+
+def _is_valid_pgn_time_control(value: str) -> bool:
+    """Validate the PGN TimeControl tag grammar.
+
+    PGN permits a single stage or colon-separated stages. A stage is one of:
+    sudden-death seconds (``300``), moves/seconds (``40/7200``), Fischer
+    seconds+increment (``300+5``), or hourglass (``*60``). ``?`` and ``-``
+    are the standard unknown/unspecified markers.
+    """
+    text = value.strip()
+    if text in {"?", "-"}:
+        return True
+    if not text:
+        return False
+    stages = text.split(":")
+    return all(bool(stage) and _TIME_CONTROL_STAGE_RE.fullmatch(stage) is not None for stage in stages)
 
 
 def _find_movetext_result(text: str) -> str | None:
@@ -3586,9 +3607,8 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
                 metadata_warnings.append(
                     f"Invalid BlackElo header tag '{black_elo_val}'; expected numeric integer rating."
                 )
-        if time_control_val is not None and time_control_val not in ("-", "?"):
-            if not re.match(r"^\d+(?:\+\d+)?$|^\d+/\d+$", time_control_val):
-                metadata_warnings.append(f"Invalid TimeControl header tag '{time_control_val}'.")
+        if time_control_val is not None and not _is_valid_pgn_time_control(time_control_val):
+            metadata_warnings.append(f"Invalid TimeControl header tag '{time_control_val}'.")
 
         eco_header = tags_dict.get("ECO") or h.get("ECO")
         opening_header = tags_dict.get("Opening") or h.get("Opening")
@@ -4155,8 +4175,41 @@ class ASGIRequestLoggerMiddleware:
             await send(cast(Message, {"type": "http.response.body", "body": b""}))
             return
 
+        # Authentication is header-only. Reject an unauthenticated caller before
+        # reading/buffering a potentially large POST body, otherwise the auth wall
+        # itself can be used as a memory/CPU amplification point.
+        if path != "/health" and self.restrict_to_chatgpt:
+            from .config import get_mcp_settings
+
+            auth_token = get_mcp_settings().auth_token
+            provided = headers_dict.get(b"x-chessy-auth", b"").decode("utf-8", "ignore").strip()
+            authorization = headers_dict.get(b"authorization", b"").decode("utf-8", "ignore").strip()
+            bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+
+            def token_matches(candidate: str) -> bool:
+                return bool(auth_token) and hmac.compare_digest(candidate, auth_token)
+
+            if not (token_matches(provided) or token_matches(bearer)):
+                log.warning("Blocked unauthenticated client ip=%s ua=%r origin=%r", client_ip, ua, origin)
+                response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Forbidden: valid MCP auth token required"}}\n'
+                await send(cast(Message, {"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii"))]}))
+                await send(cast(Message, {"type": "http.response.body", "body": response_body}))
+                return
+
         request_cost = 1.0
         if method == "POST":
+            raw_content_length = headers_dict.get(b"content-length", b"").decode("ascii", "ignore").strip()
+            if raw_content_length:
+                try:
+                    declared_length = int(raw_content_length)
+                except ValueError:
+                    declared_length = -1
+                if declared_length > self.MAX_BUFFERED_BODY:
+                    response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request body too large"}}\n'
+                    await send(cast(Message, {"type": "http.response.start", "status": 413, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii"))]}))
+                    await send(cast(Message, {"type": "http.response.body", "body": response_body}))
+                    return
+
             chunks: list[bytes] = []
             total = 0
             while True:
@@ -4207,21 +4260,6 @@ class ASGIRequestLoggerMiddleware:
         if path == "/health":
             await self.app(scope, receive, send)
             return
-
-        if self.restrict_to_chatgpt:
-            from .config import get_mcp_settings
-
-            auth_token = get_mcp_settings().auth_token
-            provided = headers_dict.get(b"x-chessy-auth", b"").decode("utf-8", "ignore").strip()
-            authorization = headers_dict.get(b"authorization", b"").decode("utf-8", "ignore").strip()
-            bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-            valid = bool(auth_token) and (provided == auth_token or bearer == auth_token)
-            if not valid:
-                log.warning("Blocked unauthenticated client ip=%s ua=%r origin=%r", client_ip, ua, origin)
-                response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Forbidden: valid MCP auth token required"}}\n'
-                await send(cast(Message, {"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii"))]}))
-                await send(cast(Message, {"type": "http.response.body", "body": response_body}))
-                return
 
         await self.app(scope, receive, send)
 
