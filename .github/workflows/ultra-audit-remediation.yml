@@ -45,8 +45,8 @@ jobs:
       - name: Ruff
         run: uv run ruff check mcp_server core
 
-      - name: Pyright strict
-        run: uv run pyright mcp_server core
-
       - name: Full pytest suite
         run: uv run pytest -q
+
+      - name: Pyright
+        run: uv run pyright mcp_server core
