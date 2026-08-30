@@ -81,7 +81,7 @@ class MCPEval(BaseModel):
     # New: typed best_action payload (audit 10.2)
     best_action_obj: dict[str, Any] | None = None
     # New: typed legal actions list (audit 10.1)
-    legal_actions: list[dict[str, Any]] = Field(default_factory=list)
+    legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     decision_value: dict[str, Any] | None = None
     engine_eval: dict[str, Any] | None = None
     # History completeness (audit H-01 / 10.5)
@@ -501,10 +501,7 @@ def score_played_move(
     # the mover has a forced mate (e.g. Qg7# at halfmove 99) is a blundered win, not
     # a claim. Likewise a claim with no immediate draw on the board is not a claim
     # at all — it's a move that loses the option.
-    if action_type in ("claim_draw", "claim_draw_with_intended_move") or action_type in (
-        ChessActionType.CLAIM_DRAW_NOW.value,
-        ChessActionType.CLAIM_DRAW_WITH_INTENDED_MOVE.value,
-    ):
+    if action_type in ("claim_draw", "claim_draw_with_intended_move"):
         is_claim_now_action = action_type in ("claim_draw", ChessActionType.CLAIM_DRAW_NOW.value)
         played_uci = move.uci().lower()
 
@@ -1334,7 +1331,7 @@ class GameAnalysisResult(BaseModel):
     black_blunders: int = 0
     black_mistakes: int = 0
     black_inaccuracies: int = 0
-    turning_points: list[PlyAnalysisItem] = Field(default_factory=list)
+    turning_points: list[PlyAnalysisItem] = Field(default_factory=list[PlyAnalysisItem])
     white: str | None = None
     black: str | None = None
     event: str | None = None
@@ -1385,7 +1382,7 @@ class TopMovesResult(BaseModel):
     claim_moves: list[str] = Field(default_factory=list)
     # NEW: typed best_action and legal_actions (audit 10.1, 10.2)
     best_action_obj: dict[str, Any] | None = None
-    legal_actions: list[dict[str, Any]] = Field(default_factory=list)
+    legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     # History completeness (audit H-01)
     history_completeness: str = "complete"
     repetition_status: str = "none"
@@ -1406,7 +1403,7 @@ class TopMovesResult(BaseModel):
     canonical_fen: str | None = None
     fen_was_canonicalized: bool = False
     result: list[MCPEval] = Field(
-        default_factory=list,
+        default_factory=list[MCPEval],
         description=(
             "Ranked candidate moves (best first) with evaluation, best_move, pv, "
             "and depth. Empty for terminal positions. Each candidate represents "

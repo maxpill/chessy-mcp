@@ -10,7 +10,7 @@ engine pool calls `usage.count("stockfish")`.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -37,11 +37,15 @@ Recorder = Callable[[UsageEvent], Awaitable[None]]
 _recorder: Recorder | None = None
 
 
+def _empty_usage_counts() -> dict[UsageKind, int]:
+    return {}
+
+
 @dataclass
 class _Tally:
     account_id: str | None
     feature: str
-    counts: dict[UsageKind, int] = field(default_factory=dict)
+    counts: dict[UsageKind, int] = field(default_factory=_empty_usage_counts)
 
 
 _tally: ContextVar[_Tally | None] = ContextVar("chessy_mcp_usage_tally", default=None)
@@ -71,5 +75,5 @@ async def _record(event: UsageEvent) -> None:
 @asynccontextmanager
 async def usage_context(
     feature: str, account_id: str | None = None
-) -> AsyncIterator[None]:
+) -> AsyncGenerator[None]:
     yield

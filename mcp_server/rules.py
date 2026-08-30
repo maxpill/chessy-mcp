@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 import chess
-import chess.pgn
 
 _STATUS_FLAG_NAMES = [
     (getattr(chess, "STATUS_NO_WHITE_KING", 1 << 0), "NO_WHITE_KING"),
@@ -53,15 +52,15 @@ class RuleStatus:
     terminal: str | None = None
     winner: str | None = None
     can_claim_now: bool = False
-    claim_reasons_now: list[str] = field(default_factory=list)
+    claim_reasons_now: list[str] = field(default_factory=list[str])
     can_claim_with_intended_move: bool = False
-    intended_claim_moves: list[chess.Move] = field(default_factory=list)
-    intended_claim_sans: list[str] = field(default_factory=list)
-    intended_claim_ucis: list[str] = field(default_factory=list)
-    intended_claim_reasons_by_uci: dict[str, list[str]] = field(default_factory=dict)
-    claim_reasons: list[str] = field(default_factory=list)
+    intended_claim_moves: list[chess.Move] = field(default_factory=list[chess.Move])
+    intended_claim_sans: list[str] = field(default_factory=list[str])
+    intended_claim_ucis: list[str] = field(default_factory=list[str])
+    intended_claim_reasons_by_uci: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
+    claim_reasons: list[str] = field(default_factory=list[str])
     can_claim_draw: bool = False
-    claim_moves: list[str] = field(default_factory=list)
+    claim_moves: list[str] = field(default_factory=list[str])
     claim_move: str | None = None
     claim_move_uci: str | None = None
     claim_move_san: str | None = None

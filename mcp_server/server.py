@@ -10,7 +10,7 @@ import os
 import re
 import subprocess
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from importlib import metadata
 from pathlib import Path
@@ -65,9 +65,10 @@ log = logging.getLogger("chessy_mcp.server")
 
 
 def _format_exception(exc: BaseException) -> str:
-    if isinstance(exc, (ExceptionGroup, BaseExceptionGroup)):
-        sub_msgs = [_format_exception(e) for e in exc.exceptions]
-        return "; ".join(sub_msgs) if sub_msgs else str(exc)
+    if isinstance(exc, BaseExceptionGroup):
+        group = cast(BaseExceptionGroup[BaseException], exc)
+        sub_msgs = [_format_exception(e) for e in group.exceptions]
+        return "; ".join(sub_msgs) if sub_msgs else str(group)
     return str(exc)
 
 
@@ -360,7 +361,7 @@ def _stockfish_path() -> str:
 
 
 @asynccontextmanager
-async def _mcp_lifespan(server: MCPServer) -> AsyncIterator[dict[str, Any]]:
+async def _mcp_lifespan(server: MCPServer) -> AsyncGenerator[dict[str, Any]]:
     """Initialize the Stockfish pool at startup, tear it down at exit.
 
     Replaces the lazy-init path with eager startup so the first user
@@ -4062,12 +4063,13 @@ def _effective_client_ip(peer_ip: str, forwarded_for: str) -> str:
 def _estimate_mcp_request_cost(body: bytes) -> float:
     """Approximate CPU admission cost from tool, depth, MultiPV and PGN size."""
     try:
-        payload = json.loads(body.decode("utf-8"))
-        params = payload.get("params") if isinstance(payload, dict) else None
-        params = params if isinstance(params, dict) else {}
-        tool_name = params.get("name") or params.get("tool") or ""
-        args = params.get("arguments")
-        args = args if isinstance(args, dict) else {}
+        payload_any: Any = json.loads(body.decode("utf-8"))
+        payload = cast(dict[str, Any], payload_any) if isinstance(payload_any, dict) else {}
+        params_any: Any = payload.get("params")
+        params = cast(dict[str, Any], params_any) if isinstance(params_any, dict) else {}
+        tool_name = str(params.get("name") or params.get("tool") or "")
+        args_any: Any = params.get("arguments")
+        args = cast(dict[str, Any], args_any) if isinstance(args_any, dict) else {}
         depth = max(1, min(int(args.get("depth", 14)), 30))
         if tool_name == "evaluate_position":
             return 1.0 + depth / 14.0

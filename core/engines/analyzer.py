@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any
 
 import chess
 import chess.engine
@@ -19,8 +19,7 @@ def _white_pov_wdl(info: Mapping[str, Any]) -> tuple[int, int, int] | None:
         raw = info.get("wdl")
         if raw is None:
             return None
-        raw_any = cast(Any, raw)
-        white = raw_any.white() if hasattr(raw_any, "white") else raw_any
+        white = raw.white() if hasattr(raw, "white") else raw
         return int(white[0]), int(white[1]), int(white[2])
     except (TypeError, ValueError, IndexError, AttributeError):
         return None
@@ -83,7 +82,7 @@ class Analyzer:
             else:
                 info = await self._engine.analyse(board, limit, multipv=1)
 
-        info_dict = info[0] if isinstance(info, list) else info
+        info_dict = info[0]
         score_obj = info_dict.get("score")
         if score_obj is None:
             return Eval(cp=None, mate=None, best_move=None, pv=[], depth=info_dict.get("depth", actual_depth))
