@@ -20,7 +20,10 @@ T = TypeVar("T")
 
 
 def _git_sha() -> str:
-    """Best-effort git HEAD sha for the working tree; 'unknown' if not a git repo."""
+    """Return the deployed build SHA, falling back to the local git HEAD."""
+    env_sha = os.environ.get("BUILD_SHA") or os.environ.get("CHESSY_BUILD_SHA")
+    if env_sha and env_sha.strip():
+        return env_sha.strip()
     try:
         out = (
             subprocess.check_output(
@@ -86,7 +89,14 @@ _LOGIC_FILES = (
     "mcp_server/cache.py",
     "mcp_server/rules.py",
     "mcp_server/models.py",
+    "mcp_server/actions.py",
     "mcp_server/server.py",
+    "mcp_server/tcp_analyzer.py",
+    "mcp_server/tcp_client.py",
+    "core/engines/analyzer.py",
+    "core/engines/analysis.py",
+    "core/engines/grading.py",
+    "core/winprob.py",
 )
 
 
@@ -117,7 +127,7 @@ _LOGIC_HASH = _compute_logic_hash()
 
 def _resolve_cache_version() -> str:
     """Compose the cache version from build SHA, package version, and logic hash."""
-    return f"v13+{_git_sha()}+{_package_version()}+{_LOGIC_HASH}"
+    return f"v14+{_git_sha()}+{_package_version()}+{_LOGIC_HASH}"
 
 
 CACHE_VERSION = _resolve_cache_version()
@@ -149,48 +159,32 @@ def _board_transposition_key(b: chess.Board) -> tuple[Any, ...]:
     )
 
 
-_HISTORY_FINGERPRINT_CACHE: dict[tuple[int, int], str] = {}
-_HISTORY_FINGERPRINT_CACHE_MAX = 50_000
-
-
 def history_fingerprint(board: chess.Board) -> str:
-    """Fingerprint of reversible history affecting repetition / draw claims.
+    """Fingerprint the reversible history that can affect repetition rights.
 
-    Memoized on (id(board), len(move_stack)). The board's stack only grows
-    in our usage (game replay + occasional temporary pop/push inside the
-    caller), so length acts as a cheap content-change signal. id reuse
-    across distinct boards is mitigated by length-collisions being rare
-    AND a stale fingerprint yielding a cache miss rather than wrong data.
-    For analyze_game evaluating 80 positions from the same PGN, this saves
-    ~4000 SHA256 calls + 4000 pop/push cycles.
+    Correctness is more important than memoizing by object identity. An earlier
+    implementation cached by ``(id(board), len(move_stack))``; Python can reuse
+    object ids after a board is freed, and a board can also be rewound and given
+    a different history at the same stack length. Either case can make two
+    distinct repetition histories share a cache key.
+
+    Work on a stack-preserving copy so the caller's board is never mutated.
+    Only positions since the most recent irreversible move can contribute to a
+    future repetition claim, so the walk stops there.
     """
     if not board.move_stack:
         return ""
-    cache_key = (id(board), len(board.move_stack))
-    cached = _HISTORY_FINGERPRINT_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
 
-    keys: list[str] = [str(_board_transposition_key(board))]
-    switchyard: list[chess.Move] = []
-    try:
-        while board.move_stack:
-            move = board.pop()
-            switchyard.append(move)
-            if board.is_irreversible(move):
-                break
-            keys.append(str(_board_transposition_key(board)))
-    finally:
-        while switchyard:
-            board.push(switchyard.pop())
-    import hashlib
+    work = board.copy(stack=True)
+    keys: list[str] = [str(_board_transposition_key(work))]
+    while work.move_stack:
+        move = work.pop()
+        if work.is_irreversible(move):
+            break
+        keys.append(str(_board_transposition_key(work)))
 
-    h = hashlib.sha256(";".join(keys).encode("utf-8")).hexdigest()[:12]
-    result = f":h={h}"
-    if len(_HISTORY_FINGERPRINT_CACHE) >= _HISTORY_FINGERPRINT_CACHE_MAX:
-        _HISTORY_FINGERPRINT_CACHE.clear()
-    _HISTORY_FINGERPRINT_CACHE[cache_key] = result
-    return result
+    digest = hashlib.sha256(";".join(keys).encode("utf-8")).hexdigest()[:12]
+    return f":h={digest}"
 
 
 def canonical_fen(board: chess.Board) -> str:
@@ -198,19 +192,30 @@ def canonical_fen(board: chess.Board) -> str:
     return board.fen()
 
 
-def eval_cache_key(board: chess.Board, depth: int, engine_version: str | None = None) -> str:
+def eval_cache_key(
+    board: chess.Board,
+    depth: int,
+    engine_version: str | None = None,
+    history_completeness: str = "incomplete",
+) -> str:
     """Generate canonical cache key for position evaluation."""
     fp = history_fingerprint(board)
     ev = _resolve_engine_version(engine_version)
-    return f"mcp:{CACHE_VERSION}:eng={ev}:eval:{board.fen()}{fp}:{depth}"
+    return f"mcp:{CACHE_VERSION}:eng={ev}:eval:hist={history_completeness}:{board.fen()}{fp}:{depth}"
 
 
-def top_moves_cache_key(board: chess.Board, depth: int, n: int = 1, engine_version: str | None = None) -> str:
+def top_moves_cache_key(
+    board: chess.Board,
+    depth: int,
+    n: int = 1,
+    engine_version: str | None = None,
+    history_completeness: str = "incomplete",
+) -> str:
     """Generate canonical cache key for MultiPV top moves."""
     fp = history_fingerprint(board)
     n_part = f":n={n}" if n is not None else ""
     ev = _resolve_engine_version(engine_version)
-    return f"mcp:{CACHE_VERSION}:eng={ev}:top:{board.fen()}{fp}:{depth}{n_part}"
+    return f"mcp:{CACHE_VERSION}:eng={ev}:top:hist={history_completeness}:{board.fen()}{fp}:{depth}{n_part}"
 
 
 def classify_cache_key(
@@ -219,12 +224,13 @@ def classify_cache_key(
     depth: int,
     action_type: str = "play_move",
     engine_version: str | None = None,
+    history_completeness: str = "incomplete",
 ) -> str:
     """Generate canonical cache key for move classification."""
     fp = history_fingerprint(board)
     act_part = f":{action_type}" if action_type and action_type != "play_move" else ""
     ev = _resolve_engine_version(engine_version)
-    return f"mcp:{CACHE_VERSION}:eng={ev}:classify:{board.fen()}{fp}:{move_uci}:{depth}{act_part}"
+    return f"mcp:{CACHE_VERSION}:eng={ev}:classify:hist={history_completeness}:{board.fen()}{fp}:{move_uci}:{depth}{act_part}"
 
 
 class AsyncLRUCache[T]:

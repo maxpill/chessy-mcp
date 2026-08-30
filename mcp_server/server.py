@@ -2,33 +2,33 @@ from __future__ import annotations
 
 import asyncio
 import io
+import ipaddress
+import json
 import logging
 import math
 import os
 import re
 import subprocess
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from importlib import metadata
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import chess
-
-from mcp.server.mcpserver import Context
-from mcp.server.mcpserver import MCPServer
+import chess.pgn
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-log = logging.getLogger("chessy_mcp.server")
-
 from core.engines.analyzer import pv_to_san
 from core.engines.openings import lookup_opening
 from core.engines.pool import AnalyzerPool
-from core.engines.types import MoveClass
+from core.engines.types import Eval, MoveClass
+from mcp_server.actions import build_played_action
 from mcp_server.cache import (
     CACHE_VERSION as CACHE_VERSION,
 )
@@ -39,6 +39,7 @@ from mcp_server.cache import (
     eval_cache_key,
     top_moves_cache_key,
 )
+from mcp_server.config import MCPSettings
 from mcp_server.metrics import metrics
 from mcp_server.models import (
     GameAnalysisResult,
@@ -49,6 +50,7 @@ from mcp_server.models import (
     score_played_move,
 )
 from mcp_server.rules import (
+    choose_recommended_action,
     evaluate_rule_status,
     format_fen_status_errors,
     is_locked_dead_position,
@@ -59,10 +61,14 @@ from mcp_server.tcp_analyzer import TCPAnalyzerPool
 from mcp_server.urls import lichess_urls
 
 
+log = logging.getLogger("chessy_mcp.server")
+
+
 def _format_exception(exc: BaseException) -> str:
-    if isinstance(exc, (ExceptionGroup, BaseExceptionGroup)):
-        sub_msgs = [_format_exception(e) for e in exc.exceptions]
-        return "; ".join(sub_msgs) if sub_msgs else str(exc)
+    if isinstance(exc, BaseExceptionGroup):
+        group = cast(BaseExceptionGroup[BaseException], exc)
+        sub_msgs = [_format_exception(e) for e in group.exceptions]
+        return "; ".join(sub_msgs) if sub_msgs else str(group)
     return str(exc)
 
 
@@ -91,58 +97,29 @@ _VERBOSITY_ALIASES = {
 
 
 def _resolve_verbosity(value: Any) -> str:
-    """Normalize a verbosity string to one of {compact, full}. Unknown
-    values fall back to `full` (the legacy behavior)."""
+    """Normalize verbosity and reject unknown values instead of silently changing semantics."""
     if value is None:
         return VERBOSITY_FULL
-    s = str(value).strip().lower()
-    return _VERBOSITY_ALIASES.get(s, VERBOSITY_FULL)
+    normalized = str(value).strip().lower()
+    resolved = _VERBOSITY_ALIASES.get(normalized)
+    if resolved is None:
+        raise ValueError(
+            f"INVALID_VERBOSITY: expected one of {sorted(_VERBOSITY_ALIASES)}, got {value!r}"
+        )
+    return resolved
 
 
 def _compact_mcpeval(mcp_eval: MCPEval) -> MCPEval:
-    """Return a copy of an MCPEval with verbose fields stripped (audit M-05).
-
-    Drops:
-      - lichess_url, lichess_image
-      - decision_value (engine-eval duplicates best_action)
-      - engine_eval (raw Stockfish output; candidate is the canonical view)
-      - history_completeness / repetition_status (only top-level responses
-        need these; on candidates they're noise)
-      - input_fen / canonical_fen / fen_was_canonicalized (only meaningful
-        on the OUTER response, not per-candidate)
-      - history_dependent_status / lichess_url_reproduces_history /
-        requires_move_stack / fen_sufficient_for_status
-      - post_can_claim_draw / post_can_claim_now / post_claim_reasons /
-        post_claim_moves (post_position summary is the canonical view)
-    Keeps:
-      - status, winner, cp, mate, best_move, pv, depth
-      - executable_move (typed contract)
-      - best_action_obj, legal_actions (typed contract)
-      - post_position (structured summary)
-      - candidate_san (human-readable)
-    """
+    """Strip verbose payload duplication without rewriting chess semantics."""
     return mcp_eval.model_copy(
         update={
             "lichess_url": None,
             "lichess_image": None,
             "decision_value": None,
             "engine_eval": None,
-            "history_dependent_status": False,
-            "lichess_url_reproduces_history": True,
-            "requires_move_stack": False,
-            "fen_sufficient_for_status": True,
-            "history_completeness": "complete",
-            "repetition_status": "none",
             "input_fen": None,
-            "canonical_fen": mcp_eval.canonical_fen,
-            "fen_was_canonicalized": False,
-            "post_can_claim_draw": False,
-            "post_can_claim_now": False,
-            "post_claim_reasons": [],
-            "post_claim_moves": [],
         }
     )
-
 
 _FIGURINE_MAP = str.maketrans(
     {
@@ -312,7 +289,7 @@ def _package_version() -> str:
 
 def _build_sha() -> str:
     """Best-effort git HEAD sha; falls back to env override or 'unknown'."""
-    env_sha = os.environ.get("CHESSY_BUILD_SHA")
+    env_sha = os.environ.get("BUILD_SHA") or os.environ.get("CHESSY_BUILD_SHA")
     if env_sha:
         return env_sha
     try:
@@ -384,7 +361,7 @@ def _stockfish_path() -> str:
 
 
 @asynccontextmanager
-async def _mcp_lifespan(server: MCPServer) -> AsyncIterator[dict[str, Any]]:
+async def _mcp_lifespan(server: MCPServer) -> AsyncGenerator[dict[str, Any]]:
     """Initialize the Stockfish pool at startup, tear it down at exit.
 
     Replaces the lazy-init path with eager startup so the first user
@@ -467,40 +444,41 @@ async def _pool_stats_logger(pool: AnalyzerPool | TCPAnalyzerPool, interval_s: f
                 stats["cache_hit_rate_percent"],
                 {k: v["calls"] for k, v in stats["tools"].items()},
             )
-        except Exception as exc:  # noqa: BLE001 — log and keep looping
+        except Exception as exc:
             log.warning("pool_stats log iteration failed (continuing): %s", exc)
 
 
 async def _ponder_warm_cache(
     pool: AnalyzerPool | TCPAnalyzerPool,
-    predicted_fen: str,
+    predicted_board: chess.Board,
     depth: int,
+    history_complete: str,
 ) -> None:
-    """Background cache warmer — evaluate `predicted_fen` at `depth` and
-    store the result in L1 so the next user request on the same FEN hits
-    L1 instantly. Pure fire-and-forget; errors are logged and dropped.
-
-    Note: this is NOT full UCI ponder (no go ponder / ponderhit). It's a
-    background eval whose result is reusable by any caller.
-    """
+    """Background cache warmer that preserves the predicted board's move stack."""
     try:
-        board = chess.Board(predicted_fen)
-        if board.is_game_over():
+        board = predicted_board.copy(stack=True)
+        if board.is_game_over(claim_draw=False):
             return
-        from .cache import eval_cache_key
-
         ckey = eval_cache_key(
             board,
             depth,
             engine_version=getattr(pool, "engine_version", None),
+            history_completeness=history_complete,
         )
-        # Avoid duplicate work: skip if L1 already has it.
         if (await _cache.get_eval(ckey)) is not None:
             return
-        ev, _hit = await _evaluate_game_position_cached(board, depth, pool, requested_depth=depth)
-        await _cache.set_eval(ckey, ev)
-    except Exception as exc:  # noqa: BLE001 — fire-and-forget
-        log.debug("ponder pre-eval failed (silent): %s", exc)
+        await _evaluate_game_position_cached(
+            board,
+            depth,
+            pool,
+            requested_depth=depth,
+            history_complete=history_complete,
+        )
+    except Exception as exc:
+        log.debug("ponder pre-eval failed: %s", exc)
+
+
+_background_tasks: set[asyncio.Task[Any]] = set()
 
 
 def _maybe_ponder_warm(
@@ -509,24 +487,24 @@ def _maybe_ponder_warm(
     best_move_uci: str | None,
     depth: int,
     ponder_enabled: bool,
+    history_complete: str,
 ) -> None:
-    """Schedule a background pre-eval if pondering is enabled and we have
-    a legal best_move to extrapolate from. No-op otherwise.
-    """
+    """Schedule a provenance-preserving background pre-evaluation."""
     if not ponder_enabled or not best_move_uci:
         return
     try:
         next_board = board.copy(stack=True)
         next_board.push_uci(best_move_uci)
-        if next_board.is_game_over():
+        if next_board.is_game_over(claim_draw=False):
             return
-        asyncio.create_task(
-            _ponder_warm_cache(pool, next_board.fen(), depth),
+        task = asyncio.create_task(
+            _ponder_warm_cache(pool, next_board, depth, history_complete),
             name="ponder-warm",
         )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
     except Exception:
-        pass  # best_move wasn't legal in this board — skip silently
-
+        pass
 
 mcp = MCPServer(
     "chess-analysis",
@@ -585,6 +563,7 @@ async def _gather_evaluate_positions_bounded(
     pool: AnalyzerPool | TCPAnalyzerPool,
     *,
     requested_depth: int,
+    history_complete: str = "complete",
 ) -> list[tuple[MCPEval, bool]]:
     """Evaluate N positions partitioned across the pool with TT reuse per slice.
 
@@ -652,6 +631,7 @@ async def _gather_evaluate_positions_bounded(
                             requested_depth=requested_depth,
                             reuse_tt=(j > 0),
                             analyzer=analyzer,
+                            history_complete=history_complete,
                         )
                         out.append((r, hit))
                     return out
@@ -667,6 +647,7 @@ async def _gather_evaluate_positions_bounded(
                     pool,
                     requested_depth=requested_depth,
                     reuse_tt=False,
+                    history_complete=history_complete,
                 )
                 out.append((r, hit))
             return out
@@ -728,6 +709,8 @@ async def _create_analyzer_pool(
         depth=14,
         threads=threads,
         hash_mb=cfg.hash_mb,
+        show_wdl=cfg.show_wdl,
+        syzygy_path=cfg.syzygy_path or None,
     )
     log.info(
         "Subprocess analyzer pool ready: %d engines @ %s",
@@ -839,6 +822,7 @@ def normalize_termination(term: str | None) -> str | None:
         r"|\bout\s+of\s+time\b"
         r"|\bflag\s*(?:fell|fell|fall|dropped)\b"
         r"|\blost\s+on\s+time\b"
+        r"|\b(?:white|black)\s+(?:wins?|won)\s+on\s+time\b"
         r"|\bclock\s+(?:flagged|expired)\b",
         t,
     ):
@@ -872,7 +856,7 @@ def normalize_termination(term: str | None) -> str | None:
     return None
 
 
-def _find_movetext_result(text: str) -> str:
+def _find_movetext_result(text: str) -> str | None:
     """Extract the canonical result marker from the top level of movetext (outside comments and variations)."""
     # L-04 audit fix: normalize Unicode result markers (½-½, ½–½, etc.) before
     # scanning. PGN specifies ASCII "1/2-1/2" but chess programmes, lichess
@@ -1731,7 +1715,7 @@ def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
             clean_t = re.sub(
                 r"\s*\(?\s*e\.?p\.?\s*\)?$",
                 "",
-                clean_tok if "clean_tok" in locals() else clean_t,
+                clean_t,
                 flags=re.IGNORECASE,
             ).rstrip(".,:;!?")
             if (
@@ -1958,11 +1942,41 @@ def _build_board(
         for move in game.mainline_moves():
             board.push(move)
 
+    assert board is not None
     for move_str in moves or []:
         move, _ = _parse_move_on_board_with_warning(board, move_str, strict=strict)
         board.push(move)
 
     return board
+
+
+def _history_provenance_for_input(
+    fen_or_pgn: str,
+    moves: list[str] | None,
+) -> str:
+    """Return complete, partial or incomplete history provenance for an input."""
+    cleaned = (
+        fen_or_pgn.replace("\u00a0", " ")
+        .replace("\u200b", "")
+        .replace("\ufeff", "")
+        .strip("`'\" \t\r\n")
+    )
+    if cleaned.lower() in ("startpos", "initial", "start"):
+        return "complete"
+
+    tokens = cleaned.split()
+    looks_like_fen = (
+        "/" in cleaned
+        and 1 <= len(tokens) <= 6
+        and not cleaned.startswith("[")
+        and not tokens[0].endswith(".")
+    )
+    if looks_like_fen:
+        return "partial" if moves else "incomplete"
+
+    # A PGN/movetext input defines its own game root and therefore carries the
+    # complete history represented by that game. Additional suffix moves keep it complete.
+    return "complete"
 
 
 def _build_board_with_metadata(
@@ -2062,7 +2076,7 @@ async def _evaluate_game_position_cached(
     depth: int,
     pool: AnalyzerPool | TCPAnalyzerPool,
     requested_depth: int | None = None,
-    history_complete: bool = True,
+    history_complete: str | bool = "incomplete",
     reuse_tt: bool = False,
     analyzer: object | None = None,
 ) -> tuple[MCPEval, bool]:
@@ -2084,10 +2098,15 @@ async def _evaluate_game_position_cached(
             one analyzer per slice for sequential calls within the slice.
     """
     req_d = requested_depth if requested_depth is not None else depth
+    history_state = (
+        ("complete" if history_complete else "incomplete")
+        if isinstance(history_complete, bool)
+        else history_complete
+    )
     canonical_fen_str = b.fen()
     url, img = lichess_urls(canonical_fen_str)
 
-    rule_status = evaluate_rule_status(b, history_complete=history_complete)
+    rule_status = evaluate_rule_status(b, history_complete=history_state)
     if rule_status.terminal is not None:
         # Terminal outcomes are reported from White's perspective (same convention as cp).
         if rule_status.terminal == "checkmate":
@@ -2148,6 +2167,7 @@ async def _evaluate_game_position_cached(
         b,
         depth,
         engine_version=getattr(pool, "engine_version", None),
+        history_completeness=history_state,
     )
     cached = await _cache.get_eval(ckey)
     if cached is not None:
@@ -2239,7 +2259,7 @@ async def _evaluate_game_position_cached(
             canonical_fen_str,
             board=b,
             requested_depth=req_d,
-            history_complete=history_complete,
+            history_complete=history_state,
         )
         # Stamp build identity so every cached eval records which build produced it.
         identity = _build_identity(pool)
@@ -2259,6 +2279,7 @@ async def _evaluate_game_position_cached(
             mcp_eval.best_move,
             depth,
             ponder_enabled=getattr(pool, "_mcp_ponder_enabled", False),
+            history_complete=history_state,
         )
         return mcp_eval
 
@@ -2302,7 +2323,7 @@ async def evaluate_position(
         # we MUST report `repetition_status="unknown"` for the audit H-01 fix.
         # When moves were supplied, the move stack is complete and we can
         # answer threefold claims definitively.
-        history_complete = bool(moves)
+        history_complete = _history_provenance_for_input(fen, moves)
         res, is_hit = await _evaluate_game_position_cached(
             board,
             depth,
@@ -2416,7 +2437,7 @@ async def top_moves(
     try:
         board = _build_board(fen, moves or [], strict=strict)
         # evaluate_position with explicit moves has full history; naked FEN doesn't.
-        history_complete = bool(moves)
+        history_complete = _history_provenance_for_input(fen, moves)
         rule_status = evaluate_rule_status(board, history_complete=history_complete)
         pool = await _get_analyzer_pool(ctx)
         engine_name_str = getattr(pool, "engine_version", getattr(pool, "name", "Stockfish"))
@@ -2467,12 +2488,12 @@ async def top_moves(
                 result=[],
             )
 
-        canonical_fen_str = board.fen()
         cache_key = top_moves_cache_key(
             board,
             depth,
             n=n,
             engine_version=getattr(pool, "engine_version", None),
+            history_completeness=history_complete,
         )
 
         # sign = mover's perspective sign (White=+1, Black=-1). Used below for
@@ -2483,18 +2504,22 @@ async def top_moves(
         from mcp_server.actions import build_best_action, build_legal_actions
 
         def _pick_root_recommended_action(items: list[MCPEval]) -> str:
-            """Override root rule_status recommendation when a candidate shows a
-            forced win for the side-to-move (positive mate or cp >= 100).
-            Otherwise keep the rule-driven recommendation.
-            """
             if not items:
                 return rule_status.recommended_action
-            for item in items:
-                if item.mate is not None and sign * item.mate > 0:
-                    return "play_move"
-                if item.cp is not None and sign * item.cp >= 100:
-                    return "play_move"
-            return rule_status.recommended_action
+            best = items[0]
+            mover_score = (
+                sign * best.cp
+                if best.cp is not None
+                else (sign * best.mate * 1000 if best.mate is not None else None)
+            )
+            mate_for_mover = sign * best.mate if best.mate is not None else None
+            return choose_recommended_action(
+                board,
+                can_claim_now=rule_status.can_claim_now,
+                can_claim_with_intended_move=rule_status.can_claim_with_intended_move,
+                mover_score=mover_score,
+                mate_for_mover=mate_for_mover,
+            )
 
         cached = await _cache.get_top_moves(cache_key)
         if cached is not None and len(cached) >= n:
@@ -2563,6 +2588,7 @@ async def top_moves(
                 b_cand = board.copy(stack=True)
                 cand_san_val: str | None = None
                 cand_post_terminal: str | None = None
+                cand_winner: str | None = None
                 cand_can_claim_now = False
                 cand_can_claim_draw = False
                 cand_claim_reasons: list[str] = []
@@ -2589,6 +2615,7 @@ async def top_moves(
                                 history_complete=history_complete,
                             )
                             cand_post_terminal = cand_rule.terminal
+                            cand_winner = cand_rule.winner
                             cand_can_claim_now = cand_rule.can_claim_now
                             cand_can_claim_draw = cand_rule.can_claim_draw
                             cand_claim_reasons = cand_rule.claim_reasons
@@ -2617,9 +2644,7 @@ async def top_moves(
                         else "play_move",
                         "post_position": {
                             "status": cand_post_terminal or "active",
-                            "winner": rule_status.winner
-                            if cand_post_terminal == "checkmate"
-                            else None,
+                            "winner": cand_winner if cand_post_terminal == "checkmate" else None,
                             "can_claim_now": cand_can_claim_now,
                             "can_claim_draw": cand_can_claim_draw,
                             "claim_reasons": cand_claim_reasons_now or cand_claim_reasons,
@@ -2752,7 +2777,7 @@ async def classify_move(
     move: str,
     moves: list[str] | None = None,
     depth: int = 14,
-    action_type: str = "play_move",
+    action_type: Literal["play_move", "claim_draw", "claim_draw_with_intended_move"] = "play_move",
     strict: bool = False,
     ctx: Context | None = None,
 ) -> MCPMoveAnalysis:
@@ -2779,8 +2804,16 @@ async def classify_move(
     raw_requested_depth = depth
     depth = max(1, min(depth, 30))
     try:
+        if action_type not in {"play_move", "claim_draw", "claim_draw_with_intended_move"}:
+            raise ValueError(f"INVALID_ACTION_TYPE: {action_type}")
         board = _build_board(fen, moves or [], strict=strict)
+        history_complete = _history_provenance_for_input(fen, moves)
         chess_move, syntax_warn = _parse_move_on_board_with_warning(board, move, strict=strict)
+        rule_before = evaluate_rule_status(board, history_complete=history_complete)
+        if action_type == "claim_draw" and not rule_before.can_claim_now:
+            raise ValueError("ILLEGAL_ACTION: draw cannot be claimed now")
+        if action_type == "claim_draw_with_intended_move" and chess_move.uci() not in rule_before.intended_claim_ucis:
+            raise ValueError("ILLEGAL_ACTION: intended move does not create a legal draw claim")
         pool = await _get_analyzer_pool(ctx)
 
         cache_key = classify_cache_key(
@@ -2789,6 +2822,7 @@ async def classify_move(
             depth,
             action_type=action_type,
             engine_version=getattr(pool, "engine_version", None),
+            history_completeness=history_complete,
         )
 
         cached = await _cache.get_classify(cache_key)
@@ -2827,55 +2861,24 @@ async def classify_move(
                     board_after=board_after,
                     syntax_warning=None,
                     action_type=action_type,
+                    history_complete=history_complete,
                 )
 
             eval_before, _ = await _evaluate_game_position_cached(
-                board, depth, pool, requested_depth=raw_requested_depth
+                board, depth, pool, requested_depth=raw_requested_depth, history_complete=history_complete
             )
 
-            # Fast path: when the played move is the engine's canonical best,
-            # skip the second engine call. eval_after is approximated by
-            # applying eval_before's PV to the board (it's the line the engine
-            # itself would play). For positions where best_move is None or
-            # doesn't match the played move, fall through to the real eval.
-            played_is_best = (
-                eval_before.best_move and chess_move.uci().lower() == eval_before.best_move.lower()
+            # Correctness first: eval_after must describe the immediate
+            # post-move position. Reusing the root PV tail or root score can
+            # misstate finite-depth CP and mate distance. Engine/cache layers
+            # remain responsible for performance reuse.
+            eval_after, _ = await _evaluate_game_position_cached(
+                board_after,
+                depth,
+                pool,
+                requested_depth=raw_requested_depth,
+                history_complete=history_complete,
             )
-            if played_is_best:
-                # Synthesize eval_after from the PV tail. Walk the PV starting
-                # at move index 1 (the engine's chosen move is at index 0, the
-                # played move). For short or missing PVs, fall back to a real
-                # eval — it's cheap and rare.
-                pv = eval_before.pv or []
-                if len(pv) >= 2:
-                    synth_board = board.copy(stack=True)
-                    try:
-                        for uci in pv[1:]:
-                            synth_board.push_uci(uci)
-                        synth_eval, synth_hit = await _evaluate_game_position_cached(
-                            synth_board,
-                            depth,
-                            pool,
-                            requested_depth=raw_requested_depth,
-                            reuse_tt=True,
-                            analyzer=None,
-                        )
-                        eval_after = synth_eval
-                    except Exception:
-                        # Fall back to real eval — TT reuse on this connection
-                        # should still be a net win because best_move was already
-                        # found by the engine.
-                        eval_after, _ = await _evaluate_game_position_cached(
-                            board_after, depth, pool, requested_depth=raw_requested_depth
-                        )
-                else:
-                    eval_after, _ = await _evaluate_game_position_cached(
-                        board_after, depth, pool, requested_depth=raw_requested_depth
-                    )
-            else:
-                eval_after, _ = await _evaluate_game_position_cached(
-                    board_after, depth, pool, requested_depth=raw_requested_depth
-                )
 
             score = score_played_move(
                 board,
@@ -2914,7 +2917,8 @@ async def classify_move(
                     # full uncached depth+4 cost. Now the depth+4 result is
                     # cached like any other eval.
                     verify_eval_result, _verify_hit = await _evaluate_game_position_cached(
-                        board, depth + 4, pool, requested_depth=raw_requested_depth + 4
+                        board, depth + 4, pool, requested_depth=raw_requested_depth + 4,
+                        history_complete=history_complete,
                     )
                     verify_ev: Eval = Eval(
                         cp=verify_eval_result.cp,
@@ -2934,6 +2938,7 @@ async def classify_move(
                             board.fen(),
                             board=board,
                             requested_depth=raw_requested_depth,
+                            history_complete=history_complete,
                         )
                         score = score_played_move(
                             board,
@@ -3002,6 +3007,7 @@ async def classify_move(
                 played_san=played_san,
                 move_class=score.move_class,
                 is_engine_best=score.is_best_engine_move,
+                is_best_engine_move=score.is_best_engine_move,
                 centipawn_loss=score.centipawn_loss,
                 mate_distance_loss=score.mate_distance_loss,
                 raw_centipawn_loss=score.raw_centipawn_loss,
@@ -3024,6 +3030,15 @@ async def classify_move(
                 best_action=score.best_action,
                 is_best_action=score.is_best_action,
                 action_equivalent=score.action_equivalent,
+                played_action_obj=build_played_action(
+                    action_type,
+                    move_uci=chess_move.uci(),
+                    move_san=played_san,
+                    rule_status=rule_before,
+                    cp=eval_after.cp,
+                    mate=eval_after.mate,
+                ),
+                best_action_obj=eval_before.best_action_obj,
                 missed_draw_claim=score.missed_draw_claim,
                 conceded_draw_claim=score.conceded_draw_claim,
                 claim_reason=score.claim_reason,
@@ -3046,7 +3061,11 @@ async def classify_move(
         await metrics.record("classify_move", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
         code = "invalid_input"
-        if "STRICT" in msg:
+        if "INVALID_ACTION_TYPE" in msg:
+            code = "invalid_action_type"
+        elif "ILLEGAL_ACTION" in msg:
+            code = "illegal_action"
+        elif "STRICT" in msg:
             code = "strict_validation_error"
         elif "UNSUPPORTED_VARIANT" in msg:
             code = "unsupported_variant"
@@ -3137,7 +3156,9 @@ def _compute_game_metrics(
             )
             if is_intended_claim:
                 played_uci = move.uci()
-                rule_before = evaluate_rule_status(board_before)
+                rule_before = evaluate_rule_status(
+                    board_before, history_complete="complete"
+                )
                 valid_for_intended = (
                     rule_before.can_claim_with_intended_move
                     and played_uci in rule_before.intended_claim_ucis
@@ -3276,8 +3297,44 @@ def _compute_game_metrics(
     )
 
 
+def _infer_result_from_termination(termination: str | None) -> str | None:
+    if not termination:
+        return None
+    t = re.sub(r"\s+", " ", termination.strip().lower())
+    if "normal time control" in t:
+        return None
+
+    winner_patterns = (
+        (r"\bwhite\s+(?:wins?|won)\b.*\b(?:time|resignation|resigns?)\b", "1-0"),
+        (r"\bblack\s+(?:wins?|won)\b.*\b(?:time|resignation|resigns?)\b", "0-1"),
+        (r"\bwon\s+by\s+white\b", "1-0"),
+        (r"\bwon\s+by\s+black\b", "0-1"),
+    )
+    for pattern, result in winner_patterns:
+        if re.search(pattern, t):
+            return result
+
+    loser_patterns = (
+        (r"\bwhite\s+(?:resign(?:s|ed)?|lost|loses)\b", "0-1"),
+        (r"\bblack\s+(?:resign(?:s|ed)?|lost|loses)\b", "1-0"),
+        (r"\bwhite(?:'s)?\s+(?:flag|clock).*(?:fell|expired|flagged|out of time)", "0-1"),
+        (r"\bblack(?:'s)?\s+(?:flag|clock).*(?:fell|expired|flagged|out of time)", "1-0"),
+        (r"\bwhite\s+(?:lost|loses)\s+on\s+time\b", "0-1"),
+        (r"\bblack\s+(?:lost|loses)\s+on\s+time\b", "1-0"),
+    )
+    for pattern, result in loser_patterns:
+        if re.search(pattern, t):
+            return result
+
+    if re.search(r"\bwhite\b.*\b(?:illegal move|rules? infraction)\b", t):
+        return "0-1"
+    if re.search(r"\bblack\b.*\b(?:illegal move|rules? infraction)\b", t):
+        return "1-0"
+    return None
+
+
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
-async def analyze_game(
+async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     pgn: str,
     depth: int = 14,
     strict: bool = False,
@@ -3346,6 +3403,14 @@ async def analyze_game(
         )
         movetext_section = re.sub(r"\b(O-O-O|O-O)([\+#\?!]*)(\$\d+)", r"\1\2 \3", movetext_section)
         cleaned_movetext = _normalize_movetext_figurines(movetext_section)
+        if re.search(
+            r"(?:^|\s)\(?e\.?p\.?\)?(?=\s|$)",
+            cleaned_movetext,
+            flags=re.IGNORECASE,
+        ):
+            syntax_warnings.append(
+                "En-passant marker 'e.p.' normalized to canonical SAN."
+            )
         while "{" in cleaned_movetext and "}" in cleaned_movetext:
             prev = cleaned_movetext
             cleaned_movetext = re.sub(r"\{[^{}]*\}", " ", cleaned_movetext, flags=re.DOTALL)
@@ -3423,10 +3488,14 @@ async def analyze_game(
             if curr_board.turn == chess.WHITE:
                 expected_fullmove += 1
 
-            rule_after = evaluate_rule_status(curr_board)
-            if rule_after.terminal is not None:
+            if curr_board.is_repetition(5):
                 reached_terminal = True
-                auto_termination = rule_after.terminal
+                auto_termination = "fivefold_repetition"
+            else:
+                rule_after = evaluate_rule_status(curr_board, history_complete="complete")
+                if rule_after.terminal is not None:
+                    reached_terminal = True
+                    auto_termination = rule_after.terminal
 
         # Extract headers with TAG_PAIR_REGEX from header_section to handle escaped quotes and robust tag parsing
         tags_dict: dict[str, str] = {}
@@ -3570,7 +3639,10 @@ async def analyze_game(
 
         # Validate game result consistency against final board state
         final_board = positions[-1]
-        rule_final = evaluate_rule_status(final_board)
+        # positions[] was reconstructed from the complete PGN mainline, so repetition
+        # history is authoritative here. Do not downgrade a previously detected fivefold
+        # repetition to generic game_over during final result reconciliation.
+        rule_final = evaluate_rule_status(final_board, history_complete="complete")
         result_board: str | None = None
         if rule_final.terminal is not None:
             if rule_final.terminal == "checkmate":
@@ -3607,33 +3679,11 @@ async def analyze_game(
             else:
                 result_val = result_header or result_movetext or "*"
 
-        # Infer result from termination header if result is unstated ('*')
-        if (result_val == "*" or result_val is None) and termination_header_val:
-            term_low = termination_header_val.lower()
-            if "white resign" in term_low or ("resign" in term_low and "white" in term_low):
-                result_val = "0-1"
-            elif "black resign" in term_low or ("resign" in term_low and "black" in term_low):
-                result_val = "1-0"
-            elif (
-                "white time" in term_low
-                or "white flag" in term_low
-                or ("time" in term_low and "white" in term_low)
-            ):
-                result_val = "0-1"
-            elif (
-                "black time" in term_low
-                or "black flag" in term_low
-                or ("time" in term_low and "black" in term_low)
-            ):
-                result_val = "1-0"
-            elif "white lost" in term_low or (
-                "white" in term_low and ("illegal" in term_low or "infraction" in term_low)
-            ):
-                result_val = "0-1"
-            elif "black lost" in term_low or (
-                "black" in term_low and ("illegal" in term_low or "infraction" in term_low)
-            ):
-                result_val = "1-0"
+        # Infer only from explicit winner/loser grammar.
+        if result_val == "*" or result_val is None:
+            inferred = _infer_result_from_termination(termination_header_val)
+            if inferred is not None:
+                result_val = inferred
 
         # Validate Resignation & Time Forfeit & Rules Infraction under FIDE mating possibility rules
         result_val, mate_warnings = validate_mating_possibility(
@@ -3823,7 +3873,11 @@ async def analyze_game(
             )
 
         eval_pairs = await _gather_evaluate_positions_bounded(
-            positions, depth, pool, requested_depth=raw_requested_depth
+            positions,
+            depth,
+            pool,
+            requested_depth=raw_requested_depth,
+            history_complete="complete",
         )
         evals: list[MCPEval] = [ep[0] for ep in eval_pairs]
         all_cached = all(ep[1] for ep in eval_pairs)
@@ -3972,8 +4026,51 @@ async def analyze_game(
         raise _tool_error(code="engine_error", message=str(exc), tool="analyze_game") from exc
 
 
+def _is_trusted_proxy_peer(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip.strip().strip("[]"))
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_private
+
+
+def _effective_client_ip(peer_ip: str, forwarded_for: str) -> str:
+    peer = peer_ip.strip().strip("[]")
+    if forwarded_for and _is_trusted_proxy_peer(peer):
+        candidate = forwarded_for.split(",", 1)[0].strip().strip("[]")
+        return candidate or peer
+    return peer
+
+
+def _estimate_mcp_request_cost(body: bytes) -> float:
+    """Approximate CPU admission cost from tool, depth, MultiPV and PGN size."""
+    try:
+        payload_any: Any = json.loads(body.decode("utf-8"))
+        payload = cast(dict[str, Any], payload_any) if isinstance(payload_any, dict) else {}
+        params_any: Any = payload.get("params")
+        params = cast(dict[str, Any], params_any) if isinstance(params_any, dict) else {}
+        tool_name = str(params.get("name") or params.get("tool") or "")
+        args_any: Any = params.get("arguments")
+        args = cast(dict[str, Any], args_any) if isinstance(args_any, dict) else {}
+        depth = max(1, min(int(args.get("depth", 14)), 30))
+        if tool_name == "evaluate_position":
+            return 1.0 + depth / 14.0
+        if tool_name == "top_moves":
+            n = max(1, min(int(args.get("n", 3)), 20))
+            return 1.0 + (depth * n) / 14.0
+        if tool_name == "classify_move":
+            return 2.0 + depth / 10.0
+        if tool_name == "analyze_game":
+            pgn = str(args.get("pgn", ""))
+            estimated_plies = max(1.0, min(200.0, len(pgn) / 24.0))
+            return 5.0 + (depth * estimated_plies) / 28.0
+    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        pass
+    return 1.0
+
+
 class TokenBucketRateLimiter:
-    """In-memory thread-safe token bucket rate limiter per client IP."""
+    """In-memory weighted token bucket per effective client IP."""
 
     def __init__(self, rate: float = 20.0, capacity: float = 500.0) -> None:
         self.rate = rate
@@ -3988,24 +4085,26 @@ class TokenBucketRateLimiter:
                 cutoff = now - 3600
                 self._buckets = {k: v for k, v in self._buckets.items() if v[1] > cutoff}
                 if len(self._buckets) > 10_000:
-                    sorted_items = sorted(
-                        self._buckets.items(), key=lambda item: item[1][1], reverse=True
-                    )[:5000]
-                    self._buckets = dict(sorted_items)
-
+                    self._buckets = dict(
+                        sorted(
+                            self._buckets.items(),
+                            key=lambda item: item[1][1],
+                            reverse=True,
+                        )[:5000]
+                    )
             tokens, last_time = self._buckets.get(client_id, (self.capacity, now))
             tokens = min(self.capacity, tokens + (now - last_time) * self.rate)
-
             if tokens >= cost:
                 self._buckets[client_id] = (tokens - cost, now)
                 return True
-            else:
-                self._buckets[client_id] = (tokens, now)
-                return False
+            self._buckets[client_id] = (tokens, now)
+            return False
 
 
 class ASGIRequestLoggerMiddleware:
-    """ASGI middleware to log all incoming MCP requests, rate limit per client, and filter clients if configured."""
+    """Request logging, weighted admission control and token authentication."""
+
+    MAX_BUFFERED_BODY = 32 * 1024 * 1024
 
     def __init__(
         self,
@@ -4018,170 +4117,113 @@ class ASGIRequestLoggerMiddleware:
         self.rate_limiter = rate_limiter or TokenBucketRateLimiter()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
-            raw_headers = cast(list[tuple[bytes, bytes]], scope.get("headers", []))
-            headers_dict: dict[bytes, bytes] = dict(raw_headers)
-            ua = headers_dict.get(b"user-agent", b"").decode("utf-8", "ignore")
-            origin = headers_dict.get(b"origin", b"").decode("utf-8", "ignore")
-            host = headers_dict.get(b"host", b"").decode("utf-8", "ignore")
-            path = str(scope.get("path", ""))
-            method = str(scope.get("method", "")).upper()
-            session_id = headers_dict.get(b"mcp-session-id", b"").decode("utf-8", "ignore")
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
 
-            client_tuple = cast(tuple[str, int] | None, scope.get("client"))
-            fallback_ip = client_tuple[0].strip("[]") if client_tuple else "127.0.0.1"
-            ip = headers_dict.get(b"x-forwarded-for", b"").decode("utf-8", "ignore") or fallback_ip
-            client_ip = ip.split(",")[0].strip().strip("[]")
+        raw_headers = cast(list[tuple[bytes, bytes]], scope.get("headers", []))
+        headers_dict: dict[bytes, bytes] = dict(raw_headers)
+        ua = headers_dict.get(b"user-agent", b"").decode("utf-8", "ignore")
+        origin = headers_dict.get(b"origin", b"").decode("utf-8", "ignore")
+        host = headers_dict.get(b"host", b"").decode("utf-8", "ignore")
+        path = str(scope.get("path", ""))
+        method = str(scope.get("method", "")).upper()
+        session_id = headers_dict.get(b"mcp-session-id", b"").decode("utf-8", "ignore")
 
-            if method == "OPTIONS":
-                await send(
-                    cast(
-                        Message,
-                        {
-                            "type": "http.response.start",
-                            "status": 200,
-                            "headers": [
-                                (b"access-control-allow-origin", b"*"),
-                                (
-                                    b"access-control-allow-methods",
-                                    b"GET, POST, OPTIONS",
-                                ),
-                                (b"access-control-allow-headers", b"*"),
-                                (b"access-control-max-age", b"86400"),
-                                (b"content-length", b"0"),
-                            ],
-                        },
-                    )
+        client_tuple = cast(tuple[str, int] | None, scope.get("client"))
+        peer_ip = client_tuple[0] if client_tuple else "127.0.0.1"
+        forwarded_for = headers_dict.get(b"x-forwarded-for", b"").decode("utf-8", "ignore")
+        client_ip = _effective_client_ip(peer_ip, forwarded_for)
+
+        if method == "OPTIONS":
+            await send(
+                cast(
+                    Message,
+                    {
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [
+                            (b"access-control-allow-origin", b"*"),
+                            (b"access-control-allow-methods", b"GET, POST, OPTIONS"),
+                            (b"access-control-allow-headers", b"*"),
+                            (b"access-control-max-age", b"86400"),
+                            (b"content-length", b"0"),
+                        ],
+                    },
                 )
-                await send(cast(Message, {"type": "http.response.body", "body": b""}))
-                return
+            )
+            await send(cast(Message, {"type": "http.response.body", "body": b""}))
+            return
 
-            # 1. Rate Limiting Check
-            if not await self.rate_limiter.is_allowed(client_ip):
-                log.warning("Rate limit exceeded for ip=%s path=%s", client_ip, path)
-                response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Rate limit exceeded. Please slow down."}}\n'
-                await send(
-                    cast(
-                        Message,
-                        {
-                            "type": "http.response.start",
-                            "status": 429,
-                            "headers": [
-                                (b"content-type", b"application/json"),
-                                (
-                                    b"content-length",
-                                    str(len(response_body)).encode("ascii"),
-                                ),
-                                (b"retry-after", b"2"),
-                            ],
-                        },
-                    )
-                )
+        request_cost = 1.0
+        if method == "POST":
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                message = await receive()
+                if message.get("type") != "http.request":
+                    break
+                chunk = bytes(message.get("body", b""))
+                total += len(chunk)
+                if total > self.MAX_BUFFERED_BODY:
+                    response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request body too large"}}\n'
+                    await send(cast(Message, {"type": "http.response.start", "status": 413, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii"))]}))
+                    await send(cast(Message, {"type": "http.response.body", "body": response_body}))
+                    return
+                chunks.append(chunk)
+                if not message.get("more_body", False):
+                    break
+            buffered_body = b"".join(chunks)
+            request_cost = _estimate_mcp_request_cost(buffered_body)
+            replayed = False
+
+            async def replay_receive() -> Message:
+                nonlocal replayed
+                if not replayed:
+                    replayed = True
+                    return cast(Message, {"type": "http.request", "body": buffered_body, "more_body": False})
+                return cast(Message, {"type": "http.disconnect"})
+
+            receive = replay_receive
+
+        if not await self.rate_limiter.is_allowed(client_ip, cost=request_cost):
+            response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Rate limit exceeded. Please slow down."}}\n'
+            await send(cast(Message, {"type": "http.response.start", "status": 429, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii")), (b"retry-after", b"2")]}))
+            await send(cast(Message, {"type": "http.response.body", "body": response_body}))
+            return
+
+        log.info(
+            "%s %s host=%s ip=%s session=%s origin=%s ua=%s cost=%.2f",
+            method,
+            path,
+            host,
+            client_ip,
+            session_id,
+            origin,
+            ua,
+            request_cost,
+        )
+
+        if path == "/health":
+            await self.app(scope, receive, send)
+            return
+
+        if self.restrict_to_chatgpt:
+            from .config import get_mcp_settings
+
+            auth_token = get_mcp_settings().auth_token
+            provided = headers_dict.get(b"x-chessy-auth", b"").decode("utf-8", "ignore").strip()
+            authorization = headers_dict.get(b"authorization", b"").decode("utf-8", "ignore").strip()
+            bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+            valid = bool(auth_token) and (provided == auth_token or bearer == auth_token)
+            if not valid:
+                log.warning("Blocked unauthenticated client ip=%s ua=%r origin=%r", client_ip, ua, origin)
+                response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Forbidden: valid MCP auth token required"}}\n'
+                await send(cast(Message, {"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii"))]}))
                 await send(cast(Message, {"type": "http.response.body", "body": response_body}))
                 return
 
-            log.info(
-                "%s %s host=%s ip=%s session=%s origin=%s ua=%s",
-                method,
-                path,
-                host,
-                client_ip,
-                session_id,
-                origin,
-                ua,
-            )
-
-            # /health is a public probe — exempt from the ChatGPT lock so
-            # compose / orchestrator healthchecks can succeed without
-            # carrying the auth token.
-            if path == "/health":
-                await self.app(scope, receive, send)
-                return
-
-            if self.restrict_to_chatgpt:
-                # P1 audit fix: this used to whitelist every client whose
-                # UA contained "curl", "python", "pydantic", or "chessy",
-                # plus an empty UA — defeating the entire lock. Real auth
-                # must come from a token (or from Cloudflare Access in
-                # front of the deployment). When CHESS_MCP_LOCK_CHATGPT=true
-                # but no auth token is configured, the lock degrades to a
-                # *warning* rather than a passthrough: we still serve, but
-                # we log every request and emit a clear admin-only warning
-                # at startup so the operator knows auth is effectively off.
-                ua_lower = ua.lower()
-                origin_lower = origin.lower()
-                is_known_chatgpt = (
-                    "chatgpt" in ua_lower
-                    or "openai" in ua_lower
-                    or "chatgpt" in origin_lower
-                    or "openai" in origin_lower
-                )
-                # Without an auth token configured, the lock is no-op
-                # backwards-compatible; with one, only matching requests pass.
-                # The lock is meant to be combined with an upstream auth
-                # boundary (Cloudflare Access token, mTLS, etc.) — it is
-                # not, and never was, a primary security control.
-                from .config import get_mcp_settings
-
-                mcp_cfg = get_mcp_settings()
-                auth_token = mcp_cfg.auth_token
-                provided_token = (
-                    headers_dict.get(b"x-chessy-auth", b"").decode("utf-8", "ignore").strip()
-                )
-                has_valid_token = bool(auth_token) and provided_token == auth_token
-
-                # The chessy app (the only consumer in production now) connects
-                # via `X-Chessy-Auth`. Public callers must be the known
-                # ChatGPT / OpenAI MCP clients, or carry the auth token.
-                # Internal-network whitelisting is gone — chessy is no longer
-                # in the same Docker network as MCP, so its requests arrive
-                # on the public IP and MUST use the token.
-                from .config import get_mcp_settings as _get_cfg
-
-                _cfg = _get_cfg()
-                if not _cfg.auth_token:
-                    log.warning(
-                        "CHESS_MCP_LOCK_CHATGPT=true but no CHESS_MCP_AUTH_TOKEN set — "
-                        "lock degrades to a warning; configure a token before exposing publicly."
-                    )
-
-                is_allowed = is_known_chatgpt or has_valid_token
-
-                if not is_allowed:
-                    log.warning(
-                        "Blocked client: ua=%r origin=%r chatgpt=%s valid_token=%s",
-                        ua,
-                        origin,
-                        is_known_chatgpt,
-                        has_valid_token,
-                    )
-                    response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Forbidden: ChatGPT lock active; configure CHESS_MCP_AUTH_TOKEN or upstream auth"}}\n'
-                    await send(
-                        cast(
-                            Message,
-                            {
-                                "type": "http.response.start",
-                                "status": 403,
-                                "headers": [
-                                    (b"content-type", b"application/json"),
-                                    (
-                                        b"content-length",
-                                        str(len(response_body)).encode("ascii"),
-                                    ),
-                                ],
-                            },
-                        )
-                    )
-                    await send(
-                        cast(
-                            Message,
-                            {"type": "http.response.body", "body": response_body},
-                        )
-                    )
-                    return
-
         await self.app(scope, receive, send)
-
 
 def _build_app(restrict_chatgpt: bool) -> ASGIApp:
     """Compose the ASGI middleware stack around the FastMCP streamable-HTTP app.

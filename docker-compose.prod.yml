@@ -1,21 +1,14 @@
-# Production stack for chessy-mcp — a single MCP service backed by a
+# Production stack for chessy-mcp - a single MCP service backed by a
 # single Stockfish sidecar, fronted by Caddy on the public hostname.
 #
-# Compose is built (not pulled) — Komodo runs `docker compose -f
+# Compose is built (not pulled) - Komodo runs `docker compose -f
 # docker-compose.prod.yml up -d --build --remove-orphans` on every push to
 # maxpill/chessy-mcp:main. Webhook URL:
 #   http://51.75.119.141:9120/listener/github/stack/chessy-mcp/deploy
 #
-# Bindings:
-#   - 127.0.0.1:9550  → host-side TCP port for Stockfish (kept loopback so
-#     only the MCP container can talk to it)
-#   - 127.0.0.1:9551  → reserved for future use (e.g. a debug console)
-#   - 127.0.0.1:8000  → MCP server HTTP (Caddy on the host proxies to this
-#     through the `mcp-net` user-defined network)
-#
-# The Cloudflare tunnel routes mcp.trychessy.com to a host-side Caddy or
-# the in-stack Caddy here; either way the MCP container is reachable only
-# from this stack's network + the host.
+# Set BUILD_SHA to the checked-out git commit before invoking Compose. The
+# value is baked into the image and also passed at runtime so every MCP
+# response exposes a deployment identity even though .git is not in the image.
 
 name: chessy-mcp
 
@@ -25,9 +18,6 @@ services:
       context: .
       dockerfile: Dockerfile.stockfish
     restart: unless-stopped
-    # Syzygy 5-piece tablebases (~940 MB, 290 files). Download from
-    # https://syzygy-tables.info/download.txt?source=lichess&max-pieces=5 and
-    # extract to the host path below. Empty/missing dir disables tablebases.
     volumes:
       - /etc/komodo/stacks/chessy-mcp/syzygy:/syzygy:ro
     networks:
@@ -45,16 +35,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.mcp
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
+        CHESSY_PACKAGE_VERSION: ${CHESSY_PACKAGE_VERSION:-0.1.0}
     restart: unless-stopped
     depends_on:
       stockfish:
         condition: service_healthy
-    # tmpfs for the L2 SQLite cache — 64 MB is plenty (L1 absorbs 50k entries
-    # in memory; L2 is rebuildable from traffic within an hour of restart).
     tmpfs:
       - /cache:size=64m
     environment:
-      # MCP server config
       - CHESS_MCP_TRANSPORT=streamable-http
       - CHESS_MCP_HOST=0.0.0.0
       - CHESS_MCP_PORT=8000
@@ -65,20 +55,14 @@ services:
       - STOCKFISH_THREADS_PER_WORKER=2
       - STOCKFISH_HOST=stockfish
       - STOCKFISH_PORT=9550
-      # L2 SQLite cache lives on the tmpfs mount above.
       - CHESS_MCP_CACHE_DB=/cache/chess_mcp_eval_cache.sqlite3
-      # Periodic structured pool-stats log line (0 disables).
       - CHESS_MCP_POOL_STATS_INTERVAL_S=30
-      # UCI_ShowWDL — include Win/Draw/Loss percentages in responses.
       - CHESS_MCP_SHOW_WDL=true
-      # Ponder disabled by default; enable on bigger hosts only.
       - CHESS_MCP_PONDER_ENABLED=false
-      # Syzygy tablebases (5-piece WDL/DTZ); empty disables. Mount the TBs
-      # to /syzygy in the stockfish service below to enable.
       - CHESS_MCP_SYZYGY_PATH=/syzygy
-      # Auth token shared with the chessy app. The MCP reads this from
-      # .env; the chessy app reads the same secret via its own .env.
       - CHESS_MCP_AUTH_TOKEN=${CHESS_MCP_AUTH_TOKEN:-}
+      - BUILD_SHA=${BUILD_SHA:-unknown}
+      - CHESSY_PACKAGE_VERSION=${CHESSY_PACKAGE_VERSION:-0.1.0}
       - LOG_LEVEL=INFO
     networks:
       - mcp-net
@@ -89,7 +73,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      # Cold MCP startup is sub-second; 5s start_period is generous.
       start_period: 5s
 
   caddy:
@@ -99,7 +82,7 @@ services:
       mcp:
         condition: service_healthy
     ports:
-      - "127.0.0.1:9551:80"   # public-facing reverse proxy on the host
+      - "127.0.0.1:9551:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

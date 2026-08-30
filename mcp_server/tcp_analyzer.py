@@ -1,9 +1,9 @@
-"""TCP-based analyzer — same interface as Analyzer, but connects over the network."""
+"""TCP-based analyzer with the same interface as the local Analyzer."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import chess
 
@@ -13,18 +13,27 @@ from core.engines.types import Eval, MoveAnalysis
 from mcp_server.tcp_client import TCPUCIClient
 
 
-def _info_to_eval(info: dict[str, Any], depth: int, turn: chess.Color) -> Eval:
-    """Convert a parsed UCI info dict to an Eval model.
+def _white_pov_wdl(
+    raw: object,
+    turn: chess.Color,
+) -> tuple[int, int, int] | None:
+    """Normalize UCI WDL from side-to-move POV into White POV."""
+    if raw is None:
+        return None
+    try:
+        win, draw, loss = int(raw[0]), int(raw[1]), int(raw[2])  # type: ignore[index]
+    except (TypeError, ValueError, IndexError):
+        return None
+    return (win, draw, loss) if turn == chess.WHITE else (loss, draw, win)
 
-    WDL is parsed from `info["wdl"]` (W D L per-mille, only present when
-    UCI_ShowWDL=true). The tuple is stored as-is — White-POV. Callers that
-    need mover-POV flip the sign on a per-wdl-component basis.
-    """
+
+def _info_to_eval(info: dict[str, Any], depth: int, turn: chess.Color) -> Eval:
+    """Convert parsed UCI info into the public White-POV Eval contract."""
     pv: list[str] = [m for m in info.get("pv", []) if m != "(none)"]
     sign = 1 if turn == chess.WHITE else -1
     cp = info.get("cp")
     mate = info.get("mate")
-    wdl = info.get("wdl")
+    wdl = _white_pov_wdl(info.get("wdl"), turn)
     if mate is not None:
         return Eval(
             cp=None,
@@ -45,13 +54,7 @@ def _info_to_eval(info: dict[str, Any], depth: int, turn: chess.Color) -> Eval:
 
 
 class TCPAnalyzer:
-    """Stockfish or Maia over TCP — mirrors Analyzer's public interface.
-
-    Pure transport: implements the wire protocol and the OperationResult → Eval
-    conversion. Move classification and threat probing are delegated to
-    `core.engines.analysis` so this backend shares the same cp-loss semantics
-    as the local UCI subprocess backend.
-    """
+    """Stockfish or Maia over TCP."""
 
     def __init__(self, client: TCPUCIClient) -> None:
         self._client = client
@@ -73,19 +76,11 @@ class TCPAnalyzer:
     ) -> TCPAnalyzer:
         client = TCPUCIClient(host, port, name=name)
         await client.connect()
-        # Build UCI option set. Only set options that aren't already at their
-        # compiled-in default (avoids wasted UCI round-trips on every spawn).
-        # NOTE: UCI boolean values must be the lowercase strings "true"/"false"
-        # (not Python True/False). Stockfish silently rejects the capitalised
-        # Python repr ("True") and the option stays at its default — which is
-        # why WDL never appeared in the info line in earlier deploys.
         options: dict[str, int | str] = {"Threads": threads, "Hash": hash_mb}
         if show_wdl:
             options["UCI_ShowWDL"] = "true"
         if syzygy_path:
             options["SyzygyPath"] = syzygy_path
-            # Probe deeper — SF18 dev supports up to 7-piece; bump from default 1
-            # so endgame positions actually hit the tablebases. ProbeLimit=7 is max.
             options["SyzygyProbeLimit"] = 7
         await client.configure(options)
         return cls(client)
@@ -100,21 +95,17 @@ class TCPAnalyzer:
     ) -> Eval:
         actual_depth = depth if depth is not None else self._depth
         if board.is_checkmate():
-            return Eval(
-                cp=None,
-                mate=0,
-                best_move=None,
-                pv=[],
-                depth=0,
-            )
-        if board.is_game_over():
+            return Eval(cp=None, mate=0, best_move=None, pv=[], depth=0)
+        if board.is_game_over(claim_draw=False):
             return Eval(cp=0, mate=None, best_move=None, pv=[], depth=0)
-
-        fen_str = board.fen()
 
         searchmoves = [m.uci() for m in root_moves] if root_moves else None
         results = await self._client.analyse(
-            fen_str, actual_depth, multipv=1, searchmoves=searchmoves, reuse_tt=reuse_tt
+            board.fen(),
+            actual_depth,
+            multipv=1,
+            searchmoves=searchmoves,
+            reuse_tt=reuse_tt,
         )
         if not results:
             return Eval()
@@ -128,12 +119,15 @@ class TCPAnalyzer:
         depth: int | None = None,
         reuse_tt: bool = False,
     ) -> list[Eval]:
-        if board.is_game_over():
+        if board.is_game_over(claim_draw=False):
             return []
         actual_depth = depth if depth is not None else self._depth
-        mpv = max(1, n)
-        fen_str = board.fen()
-        results = await self._client.analyse(fen_str, actual_depth, multipv=mpv, reuse_tt=reuse_tt)
+        results = await self._client.analyse(
+            board.fen(),
+            actual_depth,
+            multipv=max(1, n),
+            reuse_tt=reuse_tt,
+        )
         out: list[Eval] = []
         for info in results[:n]:
             if not info.get("pv") or info.get("pv") == ["(none)"]:
@@ -142,7 +136,11 @@ class TCPAnalyzer:
         return out
 
     async def classify_move(
-        self, board: chess.Board, move: chess.Move, *, depth: int | None = None
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        *,
+        depth: int | None = None,
     ) -> MoveAnalysis:
         return await classify_move(self, board, move, depth=depth)
 
@@ -151,7 +149,7 @@ class TCPAnalyzer:
 
 
 class TCPAnalyzerPool:
-    """Drop-in pool for TCPAnalyzer: handles N concurrent TCP connections."""
+    """Drop-in pool for TCPAnalyzer."""
 
     def __init__(self, pool: EnginePool, name: str = "Stockfish") -> None:
         self._pool = pool
@@ -196,18 +194,35 @@ class TCPAnalyzerPool:
         reuse_tt: bool = False,
     ) -> Eval:
         return await self._pool.run(
-            lambda a: a.evaluate(board, depth=depth, root_moves=root_moves, reuse_tt=reuse_tt)
-        )  # type: ignore[attr-defined]
+            lambda a: cast(TCPAnalyzer, a).evaluate(
+                board,
+                depth=depth,
+                root_moves=root_moves,
+                reuse_tt=reuse_tt,
+            )
+        )
 
     async def top_moves(
-        self, board: chess.Board, *, n: int = 3, depth: int | None = None
+        self,
+        board: chess.Board,
+        *,
+        n: int = 3,
+        depth: int | None = None,
     ) -> list[Eval]:
-        return await self._pool.run(lambda a: a.top_moves(board, n=n, depth=depth))  # type: ignore[attr-defined]
+        return await self._pool.run(
+            lambda a: cast(TCPAnalyzer, a).top_moves(board, n=n, depth=depth)
+        )
 
     async def classify_move(
-        self, board: chess.Board, move: chess.Move, *, depth: int | None = None
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        *,
+        depth: int | None = None,
     ) -> MoveAnalysis:
-        return await self._pool.run(lambda a: a.classify_move(board, move, depth=depth))  # type: ignore[attr-defined]
+        return await self._pool.run(
+            lambda a: cast(TCPAnalyzer, a).classify_move(board, move, depth=depth)
+        )
 
     async def close(self) -> None:
         await self._pool.close()

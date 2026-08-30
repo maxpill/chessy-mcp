@@ -520,13 +520,13 @@ def test_p1_logic_hash_derived_from_real_file_contents():
     import hashlib
     from pathlib import Path
 
-    from mcp_server.cache import _LOGIC_HASH
+    from mcp_server.cache import _LOGIC_FILES, _LOGIC_HASH
 
     backend_root = Path(server_module.__file__).resolve().parent.parent
 
     # Sanity-check: compute manually and confirm the helper matches.
     h = hashlib.sha256()
-    for rel in ("mcp_server/cache.py", "mcp_server/rules.py", "mcp_server/models.py", "mcp_server/server.py"):
+    for rel in _LOGIC_FILES:
         path = backend_root / rel
         h.update(rel.encode())
         with open(path, "rb") as f:

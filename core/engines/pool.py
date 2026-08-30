@@ -1,27 +1,10 @@
-"""Crash-resilient pools of Stockfish engines.
-
-A single Stockfish process serializes all UCI calls (hence the per-engine lock),
-so one shared opponent/analyzer caps the whole server at one move at a time. These
-pools hold N independent engine subprocesses dispatched via a queue, so concurrent
-requests run in parallel across cores — with one drop-in interface each.
-
-Crash handling is the point: Stockfish *can* die mid-call (segfault on a pathological
-position). A naive queue would lose that slot and slowly drain to a deadlock under
-load. Here every use replaces a dead engine with a fresh subprocess and never returns
-a dead engine to the queue; a pile-up fails fast (PoolBusy → 503) instead of queueing
-unbounded into an OOM.
-
-If the synchronous respawn inside `run()` itself fails (e.g. the Stockfish binary
-has been replaced with a broken one, or system resources are exhausted), the slot
-is dropped — and without a refill path, repeated transient failures would shrink
-the pool to zero, after which every request would PoolBusy until process restart.
-A background self-heal task replenishes missing slots up to the original size.
-"""
+"""Crash-resilient pools of chess engines."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
@@ -35,23 +18,16 @@ from .types import Eval, MoveAnalysis
 
 log = logging.getLogger("chessy.enginepool")
 
-DEFAULT_ACQUIRE_TIMEOUT = 15.0  # seconds a request waits for a free engine before giving up
-
-# History note: was 6.0, raised after the OVH box started logging ~5.8k PoolBusy
-# errors/day under bursty chatgpt traffic. analyze_game fans 80 positions through
-# a pool of 8 workers; with 3-4 concurrent users the queue depth pushes past 6s
-# on cold-cache traffic. 15s is comfortably above normal burst saturation but
-# still fails fast on genuine overload (LLM tool timeouts typically 30-60s).
-
+DEFAULT_ACQUIRE_TIMEOUT = 15.0
 T = TypeVar("T")
 
 
 class PoolBusy(Exception):
-    """No engine became available within the acquire timeout (server overloaded)."""
+    """No engine became available within the acquire timeout."""
 
 
 class _EnginePool:
-    """Generic pool: N instances in a queue, each with .close(); recreated on death."""
+    """Generic fixed-size engine pool with crash replacement and self-heal."""
 
     def __init__(
         self,
@@ -61,32 +37,34 @@ class _EnginePool:
     ) -> None:
         self._factory = factory
         self._acquire_timeout = acquire_timeout
-        self._q: asyncio.Queue[object] = asyncio.Queue()
+        self._q: asyncio.Queue[object] = asyncio.Queue(maxsize=len(instances))
         for inst in instances:
             self._q.put_nowait(inst)
         self.size = len(instances)
         self._target_size = len(instances)
-        # P1 audit fix: track the TOTAL number of alive instances (idle + busy),
-        # not just the queue size. The queue only holds idle workers, so under
-        # load `qsize()` would always look low and the loop would over-spawn
-        # until it ran away. We increment on `run()` (busy), decrement on put
-        # (idle replacement) or completion (failure).
         self._alive_count = len(instances)
         self._closed = False
         self._self_heal_task: asyncio.Task[None] | None = None
-        # Self-heal cadence: 5s is fast enough to recover within a typical request
-        # burst but slow enough to avoid busy-spinning if the factory is broken.
         self._self_heal_interval_s = 5.0
         self._self_heal_attempts = 0
         self._last_self_heal_log = 0.0
+        self._cardinality_lock = asyncio.Lock()
 
     def _start_self_heal(self) -> None:
+        if self._closed:
+            return
         if self._self_heal_task is not None and not self._self_heal_task.done():
             return
         self._self_heal_task = asyncio.create_task(self._self_heal_loop())
 
+    async def _discard(self, inst: object) -> None:
+        try:
+            await inst.close()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
     async def _self_heal_loop(self) -> None:
-        """Refill the pool back up to its target size when slots are lost to failed respawns."""
+        """Refill lost slots without ever exceeding the original target size."""
         while not self._closed:
             try:
                 await asyncio.sleep(self._self_heal_interval_s)
@@ -94,80 +72,101 @@ class _EnginePool:
                 return
             if self._closed:
                 return
-            # P1 audit fix: use the actual alive count (idle + busy), not the
-            # queue size. Previously `missing = target - qsize()` over-counted
-            # busy workers as missing, causing the loop to spawn extras on every
-            # tick under steady load.
-            missing = self._target_size - self._alive_count
+
+            async with self._cardinality_lock:
+                missing = self._target_size - self._alive_count
             if missing <= 0:
                 continue
+
             try:
                 fresh = await self._factory()
-            except Exception:  # noqa: BLE001 — factory still broken; back off
+            except Exception:
                 self._self_heal_attempts += 1
-                # Log at most once per minute to avoid log flooding
-                import time as _time
-
-                now = _time.time()
+                now = time.time()
                 if now - self._last_self_heal_log > 60.0:
                     log.warning(
-                        "engine self-heal: factory still failing (%d consecutive attempts); pool size %d/%d",
-                        self._self_heal_attempts,
-                        self._q.qsize(),
+                        "engine self-heal: factory failing; alive=%d target=%d attempts=%d",
+                        self._alive_count,
                         self._target_size,
+                        self._self_heal_attempts,
                     )
                     self._last_self_heal_log = now
-                # Back off exponentially up to 60s when persistent
-                self._self_heal_interval_s = min(60.0, self._self_heal_interval_s * 1.5)
+                self._self_heal_interval_s = min(
+                    60.0,
+                    self._self_heal_interval_s * 1.5,
+                )
                 continue
-            # Success — reset counters
+
+            accepted = False
+            async with self._cardinality_lock:
+                if not self._closed and self._alive_count < self._target_size:
+                    try:
+                        self._q.put_nowait(fresh)
+                    except asyncio.QueueFull:
+                        accepted = False
+                    else:
+                        self._alive_count += 1
+                        accepted = True
+
+            if not accepted:
+                await self._discard(fresh)
+                continue
+
             self._self_heal_attempts = 0
             self._self_heal_interval_s = 5.0
-            try:
-                self._q.put_nowait(fresh)
-            except Exception:  # noqa: BLE001
-                pass
-            log.info("engine self-heal: refilled slot, pool now %d/%d", self._q.qsize(), self._target_size)
+            log.info(
+                "engine self-heal: refilled slot; alive=%d target=%d",
+                self._alive_count,
+                self._target_size,
+            )
 
     async def run(self, fn: Callable[[object], Awaitable[T]]) -> T:
         usage.count("stockfish")
         try:
-            inst = await asyncio.wait_for(self._q.get(), timeout=self._acquire_timeout)
+            inst = await asyncio.wait_for(
+                self._q.get(),
+                timeout=self._acquire_timeout,
+            )
         except TimeoutError as exc:
-            raise PoolBusy(f"no engine free within {self._acquire_timeout}s") from exc
+            raise PoolBusy(
+                f"no engine free within {self._acquire_timeout}s"
+            ) from exc
 
-        # P1 audit fix: account for the worker being BUSY during fn() so the
-        # self-heal loop doesn't double-count it as missing.
-        self._alive_count = max(0, self._alive_count)  # already counted; keep
         replace = False
         try:
             return await fn(inst)
         except (chess.engine.EngineTerminatedError, ConnectionError, OSError):
-            replace = True  # engine died mid-call — swap in a fresh one below
+            replace = True
             raise
-
         finally:
             if not replace:
                 self._q.put_nowait(inst)
             else:
-                # Engine died — alive count drops by one (we'll respawn below
-                # or kick self-heal if respawn fails).
-                self._alive_count = max(0, self._alive_count - 1)
-                try:
-                    await inst.close()  # type: ignore[attr-defined]
-                except Exception:  # noqa: BLE001 — best-effort cleanup of a dead process
-                    pass
+                async with self._cardinality_lock:
+                    self._alive_count = max(0, self._alive_count - 1)
+                await self._discard(inst)
                 try:
                     fresh = await self._factory()
-                    self._q.put_nowait(fresh)
-                    self._alive_count += 1
-                except Exception:  # noqa: BLE001 — respawn failed; kick off background refill
+                except Exception:
                     log.exception(
-                        "engine respawn failed; pool at %d/%d — self-heal engaged",
-                        self._q.qsize(),
+                        "engine respawn failed; alive=%d target=%d",
+                        self._alive_count,
                         self._target_size,
                     )
                     self._start_self_heal()
+                else:
+                    accepted = False
+                    async with self._cardinality_lock:
+                        if not self._closed and self._alive_count < self._target_size:
+                            try:
+                                self._q.put_nowait(fresh)
+                            except asyncio.QueueFull:
+                                accepted = False
+                            else:
+                                self._alive_count += 1
+                                accepted = True
+                    if not accepted:
+                        await self._discard(fresh)
 
     async def close(self) -> None:
         self._closed = True
@@ -175,22 +174,21 @@ class _EnginePool:
             self._self_heal_task.cancel()
             try:
                 await self._self_heal_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
             self._self_heal_task = None
         while not self._q.empty():
             inst = self._q.get_nowait()
-            try:
-                await inst.close()  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001
-                pass
+            await self._discard(inst)
+        async with self._cardinality_lock:
+            self._alive_count = 0
 
 
 EnginePool = _EnginePool
 
 
 class AnalyzerPool:
-    """Drop-in for Analyzer: same evaluate / classify_move / probe_threat."""
+    """Drop-in pool for Analyzer."""
 
     def __init__(self, pool: _EnginePool, name: str = "Stockfish") -> None:
         self._pool = pool
@@ -206,15 +204,35 @@ class AnalyzerPool:
         depth: int = 12,
         threads: int = 1,
         hash_mb: int = 128,
+        show_wdl: bool = False,
+        syzygy_path: str | None = None,
         acquire_timeout: float = DEFAULT_ACQUIRE_TIMEOUT,
     ) -> AnalyzerPool:
         async def factory() -> object:
-            return await Analyzer.create(path, depth=depth, threads=threads, hash_mb=hash_mb)
+            return await Analyzer.create(
+                path,
+                depth=depth,
+                threads=threads,
+                hash_mb=hash_mb,
+                show_wdl=show_wdl,
+                syzygy_path=syzygy_path,
+            )
 
         instances = [await factory() for _ in range(max(1, size))]
-        engine_name = getattr(instances[0], "name", "Stockfish") if instances else "Stockfish"
-        log.info("analyzer pool ready: %d engines (%s)", len(instances), engine_name)
-        return cls(_EnginePool(instances, factory, acquire_timeout), name=engine_name)
+        engine_name = (
+            getattr(instances[0], "name", "Stockfish")
+            if instances
+            else "Stockfish"
+        )
+        log.info(
+            "analyzer pool ready: %d engines (%s)",
+            len(instances),
+            engine_name,
+        )
+        return cls(
+            _EnginePool(instances, factory, acquire_timeout),
+            name=engine_name,
+        )
 
     async def evaluate(
         self,
@@ -223,19 +241,56 @@ class AnalyzerPool:
         depth: int | None = None,
         root_moves: list[chess.Move] | None = None,
     ) -> Eval:
-        return await self._pool.run(lambda a: a.evaluate(board, depth=depth, root_moves=root_moves))  # type: ignore[attr-defined]
+        return await self._pool.run(
+            lambda a: a.evaluate(  # type: ignore[attr-defined]
+                board,
+                depth=depth,
+                root_moves=root_moves,
+            )
+        )
 
     async def classify_move(
-        self, board: chess.Board, move: chess.Move, *, depth: int | None = None
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        *,
+        depth: int | None = None,
     ) -> MoveAnalysis:
-        # classify_move does several evaluate() calls internally — keep them on ONE acquired engine.
-        return await self._pool.run(lambda a: a.classify_move(board, move, depth=depth))  # type: ignore[attr-defined]
+        return await self._pool.run(
+            lambda a: a.classify_move(  # type: ignore[attr-defined]
+                board,
+                move,
+                depth=depth,
+            )
+        )
 
-    async def top_moves(self, board: chess.Board, *, n: int = 3, depth: int | None = None) -> list[Eval]:
-        return await self._pool.run(lambda a: a.top_moves(board, n=n, depth=depth))  # type: ignore[attr-defined]
+    async def top_moves(
+        self,
+        board: chess.Board,
+        *,
+        n: int = 3,
+        depth: int | None = None,
+    ) -> list[Eval]:
+        return await self._pool.run(
+            lambda a: a.top_moves(  # type: ignore[attr-defined]
+                board,
+                n=n,
+                depth=depth,
+            )
+        )
 
-    async def probe_threat(self, board_after: chess.Board, *, depth: int | None = None) -> Eval | None:
-        return await self._pool.run(lambda a: a.probe_threat(board_after, depth=depth))  # type: ignore[attr-defined]
+    async def probe_threat(
+        self,
+        board_after: chess.Board,
+        *,
+        depth: int | None = None,
+    ) -> Eval | None:
+        return await self._pool.run(
+            lambda a: a.probe_threat(  # type: ignore[attr-defined]
+                board_after,
+                depth=depth,
+            )
+        )
 
     async def close(self) -> None:
         await self._pool.close()

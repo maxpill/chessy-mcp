@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import chess
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.engines.grading import classify_centipawn_loss
 from core.engines.types import Eval, MoveAnalysis, MoveClass
@@ -11,6 +11,7 @@ from core.winprob import win_prob as _win_pct
 from mcp_server.actions import (
     build_best_action,
     build_legal_actions,
+    build_played_action,
 )
 from mcp_server.rules import (
     ChessActionType,
@@ -80,7 +81,7 @@ class MCPEval(BaseModel):
     # New: typed best_action payload (audit 10.2)
     best_action_obj: dict[str, Any] | None = None
     # New: typed legal actions list (audit 10.1)
-    legal_actions: list[dict[str, Any]] = Field(default_factory=list)
+    legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     decision_value: dict[str, Any] | None = None
     engine_eval: dict[str, Any] | None = None
     # History completeness (audit H-01 / 10.5)
@@ -88,7 +89,7 @@ class MCPEval(BaseModel):
     lichess_url_reproduces_history: bool = True
     requires_move_stack: bool = False
     fen_sufficient_for_status: bool = True
-    history_completeness: str = "complete"  # "complete" | "incomplete" | "not_required"
+    history_completeness: str = "incomplete"  # complete | partial | incomplete | not_required
     repetition_status: str = "none"  # "unknown" | "none" | "threefold_claimable" | "fivefold"
     # FEN canonicalization (audit L-06)
     input_fen: str | None = None
@@ -114,7 +115,7 @@ class MCPEval(BaseModel):
     # WDL (e.g. UCI_ShowWDL=false or a mate/terminal path). Surfaced as
     # both a 3-tuple and a structured dict for client convenience.
     wdl: tuple[int, int, int] | None = None
-    wdl_pct: dict[str, int] | None = None
+    wdl_pct: dict[str, float] | None = None
 
     @property
     def move(self) -> str | None:
@@ -128,7 +129,7 @@ class MCPEval(BaseModel):
         status: str | None = None,
         board: chess.Board | None = None,
         requested_depth: int | None = None,
-        history_complete: bool = True,
+        history_complete: str | bool = "incomplete",
         pv_board: chess.Board | None = None,
         legal_engine_moves: list[Eval] | None = None,
     ) -> MCPEval:
@@ -257,8 +258,12 @@ class MCPEval(BaseModel):
         # White-POV (W D L); wdl_pct is a client-friendly dict with the
         # same values scaled to 0-100.
         wdl_tuple: tuple[int, int, int] | None = ev.wdl
-        wdl_pct_dict: dict[str, int] | None = (
-            {"win": wdl_tuple[0] // 10, "draw": wdl_tuple[1] // 10, "loss": wdl_tuple[2] // 10}
+        wdl_pct_dict: dict[str, float] | None = (
+            {
+                "win": wdl_tuple[0] / 10.0,
+                "draw": wdl_tuple[1] / 10.0,
+                "loss": wdl_tuple[2] / 10.0,
+            }
             if wdl_tuple is not None
             else None
         )
@@ -385,9 +390,11 @@ def score_played_move(
     eval_after: MCPEval,
     board_after: chess.Board | None = None,
     eval_played: MCPEval | None = None,
-    action_type: str = "play_move",
+    action_type: Literal["play_move", "claim_draw", "claim_draw_with_intended_move"] = "play_move",
 ) -> PlayedMoveScore:
     """Unified, rule-aware single source of truth for move grading and loss across all tools."""
+    if action_type not in {"play_move", "claim_draw", "claim_draw_with_intended_move"}:
+        raise ValueError(f"INVALID_ACTION_TYPE: {action_type}")
     if board_after is None:
         board_after = board_before.copy(stack=True)
         board_after.push(move)
@@ -415,12 +422,16 @@ def score_played_move(
         if eval_before.mate is None
         else (mover_mate_before * 1000 if mover_mate_before is not None else 0)
     )
+    history_state = eval_before.history_completeness
     rule_before = evaluate_rule_status(
         board_before,
         mover_score=before_mover_score,
         mate_for_mover=mover_mate_before,
+        history_complete=history_state,
     )
-    rule_after = evaluate_rule_status(board_after)
+    rule_after = evaluate_rule_status(
+        board_after, history_complete=history_state
+    )
 
     canonical_best_action = eval_before.best_action or rule_before.recommended_action
 
@@ -490,10 +501,7 @@ def score_played_move(
     # the mover has a forced mate (e.g. Qg7# at halfmove 99) is a blundered win, not
     # a claim. Likewise a claim with no immediate draw on the board is not a claim
     # at all — it's a move that loses the option.
-    if action_type in ("claim_draw", "claim_draw_with_intended_move") or action_type in (
-        ChessActionType.CLAIM_DRAW_NOW.value,
-        ChessActionType.CLAIM_DRAW_WITH_INTENDED_MOVE.value,
-    ):
+    if action_type in ("claim_draw", "claim_draw_with_intended_move"):
         is_claim_now_action = action_type in ("claim_draw", ChessActionType.CLAIM_DRAW_NOW.value)
         played_uci = move.uci().lower()
 
@@ -502,26 +510,34 @@ def score_played_move(
             and rule_before.can_claim_with_intended_move
             and played_uci in [u.lower() for u in rule_before.intended_claim_ucis]
         )
-        # Forced-win-for-mover check: never accept a claim when the position
-        # has a winning mate or large CP advantage in mover's favor.
-        is_mover_forced_win = (mover_mate_before is not None and mover_mate_before > 0) or before_mover >= 200
-        if not claim_legal or is_mover_forced_win:
-            # Fall through to play_move scoring; this move is a real blunder.
-            pass
+        if not claim_legal:
+            raise ValueError("ILLEGAL_ACTION: requested draw claim is not legally available")
+
+        if is_claim_now_action:
+            reasons = rule_before.claim_reasons_now
         else:
-            claim_r = rule_before.claim_reasons[0] if rule_before.claim_reasons else None
+            reason_map = rule_before.intended_claim_reasons_by_uci
+            reasons = reason_map.get(move.uci(), [])
+        claim_r = reasons[0] if reasons else None
+
+        is_mover_forced_win = (
+            (mover_mate_before is not None and mover_mate_before > 0)
+            or before_mover >= 200
+        )
+        if is_mover_forced_win:
             return PlayedMoveScore(
-                move_class=MoveClass.BEST,
-                centipawn_loss=0,
-                raw_centipawn_loss=0,
+                move_class=MoveClass.BLUNDER,
+                centipawn_loss=None,
+                raw_centipawn_loss=None,
                 raw_centipawn_delta=raw_board_delta,
-                mate_distance_loss=0,
-                effective_loss=0,
-                loss_kind="none",
+                mate_distance_loss=None,
+                effective_loss=1000,
+                loss_kind="outcome_penalty",
+                outcome_penalty=1000,
                 is_best_engine_move=is_best_engine_move,
-                win_loss=0.0,
+                win_loss=50.0,
                 best_action=canonical_best_action,
-                is_best_action=True,
+                is_best_action=False,
                 action_equivalent=False,
                 missed_draw_claim=False,
                 conceded_draw_claim=False,
@@ -531,6 +547,28 @@ def score_played_move(
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
                 claim_moves=rule_before.claim_moves,
             )
+
+        return PlayedMoveScore(
+            move_class=MoveClass.BEST,
+            centipawn_loss=0,
+            raw_centipawn_loss=0,
+            raw_centipawn_delta=raw_board_delta,
+            mate_distance_loss=0,
+            effective_loss=0,
+            loss_kind="none",
+            is_best_engine_move=is_best_engine_move,
+            win_loss=0.0,
+            best_action=canonical_best_action,
+            is_best_action=canonical_best_action == action_type,
+            action_equivalent=canonical_best_action != action_type,
+            missed_draw_claim=False,
+            conceded_draw_claim=False,
+            claim_reason=claim_r,
+            claim_move=rule_before.claim_move,
+            can_claim_now=rule_before.can_claim_now,
+            can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+            claim_moves=rule_before.claim_moves,
+        )
 
     # If position before was winning and move blundered into an automatic draw
     is_before_winning = (mover_mate_before is not None and mover_mate_before > 0) or (before_mover >= 200)
@@ -1092,7 +1130,7 @@ class MCPMoveAnalysis(BaseModel):
     played_line_san: str | None = None
     played_continuation_san: str | None = None
     syntax_warning: str | None = None
-    action_type: str = "play_move"
+    action_type: Literal["play_move", "claim_draw", "claim_draw_with_intended_move"] = "play_move"
     best_action: str = "play_move"
     # Renamed for clarity (audit M-02): best legal game action, distinct from
     # the engine's best move (which is just the play_move scoring reference).
@@ -1112,6 +1150,21 @@ class MCPMoveAnalysis(BaseModel):
     claim_moves: list[str] = Field(default_factory=list)
     classification_verified: bool = False
 
+    @model_validator(mode="after")
+    def _enforce_action_invariants(self) -> MCPMoveAnalysis:
+        engine_best = bool(self.is_engine_best or self.is_best_engine_move)
+        self.is_engine_best = engine_best
+        self.is_best_engine_move = engine_best
+        if self.played_action_obj is not None:
+            obj_type = self.played_action_obj.get("type")
+            if obj_type != self.action_type:
+                raise ValueError(
+                    f"played_action_obj.type={obj_type!r} does not match action_type={self.action_type!r}"
+                )
+        if self.is_best_action and self.action_type != self.best_action and not self.action_equivalent:
+            self.is_best_action = False
+        return self
+
     @classmethod
     def from_analysis(
         cls,
@@ -1124,10 +1177,15 @@ class MCPMoveAnalysis(BaseModel):
         board_before: chess.Board | None = None,
         board_after: chess.Board | None = None,
         syntax_warning: str | None = None,
-        action_type: str = "play_move",
+        action_type: Literal["play_move", "claim_draw", "claim_draw_with_intended_move"] = "play_move",
+        history_complete: str | bool = "incomplete",
     ) -> MCPMoveAnalysis:
-        eval_bef = MCPEval.from_eval(ma.eval_before, fen_before, board=board_before)
-        eval_aft = MCPEval.from_eval(ma.eval_after, fen_after, board=board_after)
+        eval_bef = MCPEval.from_eval(
+            ma.eval_before, fen_before, board=board_before, history_complete=history_complete
+        )
+        eval_aft = MCPEval.from_eval(
+            ma.eval_after, fen_after, board=board_after, history_complete=history_complete
+        )
 
         b_bef = board_before or chess.Board(fen_before)
         m = chess.Move.from_uci(ma.played)
@@ -1165,19 +1223,17 @@ class MCPMoveAnalysis(BaseModel):
         if score.is_best_engine_move and score.effective_loss and score.effective_loss > 0:
             verified = False
 
-        # Build typed action payloads (audit 10.2)
-        from mcp_server.actions import (
-            _build_play_move_action,
-            build_best_action,
+        rule_before = evaluate_rule_status(
+            b_bef, history_complete=history_complete
         )
-
-        played_action_obj = _build_play_move_action(
+        played_action_obj = build_played_action(
+            action_type,
             move_uci=ma.played,
             move_san=played_san,
+            rule_status=rule_before,
             cp=eval_aft.cp,
             mate=eval_aft.mate,
         )
-        # Build best_action from eval_before's typed state
         best_action_payload = eval_bef.best_action_obj
 
         return cls(
@@ -1275,7 +1331,7 @@ class GameAnalysisResult(BaseModel):
     black_blunders: int = 0
     black_mistakes: int = 0
     black_inaccuracies: int = 0
-    turning_points: list[PlyAnalysisItem] = Field(default_factory=list)
+    turning_points: list[PlyAnalysisItem] = Field(default_factory=list[PlyAnalysisItem])
     white: str | None = None
     black: str | None = None
     event: str | None = None
@@ -1326,7 +1382,7 @@ class TopMovesResult(BaseModel):
     claim_moves: list[str] = Field(default_factory=list)
     # NEW: typed best_action and legal_actions (audit 10.1, 10.2)
     best_action_obj: dict[str, Any] | None = None
-    legal_actions: list[dict[str, Any]] = Field(default_factory=list)
+    legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     # History completeness (audit H-01)
     history_completeness: str = "complete"
     repetition_status: str = "none"
@@ -1347,7 +1403,7 @@ class TopMovesResult(BaseModel):
     canonical_fen: str | None = None
     fen_was_canonicalized: bool = False
     result: list[MCPEval] = Field(
-        default_factory=list,
+        default_factory=list[MCPEval],
         description=(
             "Ranked candidate moves (best first) with evaluation, best_move, pv, "
             "and depth. Empty for terminal positions. Each candidate represents "

@@ -23,10 +23,9 @@ and `play_move` structurally distinct (audit invariant I-03).
 
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 import chess
-
 from pydantic import BaseModel
 
 
@@ -63,7 +62,7 @@ class ClaimDrawAction(BaseModel):
 class ClaimDrawWithIntendedMoveAction(BaseModel):
     """Action: declare an intended move and claim a draw with it (50-move / threefold).
 
-    The intended move itself is NOT played — the claim is procedural, declared
+    The intended move itself is NOT played - the claim is procedural, declared
     before the move is executed. A client must NOT just play `intended_move`
     and expect a draw.
     """
@@ -81,13 +80,7 @@ class GameOverAction(BaseModel):
     reason: str  # terminal status, e.g. "checkmate", "stalemate"
 
 
-# The discriminated union used by the API.
-GameAction = Union[
-    PlayMoveAction,
-    ClaimDrawAction,
-    ClaimDrawWithIntendedMoveAction,
-    GameOverAction,
-]
+GameAction = PlayMoveAction | ClaimDrawAction | ClaimDrawWithIntendedMoveAction | GameOverAction
 
 
 def _build_play_move_action(
@@ -96,7 +89,6 @@ def _build_play_move_action(
     cp: int | None = None,
     mate: int | None = None,
 ) -> dict[str, Any]:
-    """Build a serializable dict for a PlayMoveAction."""
     payload: dict[str, Any] = {
         "type": "play_move",
         "move": {"uci": move_uci, "san": move_san},
@@ -124,24 +116,39 @@ def _build_game_over_action(outcome: str, reason: str) -> dict[str, Any]:
     return {"type": "game_over", "outcome": outcome, "reason": reason}
 
 
+def build_played_action(
+    action_type: str,
+    *,
+    move_uci: str,
+    move_san: str | None,
+    rule_status: Any,
+    cp: int | None = None,
+    mate: int | None = None,
+) -> dict[str, Any]:
+    """Build the typed payload for the action the caller actually requested."""
+    if action_type == "play_move":
+        return _build_play_move_action(move_uci, move_san, cp=cp, mate=mate)
+    if action_type == "claim_draw":
+        if not rule_status.can_claim_now:
+            raise ValueError("ILLEGAL_ACTION: draw cannot be claimed now")
+        reason = rule_status.claim_reasons_now[0] if rule_status.claim_reasons_now else "threefold_repetition"
+        return _build_claim_draw_action(reason)
+    if action_type == "claim_draw_with_intended_move":
+        if move_uci not in (rule_status.intended_claim_ucis or []):
+            raise ValueError("ILLEGAL_ACTION: intended move does not create a legal draw claim")
+        reason_map = getattr(rule_status, "intended_claim_reasons_by_uci", {}) or {}
+        reasons = reason_map.get(move_uci) or rule_status.claim_reasons or ["threefold_repetition"]
+        return _build_claim_with_intended_action(reasons[0], move_uci, move_san)
+    raise ValueError(f"INVALID_ACTION_TYPE: {action_type}")
+
+
 def build_best_action(
     recommended_action: str,
-    rule_status: Any,  # RuleStatus (avoid circular import)
-    engine_eval: Any | None = None,  # Eval | None
-    board: Any | None = None,  # chess.Board | None
+    rule_status: Any,
+    engine_eval: Any | None = None,
+    board: Any | None = None,
     sign: int = 1,
 ) -> dict[str, Any]:
-    """Build the typed `best_action` payload from rule status + engine eval.
-
-    Critical invariants enforced here:
-      - When the game is over, `best_action.type == "game_over"`.
-      - When the best legal action is a draw claim (now or with intended move),
-        `best_action.type` is the corresponding claim type and NO `move` field
-        is included — the client must NOT execute `engine_best_move`.
-      - When the best legal action is `play_move`, the `move` payload matches
-        the engine's `best_move` (sanitized).
-    """
-    # 1. Terminal: game over
     if rule_status.terminal is not None:
         if rule_status.terminal == "checkmate":
             outcome = "win" if rule_status.winner == "white" else "loss"
@@ -149,20 +156,18 @@ def build_best_action(
             outcome = "draw"
         return _build_game_over_action(outcome, rule_status.terminal)
 
-    # 2. Claim draw NOW (no intended move required)
     if recommended_action == "claim_draw" and rule_status.can_claim_now:
         reason = rule_status.claim_reasons_now[0] if rule_status.claim_reasons_now else "threefold_repetition"
         return _build_claim_draw_action(reason)
 
-    # 3. Claim draw with intended move
     if recommended_action == "claim_draw_with_intended_move" and rule_status.can_claim_with_intended_move:
-        reason = rule_status.claim_reasons[0] if rule_status.claim_reasons else "threefold_repetition"
         intended_uci = rule_status.claim_move_uci
         intended_san = rule_status.claim_move_san or rule_status.claim_move
         if intended_uci:
-            return _build_claim_with_intended_action(reason, intended_uci, intended_san)
+            reason_map = getattr(rule_status, "intended_claim_reasons_by_uci", {}) or {}
+            reasons = reason_map.get(intended_uci) or rule_status.claim_reasons or ["threefold_repetition"]
+            return _build_claim_with_intended_action(reasons[0], intended_uci, intended_san)
 
-    # 4. Default: play_move. Use engine best if available.
     if engine_eval is not None and engine_eval.best_move:
         bm_uci = engine_eval.best_move
         bm_san: str | None = None
@@ -173,11 +178,8 @@ def build_best_action(
                     bm_san = board.san(m)
             except Exception:
                 pass
-        cp = engine_eval.cp
-        mate = engine_eval.mate
-        return _build_play_move_action(bm_uci, bm_san, cp=cp, mate=mate)
+        return _build_play_move_action(bm_uci, bm_san, cp=engine_eval.cp, mate=engine_eval.mate)
 
-    # 5. Engine eval didn't produce a move (rare): still a play_move with no specifics
     return _build_play_move_action("", None)
 
 
@@ -187,17 +189,8 @@ def build_legal_actions(
     board: Any | None,
     legal_engine_moves: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Build the typed `legal_actions` array for a position.
-
-    Order:
-      1. Claim actions (if any), prioritized above play_move because claiming
-         is the game-theoretically correct move when conditions are met and
-         there is no forced win.
-      2. Engine candidate moves (play_move), ranked best first.
-    """
     actions: list[dict[str, Any]] = []
 
-    # Claim actions first
     if rule_status.can_claim_now:
         for reason in rule_status.claim_reasons_now:
             actions.append(_build_claim_draw_action(reason))
@@ -208,14 +201,14 @@ def build_legal_actions(
         if not intended_ucis and rule_status.claim_move_uci:
             intended_ucis = [rule_status.claim_move_uci]
             intended_sans = [rule_status.claim_move_san or rule_status.claim_move]
-        reasons = rule_status.claim_reasons or ["threefold_repetition"]
+        reason_map = getattr(rule_status, "intended_claim_reasons_by_uci", {}) or {}
         for i, uci in enumerate(intended_ucis):
             san = intended_sans[i] if i < len(intended_sans) else None
+            reasons = reason_map.get(uci) or rule_status.claim_reasons or ["threefold_repetition"]
             for reason in reasons:
                 if reason in ("fifty_moves", "threefold_repetition"):
                     actions.append(_build_claim_with_intended_action(reason, uci, san))
 
-    # Play_move actions (engine candidates)
     if legal_engine_moves:
         for ev in legal_engine_moves:
             if not ev.best_move:
@@ -230,7 +223,6 @@ def build_legal_actions(
                     pass
             actions.append(_build_play_move_action(ev.best_move, bm_san, cp=ev.cp, mate=ev.mate))
 
-    # Terminal: game over action
     if rule_status.terminal is not None:
         if rule_status.terminal == "checkmate":
             outcome = "win" if rule_status.winner == "white" else "loss"

@@ -1,0 +1,52 @@
+name: Chess MCP CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: chess-mcp-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      STOCKFISH_PATH: /usr/games/stockfish
+      BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv and Stockfish
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check uv
+          sudo apt-get update -qq
+          sudo apt-get install -y stockfish
+          test -x "$STOCKFISH_PATH"
+          uv sync --frozen --dev
+
+      - name: Compile
+        run: uv run python -m compileall -q mcp_server core tests
+
+      - name: Ruff
+        run: uv run ruff check mcp_server core
+
+      - name: Full pytest suite
+        run: uv run pytest -q
+
+      - name: Pyright
+        run: uv run pyright mcp_server core

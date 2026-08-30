@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from typing import Any
 
 import chess
 import chess.engine
@@ -11,29 +13,52 @@ from .types import Eval
 __all__ = ["Analyzer", "pv_to_san"]
 
 
-class Analyzer:
-    """Full-strength Stockfish wrapper for evaluation and move grading.
+def _white_pov_wdl(info: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    """Return engine WDL in White POV, matching the CP and mate contract."""
+    try:
+        raw = info.get("wdl")
+        if raw is None:
+            return None
+        white = raw.white() if hasattr(raw, "white") else raw
+        return int(white[0]), int(white[1]), int(white[2])
+    except (TypeError, ValueError, IndexError, AttributeError):
+        return None
 
-    Pure transport: implements the chess engine UCI protocol. Move classification
-    and threat probing are delegated to `core.engines.analysis` so a second
-    transport (TCP) can reuse the same algorithm.
-    """
+
+class Analyzer:
+    """Full-strength Stockfish wrapper for evaluation and move grading."""
 
     def __init__(
-        self, transport: chess.engine.SubprocessTransport, engine: chess.engine.UciProtocol, depth: int
+        self,
+        transport: asyncio.SubprocessTransport,
+        engine: chess.engine.UciProtocol,
+        depth: int,
     ) -> None:
         self._transport = transport
         self._engine = engine
         self._depth = depth
-        # one Stockfish process can't take concurrent UCI commands (pydantic-ai runs parallel tool calls
-        # concurrently → corrupts the engine's info dict / kills it); serialize every analyse through this.
         self._lock = asyncio.Lock()
         self.name: str = engine.id.get("name", "stockfish")
 
     @classmethod
-    async def create(cls, path: str, *, depth: int = 12, threads: int = 2, hash_mb: int = 128) -> Analyzer:
+    async def create(
+        cls,
+        path: str,
+        *,
+        depth: int = 12,
+        threads: int = 2,
+        hash_mb: int = 128,
+        show_wdl: bool = False,
+        syzygy_path: str | None = None,
+    ) -> Analyzer:
         transport, engine = await chess.engine.popen_uci(path)
-        await engine.configure({"Threads": threads, "Hash": hash_mb})
+        options: dict[str, int | str] = {"Threads": threads, "Hash": hash_mb}
+        if show_wdl:
+            options["UCI_ShowWDL"] = "true"
+        if syzygy_path:
+            options["SyzygyPath"] = syzygy_path
+            options["SyzygyProbeLimit"] = 7
+        await engine.configure(options)
         return cls(transport, engine, depth)
 
     async def evaluate(
@@ -46,50 +71,40 @@ class Analyzer:
     ) -> Eval:
         actual_depth = depth or self._depth
         if board.is_checkmate():
-            return Eval(
-                cp=None,
-                mate=0,
-                best_move=None,
-                pv=[],
-                depth=0,
-            )
-        if board.is_game_over():
+            return Eval(cp=None, mate=0, best_move=None, pv=[], depth=0)
+        if board.is_game_over(claim_draw=False):
             return Eval(cp=0, mate=None, best_move=None, pv=[], depth=0)
-
-        board_for_sf = board
 
         async with self._lock:
             if not reuse_tt:
                 self._engine.send_line("ucinewgame")
             await self._engine.ping()
+            limit = chess.engine.Limit(depth=actual_depth)
             if root_moves:
                 info = await self._engine.analyse(
-                    board_for_sf, chess.engine.Limit(depth=actual_depth), multipv=1, root_moves=root_moves
+                    board,
+                    limit,
+                    multipv=1,
+                    root_moves=root_moves,
                 )
             else:
-                info = await self._engine.analyse(
-                    board_for_sf, chess.engine.Limit(depth=actual_depth), multipv=1
-                )
-        info_dict = info[0] if isinstance(info, list) else info
-        score = info_dict["score"].white()
+                info = await self._engine.analyse(board, limit, multipv=1)
+
+        info_dict = info[0]
+        score_obj = info_dict.get("score")
+        if score_obj is None:
+            return Eval(cp=None, mate=None, best_move=None, pv=[], depth=info_dict.get("depth", actual_depth))
+        score = score_obj.white()
         pv: list[chess.Move] = info_dict.get("pv", [])
         mate_val = score.mate()
         cp_val = None if mate_val is not None else score.score()
-        # python-chess parses WDL as (w, d, l) when UCI_ShowWDL is on.
-        wdl_raw = None
-        try:
-            wdl_obj = info_dict.get("wdl")  # chess.engine.Cp.wdl() returns tuple
-            if wdl_obj is not None:
-                wdl_raw = (int(wdl_obj[0]), int(wdl_obj[1]), int(wdl_obj[2]))
-        except Exception:  # noqa: BLE001 — wdl not always present
-            wdl_raw = None
         return Eval(
             cp=cp_val,
             mate=mate_val,
             best_move=pv[0].uci() if pv else None,
             pv=[m.uci() for m in pv],
             depth=info_dict.get("depth", actual_depth),
-            wdl=wdl_raw,
+            wdl=_white_pov_wdl(info_dict),
         )
 
     async def top_moves(
@@ -100,34 +115,32 @@ class Analyzer:
         depth: int | None = None,
         reuse_tt: bool = False,
     ) -> list[Eval]:
-        """The engine's top-n candidate moves (MultiPV), best first."""
-        if board.is_game_over():
+        """Return the engine's top-N candidate moves, best first."""
+        if board.is_game_over(claim_draw=False):
             return []
         actual_depth = depth or self._depth
         mpv = max(1, n)
-        board_for_sf = board
         async with self._lock:
             if not reuse_tt:
                 self._engine.send_line("ucinewgame")
             await self._engine.ping()
             infos = await self._engine.analyse(
-                board_for_sf, chess.engine.Limit(depth=actual_depth), multipv=mpv
+                board,
+                chess.engine.Limit(depth=actual_depth),
+                multipv=mpv,
             )
+
         out: list[Eval] = []
         for info in infos[:n]:
-            score = info["score"].white()
+            score_obj = info.get("score")
+            if score_obj is None:
+                continue
+            score = score_obj.white()
             pv: list[chess.Move] = info.get("pv", [])
             if not pv:
                 continue
             mate_val = score.mate()
             cp_val = None if mate_val is not None else score.score()
-            wdl_raw = None
-            try:
-                wdl_obj = info.get("wdl")
-                if wdl_obj is not None:
-                    wdl_raw = (int(wdl_obj[0]), int(wdl_obj[1]), int(wdl_obj[2]))
-            except Exception:  # noqa: BLE001
-                wdl_raw = None
             out.append(
                 Eval(
                     cp=cp_val,
@@ -135,15 +148,26 @@ class Analyzer:
                     best_move=pv[0].uci(),
                     pv=[m.uci() for m in pv],
                     depth=info.get("depth", actual_depth),
-                    wdl=wdl_raw,
+                    wdl=_white_pov_wdl(info),
                 )
             )
         return out
 
-    async def classify_move(self, board: chess.Board, move: chess.Move, *, depth: int | None = None):
+    async def classify_move(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        *,
+        depth: int | None = None,
+    ):
         return await classify_move(self, board, move, depth=depth)
 
-    async def probe_threat(self, board_after: chess.Board, *, depth: int | None = None):
+    async def probe_threat(
+        self,
+        board_after: chess.Board,
+        *,
+        depth: int | None = None,
+    ):
         return await probe_threat(self, board_after, depth=depth)
 
     async def close(self) -> None:
