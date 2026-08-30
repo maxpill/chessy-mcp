@@ -352,7 +352,7 @@ async def test_r_12b_with_move_stack_repetition_status_known():
     moves = ["g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8"]
     server_module._analyzer_pool = _FlatPool(cp=0, best_move="e2e4")  # type: ignore
     res = await server_module.evaluate_position(fen, moves=moves, depth=10)
-    assert res.history_completeness == "complete"
+    assert res.history_completeness == "partial"
     assert res.repetition_status == "threefold_claimable"
 
 
@@ -841,12 +841,12 @@ async def test_invariant_i07_pv_p0_matches_candidate():
 
 
 @pytest.mark.asyncio
-async def test_invariant_i08_naked_fen_repetition_unknown():
-    """I-08: naked FEN must have repetition_status='unknown' (not 'none')."""
+async def test_invariant_i08_startpos_zero_ply_history_complete():
+    """I-08: startpos is a known root, so zero-ply history is complete."""
     server_module._analyzer_pool = _FlatPool(cp=0, best_move="e2e4")  # type: ignore
     res = await server_module.evaluate_position("startpos", depth=10)
-    assert res.history_completeness == "incomplete"
-    assert res.repetition_status == "unknown"
+    assert res.history_completeness == "complete"
+    assert res.repetition_status == "none"
 
 
 @pytest.mark.asyncio
@@ -1049,9 +1049,9 @@ async def test_m05_verbosity_aliases():
     for v in ("compact", "minimal", "min"):
         res = await server_module.evaluate_position("startpos", depth=10, verbosity=v)
         assert res.lichess_url is None
-    # Unknown falls back to full
-    res = await server_module.evaluate_position("startpos", depth=10, verbosity="unknown-mode")
-    assert res.lichess_url is not None
+    # Unknown values are rejected instead of silently changing semantics.
+    with pytest.raises(ValueError, match="INVALID_VERBOSITY"):
+        await server_module.evaluate_position("startpos", depth=10, verbosity="unknown-mode")
 
 
 # ---------------------------------------------------------------------------

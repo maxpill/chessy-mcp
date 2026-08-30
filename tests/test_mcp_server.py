@@ -1419,9 +1419,9 @@ def test_doc_17_and_sec_18_docs_sync_and_no_secrets():
     """DOC-17 & SEC-18: Verify docs reflect 4 live tools and contain no secrets."""
     from pathlib import Path
 
-    doc_path = Path("/Users/max/Desktop/projects/chessy/docs/chatgpt-setup.md")
+    doc_path = Path(__file__).resolve().parent.parent / "README.md"
     assert doc_path.exists()
-    content = doc_path.read_text()
+    content = doc_path.read_text(encoding="utf-8")
 
     # Check 4 live tools are documented
     tools_list = asyncio.run(server_module.mcp.list_tools())
@@ -2666,7 +2666,12 @@ async def test_audit_12_mcp_eval_history_dependent_status():
     b_rep = chess.Board()
     for m in ["Nf3", "Nf6", "Ng1", "Ng8", "Nf3", "Nf6", "Ng1", "Ng8"]:
         b_rep.push_san(m)
-    ev_rep = MCPEval.from_eval(Eval(cp=0, best_move="g1f3", pv=["g1f3"], depth=14), b_rep.fen(), board=b_rep)
+    ev_rep = MCPEval.from_eval(
+        Eval(cp=0, best_move="g1f3", pv=["g1f3"], depth=14),
+        b_rep.fen(),
+        board=b_rep,
+        history_complete="complete",
+    )
     assert ev_rep.history_dependent_status is True
     assert ev_rep.lichess_url_reproduces_history is False
     assert ev_rep.requires_move_stack is True

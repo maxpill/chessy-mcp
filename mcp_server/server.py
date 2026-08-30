@@ -3498,7 +3498,7 @@ async def analyze_game(
             if curr_board.turn == chess.WHITE:
                 expected_fullmove += 1
 
-            rule_after = evaluate_rule_status(curr_board)
+            rule_after = evaluate_rule_status(curr_board, history_complete="complete")
             if rule_after.terminal is not None:
                 reached_terminal = True
                 auto_termination = rule_after.terminal
