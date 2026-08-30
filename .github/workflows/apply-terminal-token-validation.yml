@@ -1,0 +1,28 @@
+name: Apply terminal token validation
+
+on:
+  push:
+    branches:
+      - test/chess-mcp-ultra-stress-v5-2026-08-30
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[terminal-token-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: test/chess-mcp-ultra-stress-v5-2026-08-30
+      - run: python scripts/patch_terminal_token_validation.py
+      - run: |
+          python -m compileall -q mcp_server core tests
+          git diff --check
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mcp_server/server.py tests/test_ultra_stress_v5.py
+          git commit -m "fix: reject all post-terminal movetext [terminal-token-applied]"
+          git push origin HEAD:test/chess-mcp-ultra-stress-v5-2026-08-30
