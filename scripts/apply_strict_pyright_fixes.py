@@ -26,7 +26,6 @@ replace_once(
     'reportDeprecated = false\n',
 )
 
-# core/usage.py: typed factory and Python 3.13 asynccontextmanager annotation.
 replace_once(
     "core/usage.py",
     "from collections.abc import AsyncIterator, Awaitable, Callable\n",
@@ -43,7 +42,6 @@ replace_once(
     ") -> AsyncGenerator[None]:\n    yield\n",
 )
 
-# analyzer.py: python-chess multipv=1 is typed as a list; avoid redundant Any cast.
 replace_once(
     "core/engines/analyzer.py",
     "from typing import Any, cast\n",
@@ -60,7 +58,6 @@ replace_once(
     "        info_dict = info[0]\n",
 )
 
-# models.py: make factories fully generic so strict Pyright does not infer Unknown.
 for old, new in [
     ("legal_actions: list[dict[str, Any]] = Field(default_factory=list)",
      "legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])"),
@@ -70,21 +67,17 @@ for old, new in [
      "result: list[MCPEval] = Field(\n        default_factory=list[MCPEval],"),
 ]:
     replace_once("mcp_server/models.py", old, new)
-# There are two legal_actions fields.
 replace_once(
     "mcp_server/models.py",
     "legal_actions: list[dict[str, Any]] = Field(default_factory=list)",
     "legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])",
 )
-
-# Simplify the action-type predicate now that action_type itself is a Literal.
 replace_once(
     "mcp_server/models.py",
     "    if action_type in (\"claim_draw\", \"claim_draw_with_intended_move\") or action_type in (\n        ChessActionType.CLAIM_DRAW_NOW.value,\n        ChessActionType.CLAIM_DRAW_WITH_INTENDED_MOVE.value,\n    ):\n",
     "    if action_type in (\"claim_draw\", \"claim_draw_with_intended_move\"):\n",
 )
 
-# rules.py: unused import and typed dataclass factories.
 replace_once("mcp_server/rules.py", "import chess\nimport chess.pgn\n", "import chess\n")
 for old, new in [
     ("claim_reasons_now: list[str] = field(default_factory=list)",
@@ -104,7 +97,6 @@ for old, new in [
 ]:
     replace_once("mcp_server/rules.py", old, new)
 
-# server.py: strict-safe exception formatting and typed JSON-RPC admission parsing.
 replace_once(
     "mcp_server/server.py",
     "from collections.abc import AsyncIterator\n",
@@ -113,7 +105,7 @@ replace_once(
 replace_once(
     "mcp_server/server.py",
     "def _format_exception(exc: BaseException) -> str:\n    if isinstance(exc, (ExceptionGroup, BaseExceptionGroup)):\n        sub_msgs = [_format_exception(e) for e in exc.exceptions]\n        return \"; \".join(sub_msgs) if sub_msgs else str(exc)\n    return str(exc)\n",
-    "def _format_exception(exc: BaseException) -> str:\n    return str(exc)\n",
+    "def _format_exception(exc: BaseException) -> str:\n    if isinstance(exc, BaseExceptionGroup):\n        group = cast(BaseExceptionGroup[BaseException], exc)\n        sub_msgs = [_format_exception(e) for e in group.exceptions]\n        return \"; \".join(sub_msgs) if sub_msgs else str(exc)\n    return str(exc)\n",
 )
 replace_once(
     "mcp_server/server.py",
