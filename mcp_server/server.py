@@ -4198,6 +4198,19 @@ class ASGIRequestLoggerMiddleware:
 
         request_cost = 1.0
         if method == "POST":
+            # Enforce the body-size cap via Content-Length only. We deliberately
+            # do NOT buffer the request body here: doing so breaks FastMCP's
+            # streamable-HTTP transport, which uses an SSE writer that calls
+            # receive() to detect early client disconnect during long-running
+            # tool calls. A synthetic replay callable returns http.disconnect
+            # on the second poll, and EventSourceResponse in sse_starlette
+            # closes the stream before it can emit the response — every
+            # initialize (and any tool call long enough to flush an SSE
+            # chunk) then 500s with "ASGI callable returned without starting
+            # response". The Content-Length check is reliable enough for a
+            # public edge: uvicorn rejects missing/malformed headers before
+            # they reach us, and a client that lies about Content-Length is
+            # bounded by the transport frame limit and the token-bucket.
             raw_content_length = headers_dict.get(b"content-length", b"").decode("ascii", "ignore").strip()
             if raw_content_length:
                 try:
@@ -4209,35 +4222,10 @@ class ASGIRequestLoggerMiddleware:
                     await send(cast(Message, {"type": "http.response.start", "status": 413, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii"))]}))
                     await send(cast(Message, {"type": "http.response.body", "body": response_body}))
                     return
-
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                message = await receive()
-                if message.get("type") != "http.request":
-                    break
-                chunk = bytes(message.get("body", b""))
-                total += len(chunk)
-                if total > self.MAX_BUFFERED_BODY:
-                    response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request body too large"}}\n'
-                    await send(cast(Message, {"type": "http.response.start", "status": 413, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii"))]}))
-                    await send(cast(Message, {"type": "http.response.body", "body": response_body}))
-                    return
-                chunks.append(chunk)
-                if not message.get("more_body", False):
-                    break
-            buffered_body = b"".join(chunks)
-            request_cost = _estimate_mcp_request_cost(buffered_body)
-            replayed = False
-
-            async def replay_receive() -> Message:
-                nonlocal replayed
-                if not replayed:
-                    replayed = True
-                    return cast(Message, {"type": "http.request", "body": buffered_body, "more_body": False})
-                return cast(Message, {"type": "http.disconnect"})
-
-            receive = replay_receive
+                if declared_length > 8 * 1024:
+                    request_cost = 5.0 + min(40.0, declared_length / 1024.0)
+                elif declared_length > 1024:
+                    request_cost = 2.0
 
         if not await self.rate_limiter.is_allowed(client_ip, cost=request_cost):
             response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Rate limit exceeded. Please slow down."}}\n'

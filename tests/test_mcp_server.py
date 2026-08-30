@@ -253,9 +253,7 @@ async def test_analyze_game_with_markdown_and_bare_moves():
     server_module._analyzer_pool = MockAnalyzerPool()  # type: ignore
 
     # Markdown wrapped PGN
-    md_pgn = (
-        '```pgn\n[Event "Markdown Game"]\n[White "Alice"]\n[Black "Bob"]\n1. e4 e5 2. Nf3 Nc6 1/2-1/2\n```'
-    )
+    md_pgn = '```pgn\n[Event "Markdown Game"]\n[White "Alice"]\n[Black "Bob"]\n1. e4 e5 2. Nf3 Nc6 1/2-1/2\n```'
     res1 = await server_module.analyze_game(md_pgn, depth=14)
     assert res1.total_plies == 4
     assert res1.white == "Alice"
@@ -298,7 +296,9 @@ async def test_position_tools_with_pgn_and_san_moves():
     server_module._analyzer_pool = MockPositionPool()  # type: ignore
 
     # 1. evaluate_position with PGN string + SAN moves
-    eval_res = await server_module.evaluate_position("1. e4 c6 2. Nf3 d5", moves=["d3", "Bg4"], depth=14)
+    eval_res = await server_module.evaluate_position(
+        "1. e4 c6 2. Nf3 d5", moves=["d3", "Bg4"], depth=14
+    )
     assert eval_res.cp == 35
 
     # 2. top_moves with PGN string + SAN moves
@@ -359,7 +359,9 @@ async def test_1_token_fen_startpos_and_annotated_moves():
     server_module._analyzer_pool = MockPool()  # type: ignore
 
     # 1. 1-token FEN
-    ev1 = await server_module.evaluate_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR", depth=14)
+    ev1 = await server_module.evaluate_position(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR", depth=14
+    )
     assert ev1.cp == 10
 
     # 2. 'startpos' alias
@@ -579,6 +581,116 @@ async def test_asgi_middleware_options_and_client_ip():
 
     await middleware(scope_post, dummy_receive, dummy_send)
     assert called is True
+
+
+@pytest.mark.asyncio
+async def test_asgi_middleware_passes_post_body_to_inner_app():
+    """Regression: the middleware MUST NOT buffer the POST body.
+
+    FastMCP's streamable-HTTP transport calls receive() a second time to
+    detect early client disconnect while the SSE response is streaming; a
+    buffered-and-replayed receive that returns http.disconnect on the
+    second poll causes EventSourceResponse to close the stream before it
+    can emit the response, breaking every initialize (and any other
+    tool call long enough to flush an SSE chunk).
+    """
+    from mcp_server.server import ASGIRequestLoggerMiddleware
+
+    body_chunks: list[bytes] = []
+    extra_calls: list[int] = []
+    received_chunks: list[dict] = []
+
+    async def inner_app(scope, receive, send):
+        # Drain the body via the SAME receive the middleware gave us.
+        while True:
+            msg = await receive()
+            received_chunks.append(msg)
+            if msg.get("type") == "http.request":
+                chunk = bytes(msg.get("body", b""))
+                if chunk:
+                    body_chunks.append(chunk)
+                if not msg.get("more_body", False):
+                    break
+            elif msg.get("type") == "http.disconnect":
+                break
+            # Count how many times the inner app polled receive beyond the
+            # body. FastMCP's transport polls more than once; a buffered
+            # middleware would synthesize http.disconnect here.
+            extra_calls.append(len(received_chunks))
+
+    middleware = ASGIRequestLoggerMiddleware(inner_app)
+
+    body = b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+            (b"accept", b"application/json, text/event-stream"),
+        ],
+        "client": ("10.0.0.1", 12345),
+    }
+
+    # Simulate a uvicorn-style receive that yields the body in one chunk
+    # and then would yield http.disconnect on a later poll.
+    send_more = True
+
+    async def real_receive():
+        nonlocal send_more
+        if send_more:
+            send_more = False
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    async def send(msg):
+        pass
+
+    await middleware(scope, real_receive, send)
+
+    assert b"".join(body_chunks) == body, "inner app must receive the full body verbatim"
+    assert received_chunks[0]["type"] == "http.request"
+    assert received_chunks[0]["more_body"] is False
+
+
+@pytest.mark.asyncio
+async def test_asgi_middleware_rejects_oversize_post():
+    """Content-Length above the cap MUST 413 without buffering."""
+    from mcp_server.server import ASGIRequestLoggerMiddleware
+
+    async def inner_app(scope, receive, send):
+        raise AssertionError("inner app must not be called for oversize body")
+
+    middleware = ASGIRequestLoggerMiddleware(inner_app)
+
+    sent_status = None
+    sent_body = b""
+
+    async def send(msg):
+        nonlocal sent_status, sent_body
+        if msg["type"] == "http.response.start":
+            sent_status = msg["status"]
+        elif msg["type"] == "http.response.body":
+            sent_body += bytes(msg.get("body", b""))
+
+    huge = 64 * 1024 * 1024  # 64 MiB > MAX_BUFFERED_BODY (32 MiB)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [
+            (b"content-length", str(huge).encode("ascii")),
+        ],
+        "client": ("10.0.0.1", 12345),
+    }
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    await middleware(scope, receive, send)
+    assert sent_status == 413
+    assert b"Request body too large" in sent_body
 
 
 @pytest.mark.asyncio
@@ -914,10 +1026,14 @@ async def test_classify_move_is_engine_best_flag():
 @pytest.mark.asyncio
 async def test_extract_game_raises_on_illegal_moves_and_corrupt_pgn():
     # 1. Illegal move in PGN must raise ValueError instead of silent truncation
-    with pytest.raises(ValueError, match="Invalid PGN syntax|unrecognized token in movetext|Illegal move"):
+    with pytest.raises(
+        ValueError, match="Invalid PGN syntax|unrecognized token in movetext|Illegal move"
+    ):
         server_module._extract_game("1. e4 e5 2. Ke3 *")
 
-    with pytest.raises(ValueError, match="Invalid PGN syntax|unrecognized token in movetext|Illegal move"):
+    with pytest.raises(
+        ValueError, match="Invalid PGN syntax|unrecognized token in movetext|Illegal move"
+    ):
         server_module._extract_game("e4 e5 Ke3")
 
 
@@ -1090,7 +1206,9 @@ async def test_mcp_01_cache_key_halfmove_clock_isolation():
             self.eval_calls += 1
             if board.halfmove_clock >= 149:
                 return Eval(cp=0, best_move="f6g6", pv=["f6g6"], depth=depth)
-            return Eval(cp=100000, mate=2, best_move="f6g6", pv=["f6g6", "h8g8", "a1g7"], depth=depth)
+            return Eval(
+                cp=100000, mate=2, best_move="f6g6", pv=["f6g6", "h8g8", "a1g7"], depth=depth
+            )
 
         async def close(self):
             pass
@@ -1252,9 +1370,7 @@ async def test_mcp_07_automatic_fivefold_repetition_stops_analysis():
     server_module._analyzer_pool = MockPool()  # type: ignore
 
     # 4 cycles (16 plies) reaches 5-fold repetition. Ply 17 (9. Nf3) must NOT be analyzed.
-    pgn_5fold = (
-        "1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8 5. Nf3 Nf6 6. Ng1 Ng8 7. Nf3 Nf6 8. Ng1 Ng8 9. Nf3"
-    )
+    pgn_5fold = "1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8 5. Nf3 Nf6 6. Ng1 Ng8 7. Nf3 Nf6 8. Ng1 Ng8 9. Nf3"
     res = await server_module.analyze_game(pgn_5fold, depth=10)
     assert res.total_plies == 16
     assert res.result == "1/2-1/2"
@@ -1345,7 +1461,9 @@ async def test_mcp_12_mcp_14_mate_distance_loss_and_strict_best_class():
     await server_module._cache.clear()
 
     class MateDistPool:
-        async def classify_move(self, board: chess.Board, move: chess.Move, depth: int = 14) -> MoveAnalysis:
+        async def classify_move(
+            self, board: chess.Board, move: chess.Move, depth: int = 14
+        ) -> MoveAnalysis:
             return MoveAnalysis(
                 played=move.uci(),
                 move_class=MoveClass.BEST,
@@ -2358,7 +2476,9 @@ async def test_mcp_new_13_no_duplicate_error_code_in_messages():
     assert str(err) == "[INVALID_POSITION] Input 'foo' is invalid"
     assert "INVALID_POSITION: INVALID_POSITION:" not in str(err)
 
-    err2 = server_module._tool_error("illegal_move", "ILLEGAL_MOVE: Move 'e5' is not valid", "classify_move")
+    err2 = server_module._tool_error(
+        "illegal_move", "ILLEGAL_MOVE: Move 'e5' is not valid", "classify_move"
+    )
     assert str(err2) == "[ILLEGAL_MOVE] Move 'e5' is not valid"
 
 
@@ -2467,7 +2587,10 @@ async def test_audit_04_pgn_result_consistency_and_warnings():
     assert res.result == "1-0"
     assert res.result_header == "1-0"
     assert res.result_movetext == "0-1"
-    assert any("Result header '1-0' disagrees with movetext result '0-1'" in w for w in res.metadata_warnings)
+    assert any(
+        "Result header '1-0' disagrees with movetext result '0-1'" in w
+        for w in res.metadata_warnings
+    )
 
 
 @pytest.mark.asyncio
@@ -2661,7 +2784,9 @@ async def test_audit_12_mcp_eval_history_dependent_status():
     # complete set of history-dependent reasons is not.
     b_50 = chess.Board()
     b_50.halfmove_clock = 100
-    ev_50 = MCPEval.from_eval(Eval(cp=0, best_move="e2e4", pv=["e2e4"], depth=14), b_50.fen(), board=b_50)
+    ev_50 = MCPEval.from_eval(
+        Eval(cp=0, best_move="e2e4", pv=["e2e4"], depth=14), b_50.fen(), board=b_50
+    )
     assert "fifty_moves" in ev_50.claim_reasons_now
     assert ev_50.repetition_status == "unknown"
     assert ev_50.history_dependent_status is True
@@ -2972,7 +3097,9 @@ async def test_fix_12_result_header_raw_and_movetext_conflict():
     res = await server_module.analyze_game(pgn, depth=10)
     assert res.result_header_raw == "*"
     assert res.result_movetext == "1-0"
-    assert any("Result header '*' disagrees with movetext result '1-0'" in w for w in res.metadata_warnings)
+    assert any(
+        "Result header '*' disagrees with movetext result '1-0'" in w for w in res.metadata_warnings
+    )
 
 
 @pytest.mark.asyncio
@@ -3019,7 +3146,9 @@ async def test_fix_15_setup_and_fen_validation_warnings():
     assert any('[SetUp "1"] tag provided without FEN tag' in w for w in res1.metadata_warnings)
 
     # FEN without SetUp 1
-    res2 = await server_module.analyze_game('[FEN "8/8/8/8/8/8/8/4K2k w - - 0 1"]\n\n1. Kf1 *', depth=10)
+    res2 = await server_module.analyze_game(
+        '[FEN "8/8/8/8/8/8/8/4K2k w - - 0 1"]\n\n1. Kf1 *', depth=10
+    )
     assert any('FEN tag provided without [SetUp "1"]' in w for w in res2.metadata_warnings)
 
 
@@ -3035,13 +3164,17 @@ async def test_defect_01_and_02_engine_determinism_and_invariants():
     # 1. evaluate_position
     eval_res = await server_module.evaluate_position(fen, depth=depth)
     assert eval_res.best_move is not None
-    assert (eval_res.mate is not None and eval_res.mate > 0) or (eval_res.cp is not None and eval_res.cp > 0)
+    assert (eval_res.mate is not None and eval_res.mate > 0) or (
+        eval_res.cp is not None and eval_res.cp > 0
+    )
 
     # 2. top_moves with n=1 must agree that White is winning. Exact mate
     # discovery is engine-version and search-shape dependent at fixed depth.
     top_1 = await server_module.top_moves(fen, n=1, depth=depth)
     assert len(top_1) == 1
-    assert (top_1[0].mate is not None and top_1[0].mate > 0) or (top_1[0].cp is not None and top_1[0].cp > 0)
+    assert (top_1[0].mate is not None and top_1[0].mate > 0) or (
+        top_1[0].cp is not None and top_1[0].cp > 0
+    )
 
     # 3. classify_move for best_move must satisfy invariants
     best_move_uci = eval_res.best_move
@@ -3065,7 +3198,9 @@ async def test_audit_bug_08_exception_group_handling():
     from mcp_server.server import _format_exception, _tool_error
 
     try:
-        raise ExceptionGroup("Task failed", [ValueError("Sub-error 1"), RuntimeError("Sub-error 2")])
+        raise ExceptionGroup(
+            "Task failed", [ValueError("Sub-error 1"), RuntimeError("Sub-error 2")]
+        )
     except ExceptionGroup as eg:
         formatted = _format_exception(eg)
         assert "Sub-error 1" in formatted
@@ -3654,7 +3789,15 @@ async def test_gather_evaluate_positions_caps_concurrency(monkeypatch):
     in_flight = 0
     peak = 0
 
-    async def fake_eval(board, depth, pool, requested_depth=None, reuse_tt=False, analyzer=None, history_complete=True):
+    async def fake_eval(
+        board,
+        depth,
+        pool,
+        requested_depth=None,
+        reuse_tt=False,
+        analyzer=None,
+        history_complete=True,
+    ):
         nonlocal in_flight, peak
         in_flight += 1
         peak = max(peak, in_flight)
