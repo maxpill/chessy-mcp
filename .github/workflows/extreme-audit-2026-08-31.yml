@@ -1,0 +1,149 @@
+name: Chess MCP Extreme Audit 2026-08-31
+
+on:
+  push:
+    branches:
+      - audit/extreme-validation-2026-08-31
+
+concurrency:
+  group: chess-mcp-extreme-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  extreme-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      STOCKFISH_PATH: /usr/games/stockfish
+      STOCKFISH_THREADS_PER_WORKER: '1'
+      STOCKFISH_HASH_MB: '32'
+      CHESS_MCP_POOL_SIZE: '2'
+      CHESS_MCP_MAX_CONCURRENT_EVALUATES: '4'
+      BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv, Stockfish and dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --disable-pip-version-check uv
+          sudo apt-get update -qq
+          sudo apt-get install -y stockfish
+          test -x "$STOCKFISH_PATH"
+          "$STOCKFISH_PATH" --help >/dev/null 2>&1 || true
+          uv sync --frozen --dev
+
+      - name: Apply audited source fixes
+        run: uv run python scripts/apply_extreme_audit_patch_2026_08_31.py
+
+      - name: Reject whitespace and syntax damage
+        run: |
+          git diff --check
+          uv run python -m compileall -q mcp_server core tests scripts
+
+      - name: Run new adversarial regressions and deterministic fuzzing
+        run: uv run pytest -q -s tests/test_extreme_audit_2026_08_31.py
+
+      - name: Mutation check compact regression test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp mcp_server/server.py /tmp/server.py.extreme-audit
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('mcp_server/server.py')
+          s = p.read_text()
+          needle = '''        if verbosity_mode == VERBOSITY_COMPACT:\n            items = [_compact_mcpeval(c) for c in items]\n        root_rec_action = _pick_root_recommended_action(items)\n'''
+          replacement = '''        root_rec_action = _pick_root_recommended_action(items)\n'''
+          assert s.count(needle) == 1
+          p.write_text(s.replace(needle, replacement, 1))
+          PY
+          if uv run pytest -q tests/test_extreme_audit_2026_08_31.py::test_top_moves_compact_is_identical_on_fresh_and_cached_paths; then
+            echo 'ERROR: compact regression test survived deliberate mutation'
+            exit 1
+          fi
+          cp /tmp/server.py.extreme-audit mcp_server/server.py
+
+      - name: Mutation check strict-PGN regression test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp mcp_server/server.py /tmp/server.py.extreme-audit
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('mcp_server/server.py')
+          s = p.read_text()
+          needle = '        game = _extract_game(cleaned, strict=strict)\n'
+          replacement = '        game = _extract_game(cleaned)\n'
+          assert s.count(needle) == 1
+          p.write_text(s.replace(needle, replacement, 1))
+          PY
+          if uv run pytest -q 'tests/test_extreme_audit_2026_08_31.py::test_strict_primary_pgn_rejects_wrong_move_number_across_tools[evaluate_position]'; then
+            echo 'ERROR: strict-PGN regression test survived deliberate mutation'
+            exit 1
+          fi
+          cp /tmp/server.py.extreme-audit mcp_server/server.py
+
+      - name: Run complete pytest suite
+        run: uv run pytest -q
+
+      - name: Run real Stockfish randomized differential probe
+        shell: bash
+        run: |
+          set -euxo pipefail
+          before="$(pgrep -c -x stockfish || true)"
+          before="${before:-0}"
+          uv run python scripts/extreme_real_engine_probe_2026_08_31.py | tee extreme-real-engine.log
+          after="$(pgrep -c -x stockfish || true)"
+          after="${after:-0}"
+          echo "EXTREME_STOCKFISH_PROCESSES_BEFORE=$before"
+          echo "EXTREME_STOCKFISH_PROCESSES_AFTER=$after"
+          test "$after" -eq "$before"
+
+      - name: Ruff
+        run: uv run ruff check mcp_server core tests/test_extreme_audit_2026_08_31.py
+
+      - name: Pyright
+        run: uv run pyright mcp_server core
+
+      - name: Commit audited source fixes after all validation gates pass
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git diff --check
+          if git diff --quiet -- mcp_server/server.py mcp_server/models.py; then
+            echo 'No uncommitted source patch remains.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add mcp_server/server.py mcp_server/models.py
+          git commit -m 'fix: harden Chess MCP validation and response contracts'
+          git push origin HEAD:audit/extreme-validation-2026-08-31
+
+      - name: Write audit summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Chess MCP extreme audit'
+            echo
+            echo "Commit tested: $GITHUB_SHA"
+            echo
+            if [ -f extreme-real-engine.log ]; then
+              echo '### Real-engine counters'
+              echo '```text'
+              cat extreme-real-engine.log
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
