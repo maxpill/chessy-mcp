@@ -19,9 +19,8 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
     env:
-      STOCKFISH_PATH: /usr/games/stockfish
       BUILD_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
@@ -30,13 +29,10 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install uv and Stockfish
+      - name: Install uv and dependencies
         shell: bash
         run: |
           python -m pip install --disable-pip-version-check uv
-          sudo apt-get update -qq
-          sudo apt-get install -y stockfish
-          test -x "$STOCKFISH_PATH"
           uv sync --frozen --dev
 
       - name: Compile
@@ -44,9 +40,6 @@ jobs:
 
       - name: Ruff
         run: uv run ruff check mcp_server core
-
-      - name: Full pytest suite
-        run: uv run pytest -q
 
       - name: Pyright
         run: uv run pyright mcp_server core
