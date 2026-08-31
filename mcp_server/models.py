@@ -1417,11 +1417,12 @@ class TopMovesResult(BaseModel):
     result: list[MCPEval] = Field(
         default_factory=list[MCPEval],
         description=(
-            "Ranked candidate moves (best first) with evaluation, best_move, pv, "
-            "and depth. Empty for terminal positions. Each candidate represents "
-            "a play_move action evaluated AGAINST ITS POST-POSITION — claim "
-            "actions are reported separately at the outer level (best_action_obj "
-            "/ legal_actions). See audit fix C-02/H-03."
+            "Ranked play_move candidates (best first). Candidate best_move/pv and "
+            "engine cp/mate retain the root MultiPV action frame (PV[0] is the "
+            "candidate; mating moves may retain root mate distance), while "
+            "canonical_fen, terminal/rule fields and post_position describe the "
+            "resulting board. Claim actions are reported separately at the outer "
+            "level (best_action_obj / legal_actions)."
         ),
     )
 

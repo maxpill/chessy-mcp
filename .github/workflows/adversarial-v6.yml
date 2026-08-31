@@ -1,0 +1,163 @@
+name: Chess MCP Adversarial V6
+
+on:
+  push:
+    branches:
+      - fix/chess-mcp-adversarial-v6-2026-08-31
+  workflow_dispatch:
+
+concurrency:
+  group: chess-mcp-adversarial-v6-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-commit-fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      STOCKFISH_PATH: /usr/games/stockfish
+      BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv, dependencies, and Stockfish
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --disable-pip-version-check uv
+          sudo apt-get update -qq
+          sudo apt-get install -y stockfish
+          test -x "$STOCKFISH_PATH"
+          uv sync --frozen --dev
+
+      - name: Prove new regressions fail before production fix
+        id: red
+        shell: bash
+        run: |
+          set +e
+          uv run pytest -q tests/test_adversarial_v6_regressions.py \
+            --junitxml=adversarial-v6-prepatch.xml \
+            2>&1 | tee adversarial-v6-prepatch.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "Regression suite was unexpectedly green before applying the fix." >&2
+            exit 1
+          fi
+          echo "Pre-fix regression suite failed as expected (exit=$status)."
+
+      - name: Apply deterministic source fix
+        run: python scripts/apply_adversarial_v6_fix.py
+
+      - name: Diff sanity
+        shell: bash
+        run: |
+          git diff --check
+          git diff -- mcp_server/server.py
+
+      - name: Run targeted adversarial regressions
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run pytest -q tests/test_adversarial_v6_regressions.py \
+            --junitxml=adversarial-v6-targeted.xml \
+            2>&1 | tee adversarial-v6-targeted.log
+
+      - name: Run full pytest suite
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run pytest -q --junitxml=adversarial-v6-full.xml \
+            2>&1 | tee adversarial-v6-full.log
+
+      - name: Compile
+        run: uv run python -m compileall -q mcp_server core tests scripts
+
+      - name: Ruff
+        run: uv run ruff check mcp_server core tests/test_adversarial_v6_regressions.py scripts/apply_adversarial_v6_fix.py
+
+      - name: Pyright
+        run: uv run pyright mcp_server core
+
+      - name: Write machine-derived validation report
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          def totals(path: str) -> dict[str, int]:
+              root = ET.parse(path).getroot()
+              attrs = root.attrib
+              if root.tag == "testsuites":
+                  return {k: int(float(attrs.get(k, 0))) for k in ("tests", "failures", "errors", "skipped")}
+              return {k: int(float(attrs.get(k, 0))) for k in ("tests", "failures", "errors", "skipped")}
+
+          pre = totals("adversarial-v6-prepatch.xml")
+          targeted = totals("adversarial-v6-targeted.xml")
+          full = totals("adversarial-v6-full.xml")
+          report = f"""# Chess MCP adversarial V6 CI report
+
+          Workflow commit before auto-fix: `{Path('.git/HEAD').read_text().strip()}`
+
+          ## Regression sensitivity
+
+          Pre-fix regression execution: {pre['tests']} tests, {pre['failures']} failures, {pre['errors']} errors, {pre['skipped']} skipped.
+          The workflow is configured to fail if this pre-fix suite is green.
+
+          ## Post-fix targeted regression execution
+
+          {targeted['tests']} tests, {targeted['failures']} failures, {targeted['errors']} errors, {targeted['skipped']} skipped.
+
+          ## Post-fix full suite execution
+
+          {full['tests']} tests, {full['failures']} failures, {full['errors']} errors, {full['skipped']} skipped.
+
+          ## Additional gates
+
+          - compileall: passed
+          - Ruff: passed
+          - Pyright: passed
+          - git diff --check: passed
+          - Stockfish binary: present at `/usr/games/stockfish`
+          """
+          Path("docs/chess-mcp-adversarial-v6-ci-report.md").write_text(
+              "\n".join(line.strip() for line in report.splitlines()) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chess-mcp-adversarial-v6-${{ github.run_id }}
+          path: |
+            adversarial-v6-*.xml
+            adversarial-v6-*.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit validated production fix
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mcp_server/server.py docs/chess-mcp-adversarial-v6-ci-report.md
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No validated source changes to commit."
+            exit 0
+          fi
+          git commit -m "fix: close adversarial v6 MCP correctness gaps"
+          git push origin HEAD:fix/chess-mcp-adversarial-v6-2026-08-31

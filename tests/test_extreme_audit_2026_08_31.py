@@ -412,3 +412,35 @@ def test_randomized_strict_pgn_roundtrip_200_games() -> None:
 def test_invalid_fen_corpus_is_rejected_deterministically(fen: str) -> None:
     with pytest.raises(ValueError, match="INVALID_FEN"):
         server_module._build_board(fen)
+
+
+@pytest.mark.asyncio
+async def test_strict_rejects_uci_mainline_across_primary_pgn_and_analyze_game() -> None:
+    pool = DeterministicPool()
+    server_module._analyzer_pool = pool  # type: ignore[assignment]
+    movetext = "1. e2e4 e7e5 *"
+    with pytest.raises(Exception, match=r"\[STRICT_VALIDATION_ERROR\]"):
+        await server_module.evaluate_position(movetext, depth=2, strict=True)
+    with pytest.raises(Exception, match=r"\[STRICT_VALIDATION_ERROR\]"):
+        await server_module.analyze_game(movetext, depth=2, strict=True)
+
+
+@pytest.mark.asyncio
+async def test_strict_rejects_zero_character_castling_notation() -> None:
+    pool = DeterministicPool()
+    server_module._analyzer_pool = pool  # type: ignore[assignment]
+    pgn = "1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. 0-0 Be7 *"
+    with pytest.raises(Exception, match=r"\[STRICT_VALIDATION_ERROR\]"):
+        await server_module.analyze_game(pgn, depth=2, strict=True)
+
+
+@pytest.mark.asyncio
+async def test_nonstrict_still_accepts_uci_and_zero_castling_compatibility_inputs() -> None:
+    pool = DeterministicPool()
+    server_module._analyzer_pool = pool  # type: ignore[assignment]
+    uci = await server_module.evaluate_position("1. e2e4 e7e5 *", depth=2, strict=False)
+    assert uci.status == "active"
+    castling = await server_module.analyze_game(
+        "1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. 0-0 Be7 *", depth=2, strict=False
+    )
+    assert castling.total_plies == 8
