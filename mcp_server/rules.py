@@ -57,7 +57,9 @@ class RuleStatus:
     intended_claim_moves: list[chess.Move] = field(default_factory=list[chess.Move])
     intended_claim_sans: list[str] = field(default_factory=list[str])
     intended_claim_ucis: list[str] = field(default_factory=list[str])
-    intended_claim_reasons_by_uci: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
+    intended_claim_reasons_by_uci: dict[str, list[str]] = field(
+        default_factory=dict[str, list[str]]
+    )
     claim_reasons: list[str] = field(default_factory=list[str])
     can_claim_draw: bool = False
     claim_moves: list[str] = field(default_factory=list[str])
@@ -70,6 +72,7 @@ class RuleStatus:
     fen_sufficient_for_status: bool = True
     history_completeness: str = "incomplete"
     repetition_status: str = "unknown"
+
 
 def is_locked_dead_position(board: chess.Board) -> bool:
     """Detect dead positions caused by completely locked pawn structures
@@ -101,7 +104,9 @@ def is_locked_dead_position(board: chess.Board) -> bool:
             for m in board.legal_moves:
                 if board.piece_type_at(m.from_square) == chess.PAWN:
                     return False
-        any_bishop = bool(board.pieces(chess.BISHOP, chess.WHITE) or board.pieces(chess.BISHOP, chess.BLACK))
+        any_bishop = bool(
+            board.pieces(chess.BISHOP, chess.WHITE) or board.pieces(chess.BISHOP, chess.BLACK)
+        )
         if any_bishop:
             for color in (chess.WHITE, chess.BLACK):
                 board.turn = color
@@ -219,10 +224,7 @@ def _can_side_force_checkmate(board: chess.Board, color: chess.Color) -> bool:
             return False
         if knights:
             return True
-        complexes = {
-            (chess.square_rank(sq) + chess.square_file(sq)) & 1
-            for sq in bishops
-        }
+        complexes = {(chess.square_rank(sq) + chess.square_file(sq)) & 1 for sq in bishops}
         return len(complexes) >= 2
 
     return False
@@ -231,6 +233,7 @@ def _can_side_force_checkmate(board: chess.Board, color: chess.Color) -> bool:
 def can_checkmate(board: chess.Board, color: chess.Color) -> bool:
     """Return whether `color` can mate by some legal continuation."""
     return _can_side_force_checkmate(board, color)
+
 
 def is_terminal_position(board: chess.Board) -> bool:
     """Single source of truth for "the position is game over".
@@ -255,6 +258,10 @@ def is_terminal_position(board: chess.Board) -> bool:
     return False
 
 
+FORCED_WIN_THRESHOLD_CP = 2000
+"""Minimum post-state cp (Mover-POV) that counts as a forced win for the mover."""
+
+
 def choose_recommended_action(
     board: chess.Board,
     *,
@@ -262,11 +269,25 @@ def choose_recommended_action(
     can_claim_with_intended_move: bool,
     mover_score: int | None = None,
     mate_for_mover: int | None = None,
+    zeroing_move_best_score: int | None = None,
+    zeroing_move_best_mate: int | None = None,
 ) -> str:
-    """Choose one canonical legal root action for every MCP endpoint."""
+    """Choose one canonical legal root action for every MCP endpoint.
+
+    A draw claim is preferred ONLY when no zeroing move (capture or pawn push)
+    can plausibly turn the position into a forced win. The post-state values
+    of zeroing moves are the correct comparator: root cp conflates "draw is
+    available" with "this is drawn", and a position like K+R vs K after
+    Rxa7 at halfmove=100 reports a tiny root cp because the draw is on the
+    table, even though Rxa7 itself yields a forced win.
+    """
     if not (can_claim_now or can_claim_with_intended_move):
         return "play_move"
     if mate_for_mover is not None and mate_for_mover > 0:
+        return "play_move"
+    if zeroing_move_best_mate is not None and zeroing_move_best_mate > 0:
+        return "play_move"
+    if zeroing_move_best_score is not None and zeroing_move_best_score >= FORCED_WIN_THRESHOLD_CP:
         return "play_move"
 
     piece_vals = {
@@ -276,14 +297,8 @@ def choose_recommended_action(
         chess.ROOK: 500,
         chess.QUEEN: 900,
     }
-    mover_mat = sum(
-        len(board.pieces(pt, board.turn)) * value
-        for pt, value in piece_vals.items()
-    )
-    opp_mat = sum(
-        len(board.pieces(pt, not board.turn)) * value
-        for pt, value in piece_vals.items()
-    )
+    mover_mat = sum(len(board.pieces(pt, board.turn)) * value for pt, value in piece_vals.items())
+    opp_mat = sum(len(board.pieces(pt, not board.turn)) * value for pt, value in piece_vals.items())
     is_down_material = opp_mat - mover_mat >= 200
 
     if mover_score is None:
@@ -296,6 +311,7 @@ def choose_recommended_action(
     if can_claim_now:
         return "claim_draw"
     return "claim_draw_with_intended_move"
+
 
 def evaluate_rule_status(
     board: chess.Board,
@@ -330,7 +346,8 @@ def evaluate_rule_status(
             fen_sufficient_for_status=not history_dep,
             history_completeness=(
                 "not_required"
-                if terminal in {
+                if terminal
+                in {
                     "checkmate",
                     "stalemate",
                     "insufficient_material",
@@ -418,9 +435,7 @@ def evaluate_rule_status(
         intended_claim_reasons_by_uci[cand_uci] = reasons
 
     can_claim_with_intended_move = bool(intended_claim_moves)
-    all_claim_reasons = list(
-        dict.fromkeys(claim_reasons_now + intended_claim_reasons)
-    )
+    all_claim_reasons = list(dict.fromkeys(claim_reasons_now + intended_claim_reasons))
     can_claim_draw = can_claim_now or can_claim_with_intended_move
     claim_move_san = intended_claim_sans[0] if intended_claim_sans else None
     claim_move_uci = intended_claim_ucis[0] if intended_claim_ucis else None
@@ -468,6 +483,7 @@ def evaluate_rule_status(
         history_completeness=history_state,
         repetition_status=repetition_status,
     )
+
 
 def truncate_pv_at_terminal(board: chess.Board, pv_uci: list[str]) -> list[str]:
     """Ensure a principal variation (PV) does not continue past an automatic terminal state."""

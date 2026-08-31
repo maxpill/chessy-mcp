@@ -123,6 +123,32 @@ def _compact_mcpeval(mcp_eval: MCPEval) -> MCPEval:
     )
 
 
+def _force_draw_outcome(mcp_eval: MCPEval) -> MCPEval:
+    """Project an MCPEval onto the post-claim state.
+
+    Audit B-02/B-03: classifying a draw claim must not let any dummy move
+    leak into `eval_after`. A granted claim always terminates the game as a
+    draw (cp=0, no mate, outcome="draw"), so we force that projection here
+    regardless of what the engine reported for the (irrelevant) board state.
+    """
+    forced_decision = {
+        "outcome": "draw",
+        "cp_equivalent": 0,
+        "best_action": mcp_eval.decision_value.get("best_action", "claim_draw")
+        if mcp_eval.decision_value
+        else "claim_draw",
+        "perspective": "white",
+    }
+    return mcp_eval.model_copy(
+        update={
+            "cp": 0,
+            "mate": None,
+            "status": "draw",
+            "decision_value": forced_decision,
+        }
+    )
+
+
 _FIGURINE_MAP = str.maketrans(
     {
         "♔": "K",
@@ -2733,12 +2759,46 @@ async def top_moves(
                 else (sign * best.mate * 1000 if best.mate is not None else None)
             )
             mate_for_mover = sign * best.mate if best.mate is not None else None
+            # AUDIT B-04: also surface the best post-state value across all
+            # zeroing candidates (capture or pawn move) so the policy can
+            # prefer play_move over claim_draw when a zeroing move wins.
+            # The post-state cp/mate is attached to each item by the fresh
+            # path (audit B-05); the cache-hit path inherits the same data
+            # because items are persisted with their post_state_* fields.
+            zeroing_best_cp: int | None = None
+            zeroing_best_mate: int | None = None
+            for item in items:
+                if not item.best_move:
+                    continue
+                try:
+                    bm = chess.Move.from_uci(item.best_move)
+                except Exception:
+                    continue
+                if not (board.is_capture(bm) or board.piece_type_at(bm.from_square) == chess.PAWN):
+                    continue
+                # Prefer the re-evaluated post-state value when present
+                # (draw-pollution guard, audit B-04); fall back to the
+                # multipv value otherwise.
+                eff_cp = item.post_state_cp if item.post_state_cp is not None else item.cp
+                eff_mate = item.post_state_mate if item.post_state_mate is not None else item.mate
+                if eff_mate is not None:
+                    mover_mate = sign * eff_mate
+                    if mover_mate > 0 and (
+                        zeroing_best_mate is None or mover_mate > zeroing_best_mate
+                    ):
+                        zeroing_best_mate = mover_mate
+                elif eff_cp is not None:
+                    mover_cp = sign * eff_cp
+                    if zeroing_best_cp is None or mover_cp > zeroing_best_cp:
+                        zeroing_best_cp = mover_cp
             return choose_recommended_action(
                 board,
                 can_claim_now=rule_status.can_claim_now,
                 can_claim_with_intended_move=rule_status.can_claim_with_intended_move,
                 mover_score=mover_score,
                 mate_for_mover=mate_for_mover,
+                zeroing_move_best_score=zeroing_best_cp,
+                zeroing_move_best_mate=zeroing_best_mate,
             )
 
         cached = await _cache.get_top_moves(cache_key)
@@ -2801,10 +2861,23 @@ async def top_moves(
             # `top_moves` wall time at depth 14).
             res_list: list[MCPEval] = []
             results = await pool.top_moves(board, n=n, depth=depth)
-            # AUDIT C-02 / H-03: each candidate is a play_move action.
-            # Root MultiPV score/mate/PV stay action-oriented; post-position
-            # status, winner, rules and FEN describe the board after the move.
-            # Claim actions remain separate from the candidate list.
+            # AUDIT B-04: when a draw claim is available (immediately or with
+            # an intended zeroing move), the root MultiPV cp/mate of a zeroing
+            # move can be "polluted" by the engine seeing the draw on the
+            # table (e.g. K+R vs K at halfmove=100 reports a tiny cp). We
+            # re-evaluate zeroing moves' post-state ONLY when the multipv
+            # output looks suspect — i.e. no explicit mate AND a non-positive
+            # cp for the mover. Stockfish multipv is authoritative in every
+            # other case (no draw on the table, or the engine already gave a
+            # clearly winning cp/mate); re-evaluating otherwise just costs an
+            # extra engine call without changing the answer. The candidate's
+            # reported cp/mate remains the multipv value so ranking and
+            # back-compat consumers see the same numbers they did before.
+            needs_post_eval = bool(
+                rule_status.can_claim_now or rule_status.can_claim_with_intended_move
+            )
+            zeroing_best_cp: int | None = None
+            zeroing_best_mate: int | None = None
             for r in results:
                 b_cand = board.copy(stack=True)
                 cand_san_val: str | None = None
@@ -2815,19 +2888,54 @@ async def top_moves(
                 cand_claim_reasons: list[str] = []
                 cand_claim_reasons_now: list[str] = []
                 cand_claim_moves: list[str] = []
+                # Track the post-state cp/mate for the action policy without
+                # mutating the candidate's reported values.
+                post_state_cp: int | None = None
+                post_state_mate: int | None = None
 
                 if r.best_move:
                     try:
                         bm_obj = chess.Move.from_uci(r.best_move.lower())
                         if bm_obj in board.legal_moves:
                             cand_san_val = board.san(bm_obj)
-                            b_cand.push(bm_obj)
-                            cand_sign = 1 if b_cand.turn == chess.WHITE else -1
-                            cand_mover_score = cand_sign * (
-                                r.cp
-                                if r.cp is not None
-                                else (r.mate * 1000 if r.mate is not None else 0)
+                            is_zeroing = board.is_capture(bm_obj) or (
+                                board.piece_type_at(bm_obj.from_square) == chess.PAWN
                             )
+                            b_cand.push(bm_obj)
+                            # AUDIT B-04: re-evaluate zeroing-move post-state
+                            # when the multipv output looks draw-polluted. We
+                            # only do this when there's no explicit mate AND
+                            # the multipv cp is non-positive for the mover (a
+                            # winning move at halfmove=100 should at least
+                            # show cp>0; if it doesn't, the engine is treating
+                            # the draw as the value of the move and the
+                            # post-state is what really matters). The
+                            # post-state values feed the action policy
+                            # decision; they DO NOT overwrite the candidate's
+                            # reported cp/mate (B-05 / C-02 contract).
+                            multipv_suspect = r.mate is None and (r.cp is None or r.cp <= 0)
+                            if (
+                                needs_post_eval
+                                and is_zeroing
+                                and not b_cand.is_game_over(claim_draw=False)
+                                and multipv_suspect
+                            ):
+                                try:
+                                    post_ev = await pool.evaluate(b_cand, depth=depth)
+                                    if post_ev.mate is not None:
+                                        post_state_mate = post_ev.mate
+                                    elif post_ev.cp is not None:
+                                        post_state_cp = post_ev.cp
+                                except Exception:
+                                    pass
+                            cand_sign = 1 if b_cand.turn == chess.WHITE else -1
+                            cand_mover_score: int | None
+                            if r.mate is not None:
+                                cand_mover_score = cand_sign * r.mate * 1000
+                            elif r.cp is not None:
+                                cand_mover_score = cand_sign * r.cp
+                            else:
+                                cand_mover_score = None
                             cand_mate_for_mover = cand_sign * r.mate if r.mate is not None else None
                             cand_rule = evaluate_rule_status(
                                 b_cand,
@@ -2842,12 +2950,46 @@ async def top_moves(
                             cand_claim_reasons = cand_rule.claim_reasons
                             cand_claim_reasons_now = cand_rule.claim_reasons_now
                             cand_claim_moves = cand_rule.claim_moves
+                            # Track best zeroing post-state value for the
+                            # action policy below. Sign is mover-POV so we
+                            # compare apples to apples. Use the re-evaluated
+                            # post-state values when available; fall back to
+                            # multipv otherwise (audit B-04 guard).
+                            eff_cp = post_state_cp if post_state_cp is not None else r.cp
+                            eff_mate = post_state_mate if post_state_mate is not None else r.mate
+                            if (
+                                needs_post_eval
+                                and is_zeroing
+                                and (eff_mate is not None or eff_cp is not None)
+                            ):
+                                mover_sign = 1 if board.turn == chess.WHITE else -1
+                                if eff_mate is not None:
+                                    mover_mate = mover_sign * eff_mate
+                                    if mover_mate > 0 and (
+                                        zeroing_best_mate is None or mover_mate > zeroing_best_mate
+                                    ):
+                                        zeroing_best_mate = mover_mate
+                                else:
+                                    mover_cp = mover_sign * (eff_cp or 0)
+                                    if zeroing_best_cp is None or mover_cp > zeroing_best_cp:
+                                        zeroing_best_cp = mover_cp
                     except Exception:
                         pass
 
                 identity = _build_identity(pool)
+                # Candidate's reported cp/mate stays at the multipv value so
+                # ranking and back-compat callers see the same numbers they
+                # did before. Re-evaluated post-state values feed only the
+                # action policy decision (audit B-04 / B-05 separation).
+                post_eval_for_candidate = Eval(
+                    cp=r.cp,
+                    mate=r.mate,
+                    best_move=r.best_move,
+                    pv=r.pv,
+                    depth=r.depth,
+                )
                 mcp_eval = MCPEval.from_eval(
-                    r,
+                    post_eval_for_candidate,
                     b_cand.fen(),
                     board=b_cand,
                     requested_depth=raw_requested_depth,
@@ -2866,6 +3008,8 @@ async def top_moves(
                         "recommended_action": "game_over"
                         if cand_post_terminal is not None
                         else "play_move",
+                        "post_state_cp": post_state_cp,
+                        "post_state_mate": post_state_mate,
                         "post_position": {
                             "status": cand_post_terminal or "active",
                             "winner": cand_winner if cand_post_terminal == "checkmate" else None,
@@ -2878,11 +3022,11 @@ async def top_moves(
                 res_list.append(mcp_eval)
 
             def _candidate_rank_key(eval_item: MCPEval) -> float:
-                # eval_item.{cp,mate} are White-POV evaluations of the POST-candidate
-                # position (per the per-candidate from_eval rebase above), so we rank
-                # in MOVER-POV — sign*cp positive means the candidate is GOOD FOR THE
-                # SIDE-TO-MOVE. Sorting descending puts the side-to-move's best
-                # candidates first regardless of which color is on turn.
+                # eval_item.{cp,mate} are now the actual post-state evaluations
+                # of the candidate (B-05 fix), so we rank in MOVER-POV —
+                # sign*cp positive means the candidate is GOOD FOR THE
+                # SIDE-TO-MOVE. Sorting descending puts the side-to-move's
+                # best candidates first regardless of which color is on turn.
                 if eval_item.post_terminal_status == "checkmate":
                     return 10000.0
                 if eval_item.post_terminal_status in (
@@ -2916,6 +3060,8 @@ async def top_moves(
             if board.halfmove_clock >= 100 or has_terminal_cand:
                 res_list.sort(key=_candidate_rank_key, reverse=True)
 
+            # Persist zeroing-move findings on the cache so the cache-hit path
+            # below reuses the same policy decision without re-searching.
             await _cache.set_top_moves(cache_key, res_list)
             return res_list
 
@@ -3003,7 +3149,7 @@ async def top_moves(
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
 async def classify_move(
     fen: str,
-    move: str,
+    move: str | None = None,
     moves: list[str] | None = None,
     depth: int = 14,
     action_type: Literal["play_move", "claim_draw", "claim_draw_with_intended_move"] = "play_move",
@@ -3020,6 +3166,8 @@ async def classify_move(
     Args:
         fen: FEN or PGN string for the position BEFORE `move`.
         move: The move to grade in UCI (e.g. "e2e4") or SAN (e.g. "e4", "Bxf3", "O-O").
+            Required for `play_move` and `claim_draw_with_intended_move`; optional for
+            `claim_draw` (the claim outcome does not depend on any specific move).
         moves: Optional UCI or SAN moves to replay onto the position first.
         depth: Stockfish search depth (default 14, clamped 1-30).
         action_type: Intended chess action ('play_move', 'claim_draw', 'claim_draw_with_intended_move').
@@ -3037,20 +3185,38 @@ async def classify_move(
             raise ValueError(f"INVALID_ACTION_TYPE: {action_type}")
         board = _build_board(fen, moves or [], strict=strict)
         history_complete = _history_provenance_for_input(fen, moves)
-        chess_move, syntax_warn = _parse_move_on_board_with_warning(board, move, strict=strict)
         rule_before = evaluate_rule_status(board, history_complete=history_complete)
-        if action_type == "claim_draw" and not rule_before.can_claim_now:
-            raise ValueError("ILLEGAL_ACTION: draw cannot be claimed now")
-        if (
-            action_type == "claim_draw_with_intended_move"
-            and chess_move.uci() not in rule_before.intended_claim_ucis
-        ):
-            raise ValueError("ILLEGAL_ACTION: intended move does not create a legal draw claim")
+        # AUDIT B-01/B-02/B-03: for `claim_draw`, the dummy `move` argument must
+        # not be parsed/executed; the claim outcome is purely procedural. Accept
+        # `move=None` (or any string) but never push the move onto the board
+        # when classifying a draw claim. `claim_draw_with_intended_move` still
+        # requires a real intended move because the move IS the claim.
+        if action_type == "claim_draw":
+            chess_move: chess.Move | None = None
+            syntax_warn: str | None = None
+            if not rule_before.can_claim_now:
+                raise ValueError("ILLEGAL_ACTION: draw cannot be claimed now")
+        else:
+            if move is None or not move.strip():
+                raise ValueError(
+                    "MISSING_MOVE: 'move' is required for action_type='play_move' "
+                    "and action_type='claim_draw_with_intended_move'"
+                )
+            chess_move, syntax_warn = _parse_move_on_board_with_warning(board, move, strict=strict)
+            if (
+                action_type == "claim_draw_with_intended_move"
+                and chess_move.uci() not in rule_before.intended_claim_ucis
+            ):
+                raise ValueError("ILLEGAL_ACTION: intended move does not create a legal draw claim")
         pool = await _get_analyzer_pool(ctx)
 
+        # Cache key uses an empty/dummy move for claim_draw so the same
+        # underlying position/action always maps to one cache entry, regardless
+        # of the dummy `move` the caller passed (audit B-02 invariant).
+        cache_move_uci = chess_move.uci() if chess_move is not None else ""
         cache_key = classify_cache_key(
             board,
-            chess_move.uci(),
+            cache_move_uci,
             depth,
             action_type=action_type,
             engine_version=getattr(pool, "engine_version", None),
@@ -3072,16 +3238,27 @@ async def classify_move(
                 }
             )
 
-        played_san = board.san(chess_move)
-        board_after = board.copy(stack=True)
-        board_after.push(chess_move)
+        # Build played_san / board_after defensively: for claim_draw they are
+        # NOT derived from any chess move because the claim is procedural.
+        if chess_move is not None:
+            played_san = board.san(chess_move)
+            board_after = board.copy(stack=True)
+            board_after.push(chess_move)
+        else:
+            played_san = None
+            board_after = board.copy(stack=True)
 
         async def _compute() -> MCPMoveAnalysis:
             pool = await _get_analyzer_pool(ctx)
 
-            if hasattr(pool, "classify_move") and type(pool) not in (
-                AnalyzerPool,
-                TCPAnalyzerPool,
+            if (
+                chess_move is not None
+                and hasattr(pool, "classify_move")
+                and type(pool)
+                not in (
+                    AnalyzerPool,
+                    TCPAnalyzerPool,
+                )
             ):
                 result = await pool.classify_move(board, chess_move, depth=depth)
                 return MCPMoveAnalysis.from_analysis(
@@ -3104,26 +3281,62 @@ async def classify_move(
                 history_complete=history_complete,
             )
 
-            # Correctness first: eval_after must describe the immediate
-            # post-move position. Reusing the root PV tail or root score can
-            # misstate finite-depth CP and mate distance. Engine/cache layers
-            # remain responsible for performance reuse.
-            eval_after, _ = await _evaluate_game_position_cached(
-                board_after,
-                depth,
-                pool,
-                requested_depth=raw_requested_depth,
-                history_complete=history_complete,
-            )
+            # AUDIT B-02/B-03: for draw-claim actions, the post-state is the
+            # position AFTER the claim is granted, not after the supplied
+            # (irrelevant) move is played. Re-evaluate the same root board so
+            # the resulting `eval_after` reflects the draw outcome (cp=0,
+            # outcome=draw) regardless of any dummy move the caller passed.
+            if action_type in ("claim_draw", "claim_draw_with_intended_move"):
+                eval_after, _ = await _evaluate_game_position_cached(
+                    board,
+                    depth,
+                    pool,
+                    requested_depth=raw_requested_depth,
+                    history_complete=history_complete,
+                )
+                # The claim outcome is a draw; force cp=0 and outcome=draw so
+                # every downstream caller sees a consistent post-claim state
+                # independent of the dummy move.
+                eval_after = _force_draw_outcome(eval_after)
+            else:
+                # Correctness first: eval_after must describe the immediate
+                # post-move position. Reusing the root PV tail or root score
+                # can misstate finite-depth CP and mate distance. Engine/cache
+                # layers remain responsible for performance reuse.
+                eval_after, _ = await _evaluate_game_position_cached(
+                    board_after,
+                    depth,
+                    pool,
+                    requested_depth=raw_requested_depth,
+                    history_complete=history_complete,
+                )
 
-            score = score_played_move(
-                board,
-                chess_move,
-                eval_before,
-                eval_after,
-                board_after,
-                action_type=action_type,
-            )
+            if chess_move is not None:
+                score = score_played_move(
+                    board,
+                    chess_move,
+                    eval_before,
+                    eval_after,
+                    board_after,
+                    action_type=action_type,
+                )
+            else:
+                # claim_draw without a move: pass a placeholder Move and the
+                # post-claim board (= root board). score_played_move still
+                # consults rule_before.can_claim_now and the post-claim eval,
+                # so the dummy Move here is purely structural and never
+                # affects the score.
+                placeholder = next(iter(board.legal_moves), None)
+                if placeholder is None:
+                    raise ValueError("ILLEGAL_ACTION: no legal moves; cannot evaluate claim")
+                score = score_played_move(
+                    board,
+                    placeholder,
+                    eval_before,
+                    eval_after,
+                    board_after,
+                    action_type=action_type,
+                )
 
             # Candidate Verification Search (Opera Morphy invariant enforcement):
             # If played move matched eval_before.best_move, but grading would produce mistake/blunder,
@@ -3139,7 +3352,7 @@ async def classify_move(
             #     mark classification_verified=False so callers see the
             #     unverified result instead of a fabricated "best".
             verification_attempted = False
-            if (
+            if chess_move is not None and (
                 chess_move.uci().lower() == (eval_before.best_move or "").lower()
                 and score.move_class in (MoveClass.MISTAKE, MoveClass.BLUNDER)
                 and not score.missed_draw_claim
@@ -3199,7 +3412,7 @@ async def classify_move(
                     verification_attempted = True
 
             best_san: str | None = None
-            if score.is_best_engine_move:
+            if score.is_best_engine_move and chess_move is not None:
                 best_san = played_san
             elif eval_before.best_move:
                 try:
@@ -3211,11 +3424,11 @@ async def classify_move(
 
             best_line_san = pv_to_san(board, eval_before.pv) if eval_before.pv else best_san
             played_continuation: str | None = None
-            if eval_after.pv and not board_after.is_game_over():
+            if eval_after.pv and not board_after.is_game_over() and chess_move is not None:
                 played_continuation = pv_to_san(board_after, eval_after.pv)
 
             played_line_san = played_san
-            if played_continuation:
+            if played_continuation and played_san is not None:
                 played_line_san = f"{played_san} {played_continuation}"
 
             verified = True
@@ -3241,8 +3454,9 @@ async def classify_move(
             ):
                 verified = False
 
+            played_uci = chess_move.uci() if chess_move is not None else ""
             mcp_analysis = MCPMoveAnalysis(
-                played=chess_move.uci(),
+                played=played_uci,
                 played_san=played_san,
                 move_class=score.move_class,
                 is_engine_best=score.is_best_engine_move,
@@ -3271,7 +3485,7 @@ async def classify_move(
                 action_equivalent=score.action_equivalent,
                 played_action_obj=build_played_action(
                     action_type,
-                    move_uci=chess_move.uci(),
+                    move_uci=played_uci,
                     move_san=played_san,
                     rule_status=rule_before,
                     cp=eval_after.cp,

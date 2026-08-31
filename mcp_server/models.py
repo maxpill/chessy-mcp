@@ -108,6 +108,13 @@ class MCPEval(BaseModel):
     # Structured post-position state (audit H-03) — for top_moves candidates,
     # the post-position that resulted from playing this candidate move.
     post_position: dict[str, Any] | None = None
+    # Post-state evaluation (audit B-04/B-05) — for zeroing moves at
+    # halfmove=100, the multipv root cp can be "polluted" by the engine
+    # seeing the draw on the table, so the candidate is re-evaluated
+    # after the move is played and the resulting cp/mate are surfaced
+    # here. Mover-POV. None when no re-evaluation was performed.
+    post_state_cp: int | None = None
+    post_state_mate: int | None = None
     lichess_url: str | None = None
     lichess_image: str | None = None
     # Win/Draw/Loss percentages from Stockfish UCI_ShowWDL — White-POV
@@ -162,7 +169,9 @@ class MCPEval(BaseModel):
         b = board.copy(stack=True) if board is not None else chess.Board(fen)
         sign = 1 if b.turn == chess.WHITE else -1
         mover_score = (
-            sign * ev.cp if ev.cp is not None else (sign * ev.mate * 1000 if ev.mate is not None else None)
+            sign * ev.cp
+            if ev.cp is not None
+            else (sign * ev.mate * 1000 if ev.mate is not None else None)
         )
         rule_status = evaluate_rule_status(
             b,
@@ -402,7 +411,9 @@ def score_played_move(
     is_white = board_before.turn == chess.WHITE
     sign = 1 if is_white else -1
 
-    is_best_engine_move = bool(eval_before.best_move and move.uci().lower() == eval_before.best_move.lower())
+    is_best_engine_move = bool(
+        eval_before.best_move and move.uci().lower() == eval_before.best_move.lower()
+    )
 
     eval_move_eval = eval_played if eval_played is not None else eval_after
 
@@ -429,9 +440,7 @@ def score_played_move(
         mate_for_mover=mover_mate_before,
         history_complete=history_state,
     )
-    rule_after = evaluate_rule_status(
-        board_after, history_complete=history_state
-    )
+    rule_after = evaluate_rule_status(board_after, history_complete=history_state)
 
     canonical_best_action = eval_before.best_action or rule_before.recommended_action
 
@@ -498,7 +507,13 @@ def score_played_move(
     # Check terminal draw reached by move
     is_auto_terminal_draw = bool(
         rule_after.terminal
-        in ("stalemate", "insufficient_material", "seventyfive_moves", "fivefold_repetition", "dead_position")
+        in (
+            "stalemate",
+            "insufficient_material",
+            "seventyfive_moves",
+            "fivefold_repetition",
+            "dead_position",
+        )
     )
 
     # Baseline mover score with draw claim capability: if mover could have claimed draw, baseline is at least 0
@@ -533,9 +548,8 @@ def score_played_move(
         claim_r = reasons[0] if reasons else None
 
         is_mover_forced_win = (
-            (mover_mate_before is not None and mover_mate_before > 0)
-            or before_mover >= 200
-        )
+            mover_mate_before is not None and mover_mate_before > 0
+        ) or before_mover >= 200
         if is_mover_forced_win:
             return PlayedMoveScore(
                 move_class=MoveClass.BLUNDER,
@@ -583,7 +597,9 @@ def score_played_move(
         )
 
     # If position before was winning and move blundered into an automatic draw
-    is_before_winning = (mover_mate_before is not None and mover_mate_before > 0) or (before_mover >= 200)
+    is_before_winning = (mover_mate_before is not None and mover_mate_before > 0) or (
+        before_mover >= 200
+    )
     if is_auto_terminal_draw:
         if is_before_winning:
             eff_loss = max(300, min(1000, before_mover if before_mover > 0 else 1000))
@@ -622,7 +638,8 @@ def score_played_move(
                 win_loss=0.0,
                 best_action=canonical_best_action,
                 is_best_action=True,
-                action_equivalent=canonical_best_action in ("claim_draw", "claim_draw_with_intended_move"),
+                action_equivalent=canonical_best_action
+                in ("claim_draw", "claim_draw_with_intended_move"),
                 missed_draw_claim=False,
                 conceded_draw_claim=False,
                 claim_reason=None,
@@ -642,7 +659,9 @@ def score_played_move(
         claim_r = (
             rule_after.claim_reasons_now[0]
             if rule_after.claim_reasons_now
-            else (eval_after.claim_reasons[0] if eval_after.claim_reasons else "threefold_repetition")
+            else (
+                eval_after.claim_reasons[0] if eval_after.claim_reasons else "threefold_repetition"
+            )
         )
         return PlayedMoveScore(
             move_class=MoveClass.BLUNDER,
@@ -668,13 +687,25 @@ def score_played_move(
         )
 
     # Material balance for mover
-    piece_vals = {chess.PAWN: 100, chess.KNIGHT: 300, chess.BISHOP: 300, chess.ROOK: 500, chess.QUEEN: 900}
-    mover_mat = sum(len(board_before.pieces(pt, board_before.turn)) * val for pt, val in piece_vals.items())
-    opp_mat = sum(len(board_before.pieces(pt, not board_before.turn)) * val for pt, val in piece_vals.items())
+    piece_vals = {
+        chess.PAWN: 100,
+        chess.KNIGHT: 300,
+        chess.BISHOP: 300,
+        chess.ROOK: 500,
+        chess.QUEEN: 900,
+    }
+    mover_mat = sum(
+        len(board_before.pieces(pt, board_before.turn)) * val for pt, val in piece_vals.items()
+    )
+    opp_mat = sum(
+        len(board_before.pieces(pt, not board_before.turn)) * val for pt, val in piece_vals.items()
+    )
     is_down_material = opp_mat - mover_mat >= 200
 
     # Draw claim preservation check:
-    is_after_winning = (mover_mate_after is not None and mover_mate_after > 0) or (after_mover >= 100)
+    is_after_winning = (mover_mate_after is not None and mover_mate_after > 0) or (
+        after_mover >= 100
+    )
     is_after_losing = (
         after_mover <= -100 or (mover_mate_after is not None and mover_mate_after < 0)
     ) or is_down_material
@@ -682,7 +713,9 @@ def score_played_move(
     # Optimal draw claim forfeiture check:
     # Applies when mover had a draw claim opportunity (current or intended) from a losing position/claim recommendation,
     # but played a move leaving them in a lost position.
-    is_mover_forced_win = (mover_mate_before is not None and mover_mate_before > 0) or (before_mover >= 100)
+    is_mover_forced_win = (mover_mate_before is not None and mover_mate_before > 0) or (
+        before_mover >= 100
+    )
     optimal_claim_recommended = (
         not is_mover_forced_win
         and not is_after_winning
@@ -748,7 +781,12 @@ def score_played_move(
             loss_val = max(abs(before_mover), abs(after_mover))
             eff_loss = max(
                 300,
-                min(1000, loss_val if loss_val > 0 else (opp_mat - mover_mat if is_down_material else 500)),
+                min(
+                    1000,
+                    loss_val
+                    if loss_val > 0
+                    else (opp_mat - mover_mat if is_down_material else 500),
+                ),
             )
             final_class = MoveClass.BLUNDER if eff_loss >= 300 else MoveClass.MISTAKE
             claim_r = (
@@ -881,7 +919,9 @@ def score_played_move(
                 eff_loss = 150
                 w_loss = 2.0
             else:
-                final_class = MoveClass.BLUNDER if defender_resistance_loss >= 3 else MoveClass.MISTAKE
+                final_class = (
+                    MoveClass.BLUNDER if defender_resistance_loss >= 3 else MoveClass.MISTAKE
+                )
                 eff_loss = 500 if defender_resistance_loss >= 3 else 300
                 w_loss = min(20.0, float(defender_resistance_loss * 5.0))
 
@@ -1056,7 +1096,9 @@ def score_played_move(
         else:
             classified = classify_centipawn_loss(eff_loss)
             final_class = (
-                MoveClass.GOOD if classified == MoveClass.BEST and not is_best_engine_move else classified
+                MoveClass.GOOD
+                if classified == MoveClass.BEST and not is_best_engine_move
+                else classified
             )
             final_cpl = min(eff_loss, 1000)
     elif (wp_before >= 90.0 and wp_after >= 90.0) or (baseline_mover >= 300 and after_mover >= 300):
@@ -1069,13 +1111,17 @@ def score_played_move(
         else:
             classified = classify_centipawn_loss(eff_loss)
             final_class = (
-                MoveClass.GOOD if classified == MoveClass.BEST and not is_best_engine_move else classified
+                MoveClass.GOOD
+                if classified == MoveClass.BEST and not is_best_engine_move
+                else classified
             )
             final_cpl = min(eff_loss, 1000)
     else:
         classified = classify_centipawn_loss(eff_loss)
         final_class = (
-            MoveClass.GOOD if classified == MoveClass.BEST and not is_best_engine_move else classified
+            MoveClass.GOOD
+            if classified == MoveClass.BEST and not is_best_engine_move
+            else classified
         )
         final_cpl = min(eff_loss, 1000)
 
@@ -1173,7 +1219,11 @@ class MCPMoveAnalysis(BaseModel):
                 raise ValueError(
                     f"played_action_obj.type={obj_type!r} does not match action_type={self.action_type!r}"
                 )
-        if self.is_best_action and self.action_type != self.best_action and not self.action_equivalent:
+        if (
+            self.is_best_action
+            and self.action_type != self.best_action
+            and not self.action_equivalent
+        ):
             self.is_best_action = False
         return self
 
@@ -1189,7 +1239,9 @@ class MCPMoveAnalysis(BaseModel):
         board_before: chess.Board | None = None,
         board_after: chess.Board | None = None,
         syntax_warning: str | None = None,
-        action_type: Literal["play_move", "claim_draw", "claim_draw_with_intended_move"] = "play_move",
+        action_type: Literal[
+            "play_move", "claim_draw", "claim_draw_with_intended_move"
+        ] = "play_move",
         history_complete: str | bool = "incomplete",
     ) -> MCPMoveAnalysis:
         eval_bef = MCPEval.from_eval(
@@ -1235,9 +1287,7 @@ class MCPMoveAnalysis(BaseModel):
         if score.is_best_engine_move and score.effective_loss and score.effective_loss > 0:
             verified = False
 
-        rule_before = evaluate_rule_status(
-            b_bef, history_complete=history_complete
-        )
+        rule_before = evaluate_rule_status(b_bef, history_complete=history_complete)
         played_action_obj = build_played_action(
             action_type,
             move_uci=ma.played,
