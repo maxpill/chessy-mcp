@@ -15,6 +15,7 @@ from typing import Any
 
 import chess
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from core.engines.types import Eval, MoveAnalysis, MoveClass
 from mcp_server import server as server_module
@@ -1072,7 +1073,7 @@ async def test_m05_verbosity_aliases():
         res = await server_module.evaluate_position("startpos", depth=10, verbosity=v)
         assert res.lichess_url is None
     # Unknown values are rejected instead of silently changing semantics.
-    with pytest.raises(ValueError, match="INVALID_VERBOSITY"):
+    with pytest.raises(ToolError, match="INVALID_VERBOSITY"):
         await server_module.evaluate_position("startpos", depth=10, verbosity="unknown-mode")
 
 

@@ -122,6 +122,7 @@ def _compact_mcpeval(mcp_eval: MCPEval) -> MCPEval:
         }
     )
 
+
 _FIGURINE_MAP = str.maketrans(
     {
         "♔": "K",
@@ -507,6 +508,7 @@ def _maybe_ponder_warm(
     except Exception:
         pass
 
+
 mcp = MCPServer(
     "chess-analysis",
     description="Streamable Stockfish chess analysis and move grading MCP server",
@@ -874,7 +876,9 @@ def _is_valid_pgn_time_control(value: str) -> bool:
     if not text:
         return False
     stages = text.split(":")
-    return all(bool(stage) and _TIME_CONTROL_STAGE_RE.fullmatch(stage) is not None for stage in stages)
+    return all(
+        bool(stage) and _TIME_CONTROL_STAGE_RE.fullmatch(stage) is not None for stage in stages
+    )
 
 
 def _find_movetext_result(text: str) -> str | None:
@@ -1182,8 +1186,9 @@ def _parse_pgn_game_candidate(text: str, strict: bool = False) -> chess.pgn.Game
                 text, start_board=game.board(), strict=strict
             )
             if invalid_tokens:
+                error_prefix = "STRICT_PGN_ERROR" if strict else "INVALID_PGN"
                 raise ValueError(
-                    f"INVALID_PGN: Invalid PGN syntax or unrecognized token in movetext: {invalid_tokens[0]!r}"
+                    f"{error_prefix}: Invalid PGN syntax or unrecognized token in movetext: {invalid_tokens[0]!r}"
                 )
 
             if game.errors:
@@ -1445,6 +1450,174 @@ def _is_canonical_tag_line(line: str) -> bool:
     return bool(re.match(r'^(?:\[\s*[A-Za-z0-9_]+\s+"(?:[^"\\]|\\.)*"\s*\]\s*)+$', stripped))
 
 
+def _validate_strict_header_syntax(text: str) -> None:
+    """Reject malformed PGN tag lines that tolerant cleaning would otherwise discard."""
+    normalized = _normalize_unicode_pgn_results(text)
+    masked = _mask_comments_and_escapes(normalized)
+    raw_lines = normalized.splitlines()
+    masked_lines = masked.splitlines()
+    for index, visible in enumerate(masked_lines):
+        if not re.match(r"^\s*\[[A-Za-z0-9_]+\b", visible):
+            continue
+        raw = raw_lines[index] if index < len(raw_lines) else visible
+        if not _is_canonical_tag_line(raw):
+            raise ValueError(
+                f"STRICT_PGN_ERROR: Malformed PGN tag syntax on line {index + 1}: {raw.strip()!r}"
+            )
+
+
+def _strict_top_level_movetext_tokens(text: str) -> list[str]:
+    """Return top-level movetext tokens with comments/RAVs masked out."""
+    normalized = _normalize_movetext_figurines(_normalize_unicode_pgn_results(text))
+    masked = _mask_comments_and_escapes(normalized)
+
+    header_end = 0
+    for match in TAG_PAIR_REGEX.finditer(masked):
+        if masked[header_end : match.start()].strip() == "":
+            header_end = match.end()
+        else:
+            break
+
+    chars = list(masked[header_end:])
+    variation_depth = 0
+    for i, ch in enumerate(chars):
+        if ch == "(":
+            variation_depth += 1
+            chars[i] = " "
+            continue
+        if ch == ")":
+            chars[i] = " "
+            variation_depth = max(0, variation_depth - 1)
+            continue
+        if variation_depth > 0:
+            chars[i] = " "
+
+    top_level = "".join(chars)
+    top_level = re.sub(
+        r"(\b[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#?!]*)(\$\d+)",
+        r"\1 \2",
+        top_level,
+    )
+    top_level = re.sub(r"\b(O-O-O|O-O)([+#?!]*)(\$\d+)", r"\1\2 \3", top_level)
+
+    def split_move_number(match: re.Match[str]) -> str:
+        dots = "..." if match.group(2) else "."
+        return f" {match.group(1)}{dots} "
+
+    top_level = re.sub(r"(?<![A-Za-z0-9_])(\d+)\.(\.\.)?", split_move_number, top_level)
+    return top_level.split()
+
+
+def _validate_strict_mainline_surface(text: str, game: chess.pgn.Game) -> None:
+    """Require canonical SAN and correct explicit move numbers in strict mode."""
+    tokens = _strict_top_level_movetext_tokens(text)
+    moves = list(game.mainline_moves())
+    board = game.board()
+    move_index = 0
+
+    for token in tokens:
+        clean = token.strip()
+        if not clean:
+            continue
+        if clean in ("1-0", "0-1", "1/2-1/2", "*"):
+            break
+        nag = re.fullmatch(r"\$(\d+)", clean)
+        if nag:
+            if int(nag.group(1)) > 255:
+                raise ValueError(
+                    f"STRICT_PGN_ERROR: NAG {clean!r} is outside the supported PGN range 0..255."
+                )
+            continue
+        if clean in ("!", "?", "!!", "??", "!?", "?!"):
+            continue
+
+        number = re.fullmatch(r"(\d+)(\.|\.\.\.)", clean)
+        if number:
+            supplied = int(number.group(1))
+            expected = board.fullmove_number
+            expected_dots = "." if board.turn == chess.WHITE else "..."
+            if supplied != expected or number.group(2) != expected_dots:
+                raise ValueError(
+                    "STRICT_PGN_ERROR: Move number mismatch: "
+                    f"found {clean!r}, expected {expected}{expected_dots} for the side to move."
+                )
+            continue
+
+        if clean.lower() in ("e.p.", "e.p", "ep", "(e.p.)", "(e.p)", "(ep)"):
+            raise ValueError(
+                "STRICT_PGN_ERROR: Explicit en-passant marker requires syntax normalization; "
+                "use canonical SAN only."
+            )
+
+        if move_index >= len(moves):
+            raise ValueError(f"STRICT_PGN_ERROR: Unexpected trailing movetext token {clean!r}.")
+
+        move = moves[move_index]
+        canonical = board.san(move)
+        supplied_san = clean.rstrip("!?")
+        if supplied_san != canonical:
+            raise ValueError(
+                f"STRICT_PGN_ERROR: Non-canonical SAN: found {clean!r}, expected {canonical!r}."
+            )
+        board.push(move)
+        move_index += 1
+
+    if move_index != len(moves):
+        raise ValueError(
+            "STRICT_PGN_ERROR: Strict movetext validation did not consume the complete mainline."
+        )
+
+
+def _sanitize_malformed_pgn_header_lines(text: str, strict: bool = False) -> tuple[str, list[str]]:
+    """Reject or remove malformed tag-pair lines before PGN extraction.
+
+    The conversational PGN cleaner clusters only syntactically valid tag
+    pairs. A malformed line between valid tags used to split the cluster and
+    silently discard otherwise valid metadata. We inspect only the pre-move
+    prefix and only activate when that prefix contains at least one valid PGN
+    tag, so bracket-looking prose in ordinary movetext is left untouched.
+    """
+    normalized = _normalize_multiline_tags(text)
+    lines = normalized.splitlines(keepends=True)
+    if not lines:
+        return normalized, []
+
+    first_move_line = len(lines)
+    for idx, line in enumerate(lines):
+        if re.search(r"\b1\s*[\.\:]\s*[A-Za-z]", line):
+            first_move_line = idx
+            break
+
+    prefix = "".join(lines[:first_move_line])
+    if TAG_PAIR_REGEX.search(_mask_comments_and_escapes(prefix)) is None:
+        return normalized, []
+    if first_move_line == 0:
+        return normalized, []
+    if first_move_line >= len(lines):
+        return normalized, []
+
+    warnings: list[str] = []
+    for idx in range(first_move_line):
+        stripped = lines[idx].strip()
+        if not stripped.startswith("["):
+            continue
+        if _is_canonical_tag_line(stripped):
+            continue
+        if re.match(r"^\[\s*[A-Za-z0-9_]+(?:\s|\])", stripped) is None:
+            continue
+
+        warning = f"Malformed PGN header line ignored: {stripped!r}."
+        if strict:
+            raise ValueError(f"STRICT_VALIDATION_ERROR: {warning}")
+        warnings.append(warning)
+        newline = (
+            "\r\n" if lines[idx].endswith("\r\n") else ("\n" if lines[idx].endswith("\n") else "")
+        )
+        lines[idx] = newline
+
+    return "".join(lines), warnings
+
+
 def _clean_conversational_text(text: str) -> str:
     text = _strip_pgn_escape_lines(text)
     text = _normalize_multiline_tags(text)
@@ -1640,9 +1813,14 @@ def _extract_canonical_pgn_text(text: str) -> str:
 
 def _extract_game(text: str, strict: bool = False) -> chess.pgn.Game:
     """Extract a chess.pgn.Game from raw, dirty, annotated, or conversational text."""
-    _check_multiple_games(text)
-    canonical = _extract_canonical_pgn_text(text)
-    return _extract_game_inner(canonical, strict=strict)
+    sanitized, _header_warnings = _sanitize_malformed_pgn_header_lines(text, strict=strict)
+    _check_multiple_games(sanitized)
+    canonical = _extract_canonical_pgn_text(sanitized)
+    game = _extract_game_inner(canonical, strict=strict)
+    if strict:
+        _validate_strict_header_syntax(canonical)
+        _validate_strict_mainline_surface(canonical, game)
+    return game
 
 
 def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
@@ -1954,7 +2132,7 @@ def _build_board(
                 board = None
 
     if board is None:
-        game = _extract_game(cleaned)
+        game = _extract_game(cleaned, strict=strict)
         board = game.board()
         if not board.is_valid() or board.status() != chess.STATUS_VALID:
             raise ValueError(
@@ -2033,9 +2211,16 @@ def _build_board_with_metadata(
     ):
         input_fen = cleaned
 
+    # Canonicalization is a property of the supplied FEN itself, not of any
+    # suffix moves replayed after that FEN. Compare the input against a board
+    # parsed before replaying the suffix, then return the final board FEN.
+    canonical_input_fen: str | None = None
+    if input_fen is not None:
+        canonical_input_fen = _build_board(fen_or_pgn, [], strict).fen()
+
     board = _build_board(fen_or_pgn, moves, strict)
     canonical = board.fen()
-    was_canonicalized = bool(input_fen) and input_fen != canonical
+    was_canonicalized = bool(input_fen) and input_fen != canonical_input_fen
     return board, input_fen, canonical, was_canonicalized
 
 
@@ -2138,6 +2323,21 @@ async def _evaluate_game_position_cached(
             term_outcome = "draw"
             term_cp = 0
             term_mate = None
+        from mcp_server.actions import build_best_action, build_legal_actions
+
+        terminal_best_action = build_best_action(
+            recommended_action="game_over",
+            rule_status=rule_status,
+            engine_eval=None,
+            board=b,
+            sign=1 if b.turn == chess.WHITE else -1,
+        )
+        terminal_legal_actions = build_legal_actions(
+            rule_status=rule_status,
+            engine_eval=None,
+            board=b,
+            legal_engine_moves=None,
+        )
         return (
             MCPEval(
                 status=rule_status.terminal,
@@ -2158,6 +2358,8 @@ async def _evaluate_game_position_cached(
                 recommended_action="game_over",
                 best_action="game_over",
                 best_action_type="game_over",
+                best_action_obj=terminal_best_action,
+                legal_actions=terminal_legal_actions,
                 decision_value={
                     "outcome": term_outcome,
                     "cp_equivalent": term_cp,
@@ -2335,9 +2537,11 @@ async def evaluate_position(
     t0 = time.time()
     raw_requested_depth = depth
     depth = max(1, min(depth, 30))
-    verbosity_mode = _resolve_verbosity(verbosity)
     try:
-        board = _build_board(fen, moves or [], strict=strict)
+        verbosity_mode = _resolve_verbosity(verbosity)
+        board, input_fen, canonical_fen, fen_was_canonicalized = _build_board_with_metadata(
+            fen, moves or [], strict=strict
+        )
         pool = await _get_analyzer_pool(ctx)
         # History completeness is derived from whether the caller had the move
         # stack. Naked FEN (no moves) cannot detect threefold repetition;
@@ -2353,27 +2557,15 @@ async def evaluate_position(
             history_complete=history_complete,
         )
         await metrics.record("evaluate_position", (time.time() - t0) * 1000, cache_hit=is_hit)
-        # L-06: surface input vs canonical FEN so callers can detect when
-        # python-chess silently rewrote the EP target or other fields.
-        canonical_fen = board.fen()
-        cleaned_input = (
-            fen.replace("\u00a0", " ")
-            .replace("\u200b", "")
-            .replace("\ufeff", "")
-            .strip("`'\" \t\r\n")
-        )
-        is_fen_input = (
-            "/" in cleaned_input
-            and 1 <= len(cleaned_input.split()) <= 6
-            and not cleaned_input.startswith("[")
-            and not cleaned_input.lower().startswith("startpos")
-        )
+        # L-06: surface input vs canonical FEN. Canonicalization describes
+        # parser normalization of the supplied FEN only; replayed suffix moves
+        # are reflected in canonical_fen but do not make the input noncanonical.
         result = res.model_copy(
             update={
                 "requested_depth": raw_requested_depth,
-                "input_fen": cleaned_input if is_fen_input else None,
+                "input_fen": input_fen,
                 "canonical_fen": canonical_fen,
-                "fen_was_canonicalized": is_fen_input and cleaned_input != canonical_fen,
+                "fen_was_canonicalized": fen_was_canonicalized,
             }
         )
         if verbosity_mode == VERBOSITY_COMPACT:
@@ -2386,7 +2578,9 @@ async def evaluate_position(
         await metrics.record("evaluate_position", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
         code = "invalid_input"
-        if "STRICT" in msg:
+        if "INVALID_VERBOSITY" in msg:
+            code = "invalid_verbosity"
+        elif "STRICT" in msg:
             code = "strict_validation_error"
         elif "UNSUPPORTED_VARIANT" in msg:
             code = "unsupported_variant"
@@ -2436,13 +2630,15 @@ async def top_moves(
         of candidate MCPEval objects ranked best first.
 
         IMPORTANT (audit C-02 / H-03):
-          Each candidate in `result` represents a `play_move` action evaluated
-          against its POST-CANDIDATE position. Draw-claim actions are reported
-          separately at the outer level via `best_action_obj` and
-          `legal_actions` — they are NOT mixed into candidate scores.
-          Candidate `cp`/`mate` reflects the engine's evaluation of the
-          position AFTER the move is played; the post-position status, winner,
-          and Lichess URL refer to that post-state.
+          Each candidate in `result` represents a `play_move` action. Its
+          `best_move`, `pv`, and engine `cp`/`mate` retain the root MultiPV
+          action value and notation frame, so PV[0] is the candidate move and
+          a mating candidate may retain Stockfish's root mate distance (e.g. 1).
+          The candidate `canonical_fen`, terminal status, winner, rule fields,
+          and `post_position` describe the board AFTER that candidate is played.
+          Automatic terminal draws normalize candidate `cp` to 0. Draw-claim
+          actions are reported separately via outer `best_action_obj` and
+          `legal_actions`; they are not mixed into the MultiPV candidate list.
 
         For terminal positions (checkmate, stalemate, insufficient material,
         repetition, 75-move rule), returns TopMovesResult with status and
@@ -2454,9 +2650,11 @@ async def top_moves(
     depth = max(1, min(depth, 30))
     clamped_n = max(1, min(n, 20))
     n = clamped_n
-    verbosity_mode = _resolve_verbosity(verbosity)
     try:
-        board = _build_board(fen, moves or [], strict=strict)
+        verbosity_mode = _resolve_verbosity(verbosity)
+        board, _input_fen, canonical_fen, fen_was_canonicalized = _build_board_with_metadata(
+            fen, moves or [], strict=strict
+        )
         # evaluate_position with explicit moves has full history; naked FEN doesn't.
         history_complete = _history_provenance_for_input(fen, moves)
         rule_status = evaluate_rule_status(board, history_complete=history_complete)
@@ -2502,7 +2700,8 @@ async def top_moves(
                 clamped_n=clamped_n,
                 returned_n=0,
                 legal_move_count=legal_move_count,
-                canonical_fen=board.fen(),
+                canonical_fen=canonical_fen,
+                fen_was_canonicalized=fen_was_canonicalized,
                 engine="Stockfish",
                 engine_version=engine_name_str,
                 **_build_identity(pool),
@@ -2586,7 +2785,8 @@ async def top_moves(
                 clamped_n=clamped_n,
                 returned_n=len(items),
                 legal_move_count=legal_move_count,
-                canonical_fen=board.fen(),
+                canonical_fen=canonical_fen,
+                fen_was_canonicalized=fen_was_canonicalized,
                 engine="Stockfish",
                 engine_version=engine_name_str,
                 **_build_identity(pool),
@@ -2601,10 +2801,10 @@ async def top_moves(
             # `top_moves` wall time at depth 14).
             res_list: list[MCPEval] = []
             results = await pool.top_moves(board, n=n, depth=depth)
-            # AUDIT C-02 / H-03: each candidate is a play_move action evaluated
-            # AGAINST ITS POST-POSITION. The post-candidate terminal state,
-            # winner, and Lichess URL describe the position after the move —
-            # NOT a hypothetical claim outcome.
+            # AUDIT C-02 / H-03: each candidate is a play_move action.
+            # Root MultiPV score/mate/PV stay action-oriented; post-position
+            # status, winner, rules and FEN describe the board after the move.
+            # Claim actions remain separate from the candidate list.
             for r in results:
                 b_cand = board.copy(stack=True)
                 cand_san_val: str | None = None
@@ -2645,6 +2845,7 @@ async def top_moves(
                     except Exception:
                         pass
 
+                identity = _build_identity(pool)
                 mcp_eval = MCPEval.from_eval(
                     r,
                     b_cand.fen(),
@@ -2654,6 +2855,8 @@ async def top_moves(
                     pv_board=board,
                 ).model_copy(
                     update={
+                        "build_sha": identity["build_sha"],
+                        "engine_config": identity["engine_config"],
                         "post_terminal_status": cand_post_terminal,
                         "candidate_san": cand_san_val,
                         "post_can_claim_draw": cand_can_claim_draw,
@@ -2720,6 +2923,8 @@ async def top_moves(
         res = cast(list[MCPEval], await _single_flight.do(sf_key, _compute))
         await metrics.record("top_moves", (time.time() - t0) * 1000, cache_hit=False)
         items = [c.model_copy(update={"requested_depth": raw_requested_depth}) for c in res[:n]]
+        if verbosity_mode == VERBOSITY_COMPACT:
+            items = [_compact_mcpeval(c) for c in items]
         root_rec_action = _pick_root_recommended_action(items)
         best_action_obj = build_best_action(
             recommended_action=root_rec_action,
@@ -2755,7 +2960,8 @@ async def top_moves(
             clamped_n=clamped_n,
             returned_n=len(items),
             legal_move_count=legal_move_count,
-            canonical_fen=board.fen(),
+            canonical_fen=canonical_fen,
+            fen_was_canonicalized=fen_was_canonicalized,
             engine="Stockfish",
             engine_version=engine_name_str,
             **_build_identity(pool),
@@ -2768,7 +2974,9 @@ async def top_moves(
         await metrics.record("top_moves", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
         code = "invalid_input"
-        if "STRICT" in msg:
+        if "INVALID_VERBOSITY" in msg:
+            code = "invalid_verbosity"
+        elif "STRICT" in msg:
             code = "strict_validation_error"
         elif "UNSUPPORTED_VARIANT" in msg:
             code = "unsupported_variant"
@@ -2833,7 +3041,10 @@ async def classify_move(
         rule_before = evaluate_rule_status(board, history_complete=history_complete)
         if action_type == "claim_draw" and not rule_before.can_claim_now:
             raise ValueError("ILLEGAL_ACTION: draw cannot be claimed now")
-        if action_type == "claim_draw_with_intended_move" and chess_move.uci() not in rule_before.intended_claim_ucis:
+        if (
+            action_type == "claim_draw_with_intended_move"
+            and chess_move.uci() not in rule_before.intended_claim_ucis
+        ):
             raise ValueError("ILLEGAL_ACTION: intended move does not create a legal draw claim")
         pool = await _get_analyzer_pool(ctx)
 
@@ -2886,7 +3097,11 @@ async def classify_move(
                 )
 
             eval_before, _ = await _evaluate_game_position_cached(
-                board, depth, pool, requested_depth=raw_requested_depth, history_complete=history_complete
+                board,
+                depth,
+                pool,
+                requested_depth=raw_requested_depth,
+                history_complete=history_complete,
             )
 
             # Correctness first: eval_after must describe the immediate
@@ -2938,7 +3153,10 @@ async def classify_move(
                     # full uncached depth+4 cost. Now the depth+4 result is
                     # cached like any other eval.
                     verify_eval_result, _verify_hit = await _evaluate_game_position_cached(
-                        board, depth + 4, pool, requested_depth=raw_requested_depth + 4,
+                        board,
+                        depth + 4,
+                        pool,
+                        requested_depth=raw_requested_depth + 4,
                         history_complete=history_complete,
                     )
                     verify_ev: Eval = Eval(
@@ -3177,9 +3395,7 @@ def _compute_game_metrics(
             )
             if is_intended_claim:
                 played_uci = move.uci()
-                rule_before = evaluate_rule_status(
-                    board_before, history_complete="complete"
-                )
+                rule_before = evaluate_rule_status(board_before, history_complete="complete")
                 valid_for_intended = (
                     rule_before.can_claim_with_intended_move
                     and played_uci in rule_before.intended_claim_ucis
@@ -3381,9 +3597,16 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     raw_requested_depth = depth
     depth = max(1, min(depth, 30))
     try:
-        _check_multiple_games(pgn)
-        canonical_pgn = _extract_canonical_pgn_text(pgn)
-        game = _extract_game_inner(canonical_pgn)
+        sanitized_pgn, lexical_header_warnings = _sanitize_malformed_pgn_header_lines(
+            pgn, strict=strict
+        )
+        _check_multiple_games(sanitized_pgn)
+        if strict:
+            _validate_strict_header_syntax(sanitized_pgn)
+        canonical_pgn = _extract_canonical_pgn_text(sanitized_pgn)
+        game = _extract_game_inner(canonical_pgn, strict=strict)
+        if strict:
+            _validate_strict_mainline_surface(canonical_pgn, game)
 
         positions: list[chess.Board] = []
         moves: list[chess.Move] = []
@@ -3429,9 +3652,7 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             cleaned_movetext,
             flags=re.IGNORECASE,
         ):
-            syntax_warnings.append(
-                "En-passant marker 'e.p.' normalized to canonical SAN."
-            )
+            syntax_warnings.append("En-passant marker 'e.p.' normalized to canonical SAN.")
         while "{" in cleaned_movetext and "}" in cleaned_movetext:
             prev = cleaned_movetext
             cleaned_movetext = re.sub(r"\{[^{}]*\}", " ", cleaned_movetext, flags=re.DOTALL)
@@ -3583,7 +3804,7 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             elif tag_k == "termination" and termination_header_val is None:
                 termination_header_val = tag_v
 
-        metadata_warnings: list[str] = []
+        metadata_warnings: list[str] = list(lexical_header_warnings)
 
         CANONICAL_RESULTS = {"1-0", "0-1", "1/2-1/2", "*"}
         if result_header_raw is not None and result_header_raw != "?":
@@ -3831,6 +4052,16 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
                 termination_val = norm_term_hdr
         else:
             termination_val = None
+
+        if strict and not moves:
+            if syntax_warnings:
+                raise ValueError(
+                    f"STRICT_PGN_ERROR: PGN contains syntax normalization or move number mismatch: {syntax_warnings[0]}"
+                )
+            if metadata_warnings:
+                raise ValueError(
+                    f"STRICT_PGN_ERROR: PGN contains metadata inconsistency: {metadata_warnings[0]}"
+                )
 
         is_standard_start = game.board().fen() == chess.STARTING_FEN
 
@@ -4183,16 +4414,34 @@ class ASGIRequestLoggerMiddleware:
 
             auth_token = get_mcp_settings().auth_token
             provided = headers_dict.get(b"x-chessy-auth", b"").decode("utf-8", "ignore").strip()
-            authorization = headers_dict.get(b"authorization", b"").decode("utf-8", "ignore").strip()
-            bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+            authorization = (
+                headers_dict.get(b"authorization", b"").decode("utf-8", "ignore").strip()
+            )
+            bearer = (
+                authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+            )
 
             def token_matches(candidate: str) -> bool:
                 return bool(auth_token) and hmac.compare_digest(candidate, auth_token)
 
             if not (token_matches(provided) or token_matches(bearer)):
-                log.warning("Blocked unauthenticated client ip=%s ua=%r origin=%r", client_ip, ua, origin)
+                log.warning(
+                    "Blocked unauthenticated client ip=%s ua=%r origin=%r", client_ip, ua, origin
+                )
                 response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Forbidden: valid MCP auth token required"}}\n'
-                await send(cast(Message, {"type": "http.response.start", "status": 403, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii"))]}))
+                await send(
+                    cast(
+                        Message,
+                        {
+                            "type": "http.response.start",
+                            "status": 403,
+                            "headers": [
+                                (b"content-type", b"application/json"),
+                                (b"content-length", str(len(response_body)).encode("ascii")),
+                            ],
+                        },
+                    )
+                )
                 await send(cast(Message, {"type": "http.response.body", "body": response_body}))
                 return
 
@@ -4211,7 +4460,9 @@ class ASGIRequestLoggerMiddleware:
             # public edge: uvicorn rejects missing/malformed headers before
             # they reach us, and a client that lies about Content-Length is
             # bounded by the transport frame limit and the token-bucket.
-            raw_content_length = headers_dict.get(b"content-length", b"").decode("ascii", "ignore").strip()
+            raw_content_length = (
+                headers_dict.get(b"content-length", b"").decode("ascii", "ignore").strip()
+            )
             if raw_content_length:
                 try:
                     declared_length = int(raw_content_length)
@@ -4219,7 +4470,19 @@ class ASGIRequestLoggerMiddleware:
                     declared_length = -1
                 if declared_length > self.MAX_BUFFERED_BODY:
                     response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Request body too large"}}\n'
-                    await send(cast(Message, {"type": "http.response.start", "status": 413, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii"))]}))
+                    await send(
+                        cast(
+                            Message,
+                            {
+                                "type": "http.response.start",
+                                "status": 413,
+                                "headers": [
+                                    (b"content-type", b"application/json"),
+                                    (b"content-length", str(len(response_body)).encode("ascii")),
+                                ],
+                            },
+                        )
+                    )
                     await send(cast(Message, {"type": "http.response.body", "body": response_body}))
                     return
                 if declared_length > 8 * 1024:
@@ -4229,7 +4492,20 @@ class ASGIRequestLoggerMiddleware:
 
         if not await self.rate_limiter.is_allowed(client_ip, cost=request_cost):
             response_body = b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"Rate limit exceeded. Please slow down."}}\n'
-            await send(cast(Message, {"type": "http.response.start", "status": 429, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(response_body)).encode("ascii")), (b"retry-after", b"2")]}))
+            await send(
+                cast(
+                    Message,
+                    {
+                        "type": "http.response.start",
+                        "status": 429,
+                        "headers": [
+                            (b"content-type", b"application/json"),
+                            (b"content-length", str(len(response_body)).encode("ascii")),
+                            (b"retry-after", b"2"),
+                        ],
+                    },
+                )
+            )
             await send(cast(Message, {"type": "http.response.body", "body": response_body}))
             return
 
@@ -4250,6 +4526,7 @@ class ASGIRequestLoggerMiddleware:
             return
 
         await self.app(scope, receive, send)
+
 
 def _build_app(restrict_chatgpt: bool) -> ASGIApp:
     """Compose the ASGI middleware stack around the FastMCP streamable-HTTP app.
