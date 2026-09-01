@@ -411,8 +411,17 @@ def score_played_move(
     is_white = board_before.turn == chess.WHITE
     sign = 1 if is_white else -1
 
+    # Audit P0/P1: for draw-claim actions, the action IS the claim, not the
+    # `move` argument. `claim_draw` arrives here with a placeholder legal move
+    # (server substitutes when no move is parsed), and `claim_draw_with_intended_move`
+    # arrives with a non-resetting claim move. Neither is the engine's "best
+    # legal attempt" in the play_move sense — the player chose the claim, not
+    # the move. Force `is_best_engine_move=False` so callers never see a claim
+    # action masquerading as the engine's best play.
     is_best_engine_move = bool(
-        eval_before.best_move and move.uci().lower() == eval_before.best_move.lower()
+        action_type == "play_move"
+        and eval_before.best_move
+        and move.uci().lower() == eval_before.best_move.lower()
     )
 
     eval_move_eval = eval_played if eval_played is not None else eval_after

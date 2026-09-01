@@ -2888,6 +2888,10 @@ async def top_moves(
                 cand_claim_reasons: list[str] = []
                 cand_claim_reasons_now: list[str] = []
                 cand_claim_moves: list[str] = []
+                # Default to the root rule_status; the post-state branch below
+                # refines it. Used by the best_action_obj build below as a
+                # fallback when `r.best_move` is missing or fails to parse.
+                cand_rule = rule_status
                 # Track the post-state cp/mate for the action policy without
                 # mutating the candidate's reported values.
                 post_state_cp: int | None = None
@@ -2988,6 +2992,45 @@ async def top_moves(
                     pv=r.pv,
                     depth=r.depth,
                 )
+                # Audit C-03 (2026-09-01 adversarial probe): the candidate's
+                # outer action type is the type of move it represents —
+                # `play_move` (a candidate IS a play_move action) or
+                # `game_over` (the post-state is terminal). The post-state's
+                # `rule_status.recommended_action` can be a claim (e.g. after
+                # Qb1 the opponent can claim draw) but that is the OPPONENT's
+                # perspective, not the candidate's. Reassign `best_action` /
+                # `best_action_type` / `best_action_obj` to the candidate's
+                # own action type so each candidate reads as a self-consistent
+                # play_move or game_over unit. The post-state's recommendation
+                # is preserved in `post_position.recommended_action`.
+                cand_recommended_action = (
+                    "game_over" if cand_post_terminal is not None else "play_move"
+                )
+                from mcp_server.actions import build_best_action as _build_ba
+
+                if cand_post_terminal is not None:
+                    outcome = (
+                        "draw"
+                        if cand_post_terminal != "checkmate"
+                        else ("win" if cand_winner == "white" else "loss")
+                    )
+                    cand_best_action_obj: dict[str, Any] = {
+                        "type": "game_over",
+                        "outcome": outcome,
+                        "reason": cand_post_terminal,
+                    }
+                else:
+                    # Use the root `board` (not b_cand) for SAN lookup: the
+                    # candidate's `best_move` is a legal move AT THE ROOT, not
+                    # after it has been played. Passing b_cand would make
+                    # `bm in board.legal_moves` False and silently drop SAN.
+                    cand_best_action_obj = _build_ba(
+                        recommended_action="play_move",
+                        rule_status=cand_rule,
+                        engine_eval=r,
+                        board=board,
+                        sign=sign,
+                    )
                 mcp_eval = MCPEval.from_eval(
                     post_eval_for_candidate,
                     b_cand.fen(),
@@ -3005,9 +3048,10 @@ async def top_moves(
                         "post_can_claim_now": cand_can_claim_now,
                         "post_claim_reasons": cand_claim_reasons,
                         "post_claim_moves": cand_claim_moves,
-                        "recommended_action": "game_over"
-                        if cand_post_terminal is not None
-                        else "play_move",
+                        "recommended_action": cand_recommended_action,
+                        "best_action": cand_recommended_action,
+                        "best_action_type": cand_recommended_action,
+                        "best_action_obj": cand_best_action_obj,
                         "post_state_cp": post_state_cp,
                         "post_state_mate": post_state_mate,
                         "post_position": {
@@ -3016,6 +3060,9 @@ async def top_moves(
                             "can_claim_now": cand_can_claim_now,
                             "can_claim_draw": cand_can_claim_draw,
                             "claim_reasons": cand_claim_reasons_now or cand_claim_reasons,
+                            "recommended_action": getattr(
+                                cand_rule, "recommended_action", "play_move"
+                            ),
                         },
                     }
                 )
@@ -3352,11 +3399,27 @@ async def classify_move(
             #     mark classification_verified=False so callers see the
             #     unverified result instead of a fabricated "best".
             verification_attempted = False
-            if chess_move is not None and (
-                chess_move.uci().lower() == (eval_before.best_move or "").lower()
-                and score.move_class in (MoveClass.MISTAKE, MoveClass.BLUNDER)
-                and not score.missed_draw_claim
-                and not score.conceded_draw_claim
+            # Audit P0/P1 (2026-09-01 adversarial probe): the verification
+            # block is for `play_move` only. Draw-claim actions classify the
+            # CLAIM, not the supplied move; the move may coincidentally match
+            # `eval_before.best_move` (e.g. `claim_draw + Qc8#` where the
+            # engine's best IS the mating move the player is refusing to play).
+            # In that case the depth+4 verification correctly confirms the
+            # move is the engine's best legal attempt — but that's irrelevant
+            # to grading the CLAIM. Allowing the "else" branch to overwrite
+            # `move_class=BEST, effective_loss=0` here violates the invariant
+            # `is_best_action==False AND best outcome==win AND played
+            # outcome==draw ⇒ effective_loss > 0`. Skip the whole block for
+            # claim actions; the score from `score_played_move` is final.
+            if (
+                action_type == "play_move"
+                and chess_move is not None
+                and (
+                    chess_move.uci().lower() == (eval_before.best_move or "").lower()
+                    and score.move_class in (MoveClass.MISTAKE, MoveClass.BLUNDER)
+                    and not score.missed_draw_claim
+                    and not score.conceded_draw_claim
+                )
             ):
                 try:
                     # Cache the depth+4 verification result via the same
