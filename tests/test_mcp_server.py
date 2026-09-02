@@ -2878,17 +2878,21 @@ async def test_fix_02_03_symmetric_root_search_parity():
 
 @pytest.mark.asyncio
 async def test_fix_04_evaluate_and_top_moves_n1_consistency():
-    """Fix 4: evaluate_position and top_moves(n=1) share identical evaluation."""
+    """Fix 4: evaluate_position and top_moves(n=1) share identical evaluation.
+
+    Mock pool returns lines in chess-correct order (best cp-for-mover first)
+    so the rank-key reorder is a no-op; the invariant `evaluate == top_moves[0]`
+    must hold."""
     await server_module._cache.clear()
 
     class MockPool:
         async def evaluate(self, board, depth=14, root_moves=None):
-            return Eval(cp=-25, best_move="c1b3", pv=["c1b3"], depth=depth)
+            return Eval(cp=-4, best_move="c1d3", pv=["c1d3"], depth=depth)
 
         async def top_moves(self, board, n=5, depth=14):
             return [
-                Eval(cp=-25, best_move="c1b3", pv=["c1b3"], depth=depth),
                 Eval(cp=-4, best_move="c1d3", pv=["c1d3"], depth=depth),
+                Eval(cp=-25, best_move="c1b3", pv=["c1b3"], depth=depth),
             ]
 
         async def close(self):

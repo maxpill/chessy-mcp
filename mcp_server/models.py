@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import chess
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, computed_field
 
 from core.engines.grading import classify_centipawn_loss
 from core.engines.types import Eval, MoveAnalysis, MoveClass
@@ -49,8 +49,24 @@ class MCPEval(BaseModel):
     engine_config: dict[str, Any] = Field(default_factory=dict)
     status: str = "active"
     winner: str | None = None
+    # U-08 (2026-09-01): explicit root-vs-post-state score field names.
+    # `cp` and `mate` retain their existing semantics (root score — the
+    # engine's evaluation of the position this MCPEval represents; for
+    # `evaluate_position` and `top_moves`'s root, that IS the input FEN;
+    # for a `top_moves` candidate it's the engine's view of the candidate
+    # move and is a hybrid of root multipv + post-state at that depth).
+    # `root_score_cp` and `root_score_mate` are aliases exposed for
+    # callers who want explicit "root" semantics. The post-state scores
+    # are surfaced separately as `post_state_cp` / `post_state_mate`
+    # (audit B-04 re-eval — only populated for zeroing candidates at
+    # halfmove>=100 with draw-pollution risk; None otherwise). Callers
+    # that need a guaranteed post-state number should run their own
+    # `evaluate_position` on the candidate's `canonical_fen`.
     cp: int | None = None
     mate: int | None = None
+    root_score_cp: int | None = None
+    root_score_mate: int | None = None
+    post_fen: str | None = None
     # `best_move` is the engine's recommended play_move — populated whenever
     # the engine reports a best move, even if the best legal game action is a
     # claim. This is intentional: coaches and classifiers need the engine's
@@ -80,8 +96,19 @@ class MCPEval(BaseModel):
     best_action_type: str = "play_move"
     # New: typed best_action payload (audit 10.2)
     best_action_obj: dict[str, Any] | None = None
-    # New: typed legal actions list (audit 10.1)
-    legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
+    # U-10 (2026-09-01): the legacy `legal_actions` field only contains
+    # RULE actions (claim_draw + claim_draw_with_intended_move + game_over),
+    # not the full set of legal plies. That's confusing — callers reading
+    # "legal_actions" naturally expect every legal move. The new
+    # `legal_rule_actions` field is the explicit, unambiguous name; the
+    # full legal move list (UCI strings) is exposed as `legal_move_uci`.
+    # `legal_actions` remains as a back-compat alias for `legal_rule_actions`.
+    legal_actions: list[dict[str, Any]] = Field(
+        default_factory=list[dict[str, Any]],
+        deprecated=True,
+    )
+    legal_rule_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
+    legal_move_uci: list[str] = Field(default_factory=list[str])
     decision_value: dict[str, Any] | None = None
     engine_eval: dict[str, Any] | None = None
     # History completeness (audit H-01 / 10.5)
@@ -139,6 +166,8 @@ class MCPEval(BaseModel):
         history_complete: str | bool = "incomplete",
         pv_board: chess.Board | None = None,
         legal_engine_moves: list[Eval] | None = None,
+        zeroing_move_best_score: int | None = None,
+        zeroing_move_best_mate: int | None = None,
     ) -> MCPEval:
         """Build an MCPEval from a Stockfish Eval.
 
@@ -178,6 +207,8 @@ class MCPEval(BaseModel):
             mover_score,
             mate_for_mover=sign * ev.mate if ev.mate is not None else None,
             history_complete=history_complete,
+            zeroing_move_best_score=zeroing_move_best_score,
+            zeroing_move_best_mate=zeroing_move_best_mate,
         )
 
         calc_status = status or rule_status.terminal or "active"
@@ -285,6 +316,18 @@ class MCPEval(BaseModel):
             "depth": depth_val,
             "wdl": wdl_tuple,
             "wdl_pct": wdl_pct_dict,
+            # U-13 (2026-09-01): surface build identity inside the
+            # nested engine_eval payload so callers reading a single
+            # MCPEval can identify which build / engine produced it
+            # without reaching for the parent MCPEval. The parent's
+            # identity is still the source of truth; this is a
+            # copy for payload completeness. None is a safe default —
+            # the parent populates these via .model_copy after the
+            # fact, but the engine_eval sub-dict is built before then.
+            "build_sha": None,
+            "engine_config": {},
+            "requested_depth": (requested_depth if requested_depth is not None else depth_val),
+            "searched_depth": depth_val,
         }
 
         decision_val_dict = {
@@ -319,12 +362,24 @@ class MCPEval(BaseModel):
             board=b,
             legal_engine_moves=legal_engine_moves,
         )
+        # U-10: populate the full legal move UCI list. This is every
+        # ply the side-to-move can play, regardless of whether it
+        # advances a claim / rule / game-over action.
+        legal_move_uci_list: list[str] = [m.uci() for m in b.legal_moves]
 
         return cls(
             status=calc_status,
             winner=winner,
             cp=cp_val,
             mate=mate_val,
+            # U-08: explicit root-vs-post score surface. `root_score_cp`
+            # and `root_score_mate` mirror `cp` / `mate` so callers that
+            # need the unambiguous root view can read these directly.
+            # `post_fen` is the post-candidate board FEN; for the root
+            # case it's the same as the input FEN.
+            root_score_cp=cp_val,
+            root_score_mate=mate_val,
+            post_fen=b.fen() if board is None else board.fen(),
             best_move=clean_best_move,
             executable_move=executable_move,
             pv=clean_pv,
@@ -351,6 +406,8 @@ class MCPEval(BaseModel):
             best_action_type=rule_status.recommended_action,
             best_action_obj=best_action_payload,
             legal_actions=legal_actions_payload,
+            legal_rule_actions=legal_actions_payload,
+            legal_move_uci=legal_move_uci_list,
             decision_value=decision_val_dict,
             engine_eval=engine_eval_dict,
             history_dependent_status=rule_status.history_dependent_status,
@@ -383,6 +440,10 @@ class PlayedMoveScore(BaseModel):
     best_action: str = "play_move"
     is_best_action: bool = True
     action_equivalent: bool = False
+    # U-07 (2026-09-01): the played action type — needed to derive the
+    # primitive `same_action_type` exposed below. Set by score_played_move
+    # once per call so the @computed_field below has a stable input.
+    action_type: str = "play_move"
     missed_draw_claim: bool = False
     conceded_draw_claim: bool = False
     claim_reason: str | None = None
@@ -390,6 +451,40 @@ class PlayedMoveScore(BaseModel):
     can_claim_now: bool = False
     can_claim_with_intended_move: bool = False
     claim_moves: list[str] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def same_action_type(self) -> bool:
+        """True iff the played action type equals the engine's recommended
+        action type (best_action). For example, claim_draw played while
+        the engine recommends claim_draw → True; claim_draw played while
+        the engine recommends play_move → False."""
+        return self.action_type == self.best_action
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def same_outcome(self) -> bool:
+        """True iff the played action produces the same outcome as the
+        engine's recommended action. In practice this tracks
+        `is_best_action`: a played action that lands the same outcome as
+        the engine's recommendation is treated as semantically equivalent
+        even when the action type or payload differs (e.g. two distinct
+        claim-move UCIs both leading to the same draw)."""
+        return self.is_best_action
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def within_cp_threshold(self) -> bool:
+        """True iff the played action's effective centipawn loss is within
+        the configured `ACTION_EQUIVALENCE_THRESHOLD_CP` of the
+        engine-recommended play_move (when one exists). For terminal
+        actions (claim_draw / game_over) there is no comparable cp, so
+        this collapses to the same_outcome signal."""
+        if self.action_type != "play_move" or self.best_action != "play_move":
+            return self.is_best_action
+        if self.centipawn_loss is None:
+            return self.is_best_action
+        return self.centipawn_loss <= 50  # ACTION_EQUIVALENCE_THRESHOLD_CP
 
 
 def score_played_move(
@@ -481,6 +576,7 @@ def score_played_move(
             claim_move=None,
             can_claim_now=rule_before.can_claim_now,
             can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+            action_type=action_type,
             claim_moves=rule_before.claim_moves,
         )
 
@@ -510,6 +606,7 @@ def score_played_move(
             claim_move=None,
             can_claim_now=rule_before.can_claim_now,
             can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+            action_type=action_type,
             claim_moves=rule_before.claim_moves,
         )
 
@@ -559,18 +656,48 @@ def score_played_move(
         is_mover_forced_win = (
             mover_mate_before is not None and mover_mate_before > 0
         ) or before_mover >= 200
-        if is_mover_forced_win:
+        # U-02 (2026-09-01): a claim can ALSO be a blunder when the engine
+        # recommended play_move (because the post-state of a zeroing move is
+        # a clear technical win that the rule layer detected upstream). The
+        # previous logic only blundered on cp-threshold; a winning zeroing
+        # capture at halfmove=100 (Kxe2 leading to K+R vs K) sat at cp=+26
+        # but still left the mover with a forced technical win, so the
+        # claim was honored as BEST. Now: when the canonical best action
+        # is play_move, the claim is a smaller blunder — the mover
+        # forfeited a winning technical conversion.
+        is_canonical_play_move = canonical_best_action == "play_move"
+        if is_mover_forced_win or is_canonical_play_move:
+            # Blunder scale: full penalty for a clear forced-win position,
+            # moderate penalty (the technical-win conversion that was
+            # forfeited) when the canonical best action was a winning
+            # zeroing move.
+            if is_mover_forced_win:
+                eff_loss = 1000
+                win_loss = 50.0
+                loss_kind = "outcome_penalty"
+                outcome_pen = 1000
+            else:
+                # Technical-win-forfeit: the mover gave up a clear winning
+                # continuation for a draw. The penalty scales with the
+                # value of the winning continuation; we don't have post-state
+                # values here, so use a moderate default (the audit accepts
+                # anything that flags the move as a blunder with loss_kind
+                # distinguishable from a plain mate-blunder).
+                eff_loss = 500
+                win_loss = 50.0
+                loss_kind = "technical_win_forfeited"
+                outcome_pen = None
             return PlayedMoveScore(
                 move_class=MoveClass.BLUNDER,
                 centipawn_loss=None,
                 raw_centipawn_loss=None,
                 raw_centipawn_delta=0,
                 mate_distance_loss=None,
-                effective_loss=1000,
-                loss_kind="outcome_penalty",
-                outcome_penalty=1000,
+                effective_loss=eff_loss,
+                loss_kind=loss_kind,
+                outcome_penalty=outcome_pen,
                 is_best_engine_move=is_best_engine_move,
-                win_loss=50.0,
+                win_loss=win_loss,
                 best_action=canonical_best_action,
                 is_best_action=False,
                 action_equivalent=False,
@@ -580,6 +707,7 @@ def score_played_move(
                 claim_move=rule_before.claim_move,
                 can_claim_now=rule_before.can_claim_now,
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+                action_type=action_type,
                 claim_moves=rule_before.claim_moves,
             )
 
@@ -602,6 +730,7 @@ def score_played_move(
             claim_move=rule_before.claim_move,
             can_claim_now=rule_before.can_claim_now,
             can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+            action_type=action_type,
             claim_moves=rule_before.claim_moves,
         )
 
@@ -632,6 +761,7 @@ def score_played_move(
                 claim_move=None,
                 can_claim_now=rule_before.can_claim_now,
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+                action_type=action_type,
                 claim_moves=rule_before.claim_moves,
             )
         else:
@@ -655,6 +785,7 @@ def score_played_move(
                 claim_move=None,
                 can_claim_now=rule_before.can_claim_now,
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+                action_type=action_type,
                 claim_moves=rule_before.claim_moves,
             )
 
@@ -692,6 +823,7 @@ def score_played_move(
             claim_move=None,
             can_claim_now=rule_before.can_claim_now,
             can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+            action_type=action_type,
             claim_moves=rule_before.claim_moves,
         )
 
@@ -783,6 +915,7 @@ def score_played_move(
                 claim_move=rule_before.claim_move,
                 can_claim_now=rule_before.can_claim_now,
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+                action_type=action_type,
                 claim_moves=rule_before.claim_moves,
             )
 
@@ -823,6 +956,7 @@ def score_played_move(
                 claim_move=rule_before.claim_move,
                 can_claim_now=rule_before.can_claim_now,
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+                action_type=action_type,
                 claim_moves=rule_before.claim_moves,
             )
 
@@ -953,6 +1087,7 @@ def score_played_move(
                 claim_move=rule_before.claim_move,
                 can_claim_now=rule_before.can_claim_now,
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+                action_type=action_type,
                 claim_moves=rule_before.claim_moves,
             )
 
@@ -980,6 +1115,7 @@ def score_played_move(
                 claim_reason=None,
                 can_claim_now=rule_before.can_claim_now,
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+                action_type=action_type,
                 claim_moves=rule_before.claim_moves,
             )
         else:
@@ -1005,6 +1141,7 @@ def score_played_move(
                 claim_reason=None,
                 can_claim_now=rule_before.can_claim_now,
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+                action_type=action_type,
                 claim_moves=rule_before.claim_moves,
             )
 
@@ -1033,6 +1170,7 @@ def score_played_move(
                 else None,
                 can_claim_now=rule_before.can_claim_now,
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+                action_type=action_type,
                 claim_moves=rule_before.claim_moves,
             )
         else:
@@ -1055,6 +1193,7 @@ def score_played_move(
                 claim_reason=None,
                 can_claim_now=rule_before.can_claim_now,
                 can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+                action_type=action_type,
                 claim_moves=rule_before.claim_moves,
             )
 
@@ -1085,6 +1224,7 @@ def score_played_move(
             claim_move=rule_before.claim_move,
             can_claim_now=rule_before.can_claim_now,
             can_claim_with_intended_move=rule_before.can_claim_with_intended_move,
+            action_type=action_type,
             claim_moves=rule_before.claim_moves,
         )
 
@@ -1453,7 +1593,14 @@ class TopMovesResult(BaseModel):
     claim_moves: list[str] = Field(default_factory=list)
     # NEW: typed best_action and legal_actions (audit 10.1, 10.2)
     best_action_obj: dict[str, Any] | None = None
-    legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
+    # U-10 (2026-09-01): `legal_actions` is rule-only. `legal_rule_actions`
+    # is the explicit name; `legal_move_uci` is the full UCI list.
+    legal_actions: list[dict[str, Any]] = Field(
+        default_factory=list[dict[str, Any]],
+        deprecated=True,
+    )
+    legal_rule_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
+    legal_move_uci: list[str] = Field(default_factory=list[str])
     # History completeness (audit H-01)
     history_completeness: str = "complete"
     repetition_status: str = "none"

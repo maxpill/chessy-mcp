@@ -130,6 +130,18 @@ def _force_draw_outcome(mcp_eval: MCPEval) -> MCPEval:
     leak into `eval_after`. A granted claim always terminates the game as a
     draw (cp=0, no mate, outcome="draw"), so we force that projection here
     regardless of what the engine reported for the (irrelevant) board state.
+
+    U-04 (2026-09-01): the previous projection only zeroed cp/mate/status
+    and decision_value, leaving the rest of the eval as Stockfish's view of
+    the pre-claim position. That produced self-contradictory fields like
+    `best_move=Qc8#` alongside `status=draw, cp=0` on the same eval_after
+    object — a downstream consumer reading `eval_after.status == "draw"`
+    then enumerating `eval_after.pv` would think it had an executable PV
+    on a terminal position. The fix forces EVERY active-state field to a
+    pure-terminal value (best_move=None, pv=[], can_claim_*=False,
+    recommended_action="game_over", executable_move=None). The pre-claim
+    engine state is preserved separately on `eval_before` so callers can
+    still inspect what the engine saw before the claim.
     """
     forced_decision = {
         "outcome": "draw",
@@ -141,10 +153,51 @@ def _force_draw_outcome(mcp_eval: MCPEval) -> MCPEval:
     }
     return mcp_eval.model_copy(
         update={
+            # Score — terminal draw.
             "cp": 0,
             "mate": None,
             "status": "draw",
             "decision_value": forced_decision,
+            # Engine activity — gone after a granted claim.
+            "best_move": None,
+            "executable_move": None,
+            "pv": [],
+            "wdl": None,
+            "wdl_pct": None,
+            # Rule-action fields — no further claims are possible.
+            "can_claim_draw": False,
+            "claim_reasons": [],
+            "claim_move": None,
+            "claim_move_san": None,
+            "claim_move_uci": None,
+            "can_claim_now": False,
+            "claim_reasons_now": [],
+            "can_claim_with_intended_move": False,
+            "claim_moves": [],
+            # Best-action surface — the game is over.
+            "recommended_action": "game_over",
+            "best_action": "game_over",
+            "best_action_type": "game_over",
+            "best_action_obj": {
+                "type": "game_over",
+                "outcome": "draw",
+                "reason": "draw_claim",
+            },
+            "legal_actions": [],
+            # Post-state fields — there is no meaningful post-state.
+            "post_terminal_status": "draw",
+            "post_can_claim_draw": False,
+            "post_can_claim_now": False,
+            "post_claim_reasons": [],
+            "post_claim_moves": [],
+            "post_position": {
+                "status": "draw",
+                "winner": None,
+                "can_claim_now": False,
+                "can_claim_draw": False,
+                "claim_reasons": [],
+                "recommended_action": "game_over",
+            },
         }
     )
 
@@ -2025,6 +2078,13 @@ def _parse_move_on_board_with_warning(
     clean_move = re.sub(r"^(\d+[\.\:]+|\.+)\s*", "", clean_move)
     clean_move = clean_move.translate(_FIGURINE_MAP)
     clean_move = re.sub(r"\s*\(?\s*e\.?p\.?\s*\)?$", "", clean_move, flags=re.IGNORECASE)
+    # U-11 (2026-09-01): normalize Unicode hyphens to ASCII so
+    # castling tokens like "0–0" (en-dash) are recognized like the
+    # analyze_game path does. _UNICODE_HYPHEN_MAP is a str.maketrans
+    # translation table (not a regex), so use .translate() to match
+    # _normalize_unicode_pgn_results. Brings classify_move into
+    # parity with analyze_game.
+    clean_move = clean_move.translate(_UNICODE_HYPHEN_MAP)
 
     # Normalize castling variants
     lower_cand = clean_move.lower()
@@ -2091,6 +2151,57 @@ def _parse_move_on_board(board: chess.Board, move_str: str) -> chess.Move:
     return _parse_move_on_board_with_warning(board, move_str)[0]
 
 
+def _validate_castling_rights(board: chess.Board, rights_token: str, strict: bool, fen: str) -> str:
+    """U-09 (2026-09-01): validate castling rights symmetrically.
+
+    python-chess silently drops invalid castling rights (e.g. K with no
+    white rook on h1) which masked the audit U-09 finding that the
+    validator rejected some rights ("K" with no king) but accepted
+    others ("Q" with no rook). The fix:
+      - Strict mode: REJECT any token that contains a char referring to
+        a non-existent rook of the matching color on its canonical square.
+      - Non-strict mode: silently strip invalid chars and return a
+        canonicalized token (still useful for callers that want
+        continue-with-the-good-rights behavior).
+      - X-FCR (e.g. "HAha") and Shredder-FEN are accepted as-is by
+        python-chess; we don't second-guess the parser for them.
+
+    Returns the validated (possibly empty / canonicalized) rights token.
+    """
+    if not rights_token or rights_token == "-":
+        return rights_token
+    char_to_requirement: dict[str, tuple[chess.Color, chess.Square]] = {
+        "K": (chess.WHITE, chess.H1),
+        "Q": (chess.WHITE, chess.A1),
+        "k": (chess.BLACK, chess.H8),
+        "q": (chess.BLACK, chess.A8),
+    }
+    canonical_chars = list(dict.fromkeys(rights_token))
+    valid: list[str] = []
+    invalid: list[str] = []
+    for ch in canonical_chars:
+        req = char_to_requirement.get(ch)
+        if req is None:
+            valid.append(ch)
+            continue
+        color, sq = req
+        piece = board.piece_type_at(sq)
+        if piece == chess.ROOK and board.color_at(sq) == color:
+            valid.append(ch)
+        else:
+            invalid.append(ch)
+    if invalid:
+        if strict:
+            raise ValueError(
+                f"INVALID_CASTLING_RIGHTS: FEN '{fen}' has castling "
+                f"rights {rights_token!r} but the rook(s) for "
+                f"{','.join(invalid)} are not on their canonical squares. "
+                f"Rejected."
+            )
+        return "".join(valid) if valid else "-"
+    return rights_token
+
+
 def _build_board(
     fen_or_pgn: str, moves: list[str] | None = None, strict: bool = False
 ) -> chess.Board:
@@ -2115,6 +2226,17 @@ def _build_board(
                             raise ValueError(
                                 f"INVALID_FEN: Halfmove clock in FEN '{cleaned}' cannot be negative (got {tokens[4]})."
                             )
+                        # U-18 (2026-09-01): cap the halfmove clock at
+                        # MAX_HALFMOVE_CLOCK (10000). The 75-move rule
+                        # triggers at 150; values above 10000 are almost
+                        # certainly malformed input or a DoS attempt.
+                        # Capping here keeps the parser bounded and
+                        # surfaces a clean INVALID_FEN error.
+                        if halfmove_num > 10000:
+                            raise ValueError(
+                                f"INVALID_FEN: Halfmove clock in FEN '{cleaned}' "
+                                f"is {halfmove_num}; maximum supported value is 10000."
+                            )
                     except ValueError as exc:
                         if "INVALID_FEN" in str(exc):
                             raise
@@ -2135,12 +2257,63 @@ def _build_board(
                             f"INVALID_FEN: Fullmove number in FEN '{cleaned}' must be a valid integer."
                         ) from exc
             try:
-                b = chess.Board(cleaned)
+                # U-09 (2026-09-01): validate castling rights BEFORE handing
+                # the FEN to python-chess. The library raises
+                # INVALID_CASTLING_RIGHTS status on rights tokens that
+                # don't match the actual rook placement, which previously
+                # asymmetrically rejected "K" but accepted "Q" (the audit's
+                # symptom). Pre-validation lets non-strict mode silently
+                # strip bad chars and re-parse the canonicalized FEN; strict
+                # mode raises the same structured error the audit wants.
+                cleaned_to_parse = cleaned
+                if not strict and "/" in cleaned and len(tokens) >= 3:
+                    rights_token = tokens[2]
+                    placement_side = " ".join(tokens[:2])
+                    try:
+                        rights_check_board = chess.Board(f"{placement_side} - - 0 1")
+                    except Exception:
+                        rights_check_board = None
+                    if rights_check_board is not None:
+                        validated = _validate_castling_rights(
+                            rights_check_board,
+                            rights_token,
+                            False,
+                            cleaned,
+                        )
+                        if validated != rights_token:
+                            tokens[2] = validated if validated else "-"
+                            cleaned_to_parse = " ".join(tokens)
+                b = chess.Board(cleaned_to_parse)
                 if b.is_valid() or b.status() == chess.STATUS_VALID:
                     board = b
-                elif "/" in cleaned:
+                    # U-09 (2026-09-01): in strict mode, run the post-parse
+                    # castling-rights validation too. python-chess silently
+                    # drops rights that don't match the actual rook
+                    # placement (e.g. "Q" with no rook on a1) and only
+                    # raises INVALID_CASTLING_RIGHTS when the rights TOKEN
+                    # itself conflicts with the king placement — which is
+                    # asymmetric and exactly what the audit flagged. Our
+                    # explicit check catches both directions.
+                    if strict and "/" in cleaned_to_parse:
+                        parts = cleaned_to_parse.split()
+                        if len(parts) >= 3:
+                            rights_token = parts[2]
+                            _validate_castling_rights(
+                                board,
+                                rights_token,
+                                True,
+                                cleaned_to_parse,
+                            )
+                elif "/" in cleaned_to_parse:
+                    if "INVALID_CASTLING_RIGHTS" in format_fen_status_errors(b.status()):
+                        raise ValueError(
+                            f"INVALID_CASTLING_RIGHTS: FEN '{cleaned}' "
+                            f"references castling rights whose rooks are "
+                            f"not on their canonical squares "
+                            f"(status={b.status()})."
+                        )
                     raise ValueError(
-                        f"INVALID_FEN: Position '{cleaned}' is not a valid FEN ({format_fen_status_errors(b.status())})."
+                        f"INVALID_FEN: Position '{cleaned_to_parse}' is not a valid FEN ({format_fen_status_errors(b.status())})."
                     )
             except ValueError as exc:
                 if "/" in cleaned or "INVALID_FEN" in str(exc):
@@ -2425,6 +2598,52 @@ async def _evaluate_game_position_cached(
     async def _compute_pos() -> MCPEval:
         ev = await _eval_via_analyzer_or_pool(analyzer, pool, b, depth=depth, reuse_tt=reuse_tt)
 
+        # U-02 (2026-09-01): at halfmove>=100, the root cp/mate can be
+        # "polluted" by draw awareness — a winning zeroing capture like
+        # Kxe2 in K+R vs R at halfmove=100 reports a tiny cp because the
+        # draw is on the table, even though the post-state is K+R vs K
+        # (a forced win). Detect this by re-evaluating the post-state of
+        # the engine's best zeroing move; if it's a high-confidence win,
+        # surface it to the action policy so it recommends play_move
+        # instead of claim_draw. Used by score_played_move and
+        # _pick_root_recommended_action (which already do this for
+        # top_moves' multipv output).
+        zeroing_best_cp_arg: int | None = None
+        zeroing_best_mate_arg: int | None = None
+        if ev.best_move and b.halfmove_clock >= 100 and not b.is_game_over():
+            try:
+                bm_obj = chess.Move.from_uci(ev.best_move.lower())
+                if bm_obj in b.legal_moves:
+                    is_zeroing = b.is_capture(bm_obj) or (
+                        b.piece_type_at(bm_obj.from_square) == chess.PAWN
+                    )
+                    if is_zeroing:
+                        b_after = b.copy(stack=True)
+                        b_after.push(bm_obj)
+                        if not b_after.is_game_over(claim_draw=False):
+                            try:
+                                post_ev = await pool.evaluate(b_after, depth=depth)
+                                # Compute the post-state mover-POV score.
+                                # `post_ev.cp` / `post_ev.mate` are
+                                # White-POV (post-analyzer convention). The
+                                # mover's perspective is `mover_sign` (sign
+                                # = +1 if White is currently on turn, -1 if
+                                # Black); same convention as the
+                                # top_moves zeroing loop at L2969-2977.
+                                mover_sign = 1 if b.turn == chess.WHITE else -1
+                                if post_ev.mate is not None:
+                                    mover_mate = mover_sign * post_ev.mate
+                                    if mover_mate > 0:
+                                        zeroing_best_mate_arg = mover_mate
+                                elif post_ev.cp is not None:
+                                    mover_cp = mover_sign * post_ev.cp
+                                    if mover_cp > 0:
+                                        zeroing_best_cp_arg = mover_cp
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
         # Rule-aware root best-move check (P0 audit fix):
         # If at halfmove 149, or halfmove >= 100 with winning score:
         # Check if the raw best move walks into 75-move draw or concedes a
@@ -2509,6 +2728,8 @@ async def _evaluate_game_position_cached(
             board=b,
             requested_depth=req_d,
             history_complete=history_state,
+            zeroing_move_best_score=zeroing_best_cp_arg,
+            zeroing_move_best_mate=zeroing_best_mate_arg,
         )
         # Stamp build identity so every cached eval records which build produced it.
         identity = _build_identity(pool)
@@ -2518,6 +2739,19 @@ async def _evaluate_game_position_cached(
                 "engine_config": identity["engine_config"],
             }
         )
+        # U-13 (2026-09-01): also stamp the build identity into the
+        # nested `engine_eval` sub-dict so a caller reading just the
+        # sub-dict (e.g. for telemetry) gets the same provenance.
+        if mcp_eval.engine_eval is not None:
+            mcp_eval = mcp_eval.model_copy(
+                update={
+                    "engine_eval": {
+                        **mcp_eval.engine_eval,
+                        "build_sha": identity["build_sha"],
+                        "engine_config": identity["engine_config"],
+                    }
+                }
+            )
         await _cache.set_eval(ckey, mcp_eval)
         # Ponder: warm the L1 cache for the position AFTER the engine's best
         # move so the next user request on that FEN hits L1 (env-disabled
@@ -2753,12 +2987,19 @@ async def top_moves(
             if not items:
                 return rule_status.recommended_action
             best = items[0]
-            mover_score = (
-                sign * best.cp
-                if best.cp is not None
-                else (sign * best.mate * 1000 if best.mate is not None else None)
-            )
-            mate_for_mover = sign * best.mate if best.mate is not None else None
+            # U-01 (2026-09-01): mate must take precedence over cp. When
+            # Stockfish finds a forced mate it sometimes still emits a
+            # saturated cp=±20000; per chess convention, mate wins.
+            # Use post_state_* when available (audit B-04 / B-05).
+            eff_mate = best.post_state_mate if best.post_state_mate is not None else best.mate
+            eff_cp = best.post_state_cp if best.post_state_cp is not None else best.cp
+            if eff_mate is not None:
+                mover_score: int | None = sign * eff_mate * 1000
+            elif eff_cp is not None:
+                mover_score = sign * eff_cp
+            else:
+                mover_score = None
+            mate_for_mover = sign * eff_mate if eff_mate is not None else None
             # AUDIT B-04: also surface the best post-state value across all
             # zeroing candidates (capture or pawn move) so the policy can
             # prefer play_move over claim_draw when a zeroing move wins.
@@ -3069,13 +3310,34 @@ async def top_moves(
                 res_list.append(mcp_eval)
 
             def _candidate_rank_key(eval_item: MCPEval) -> float:
-                # eval_item.{cp,mate} are now the actual post-state evaluations
-                # of the candidate (B-05 fix), so we rank in MOVER-POV —
-                # sign*cp positive means the candidate is GOOD FOR THE
-                # SIDE-TO-MOVE. Sorting descending puts the side-to-move's
-                # best candidates first regardless of which color is on turn.
+                # U-01 (2026-09-01): mate for the mover must outrank any
+                # finite-cp win, and the ordering must NOT depend on `n`
+                # (the number of candidates requested). The previous rank
+                # key had two failure modes:
+                #   1. cp was returned unclamped, so a saturated cp=+20000
+                #      candidate outranked a mate-in-1 candidate (9999).
+                #   2. The rank key preferred the multipv cp of zeroing
+                #      moves over the mate branch, so a non-mating capture
+                #      could rank above a mating move.
+                # Chess-correct total order for the side-to-move is:
+                #   delivered mate (terminal) > forced mate for mover
+                #     > finite-cp win (clamped to mate ceiling)
+                #     > draw  > finite-cp loss > forced mate against mover.
+                # We clamp cp to ±MATE_RANK_CEILING so any saturated
+                # sentinel (cp=±20000, syzygy fallback, depth=0 win) cannot
+                # outrank a forced mate. We always sort (the previous gate
+                # `halfmove>=100 or has_terminal_cand` let Stockfish's
+                # raw MultiPV order leak through for the >99% case, where
+                # a forced mate could still be in slot 2+ at shallow depth).
+                MATE_RANK_CEILING = 9999.0
+                MATE_VALUE = 10000.0
+
+                # Terminal checks first — these are the strongest signals
+                # regardless of cp/mate.
                 if eval_item.post_terminal_status == "checkmate":
-                    return 10000.0
+                    # Candidate delivered mate. Always ranks above any
+                    # non-mate candidate (mate=1 is the canonical best).
+                    return MATE_VALUE
                 if eval_item.post_terminal_status in (
                     "stalemate",
                     "insufficient_material",
@@ -3084,28 +3346,50 @@ async def top_moves(
                     "dead_position",
                 ):
                     return 0.0
-                if eval_item.best_move:
-                    try:
-                        bm = chess.Move.from_uci(eval_item.best_move)
-                        if (
-                            board.is_capture(bm)
-                            or board.piece_type_at(bm.from_square) == chess.PAWN
-                        ):
-                            if eval_item.cp is not None:
-                                return float(sign * eval_item.cp)
-                    except Exception:
-                        pass
-                if eval_item.mate is not None:
-                    if sign * eval_item.mate > 0:
-                        return 10000.0 - abs(eval_item.mate)
-                    return -10000.0 + abs(eval_item.mate)
-                if eval_item.cp is not None:
-                    return float(sign * eval_item.cp)
+
+                # Mate branch BEFORE cp branch (U-01): a mate-in-1 must
+                # outrank any finite-cp win. Use the post-state mate when
+                # available (audit B-05 — re-eval can refine the multipv
+                # mate; falls back to multipv when no re-eval happened).
+                eff_mate = (
+                    eval_item.post_state_mate
+                    if eval_item.post_state_mate is not None
+                    else eval_item.mate
+                )
+                if eff_mate is not None:
+                    mover_mate = sign * eff_mate
+                    if mover_mate > 0:
+                        # Forced mate for mover: shorter is better.
+                        return MATE_VALUE - abs(mover_mate)
+                    # Forced mate against mover: longer is "less bad",
+                    # but always below the floor for any finite cp.
+                    return -MATE_VALUE + abs(mover_mate)
+
+                # Cp branch: clamped to the mate ceiling so a saturated
+                # cp=±20000 cannot outrank a forced mate. Use post-state
+                # cp when available for zeroing moves that were re-eval'd
+                # (audit B-04 draw-pollution guard); otherwise use the
+                # multipv cp.
+                eff_cp = (
+                    eval_item.post_state_cp if eval_item.post_state_cp is not None else eval_item.cp
+                )
+                if eff_cp is not None:
+                    mover_cp = sign * eff_cp
+                    # Clamp so finite-cp wins never exceed the mate ceiling.
+                    if mover_cp > MATE_RANK_CEILING:
+                        return MATE_RANK_CEILING
+                    if mover_cp < -MATE_RANK_CEILING:
+                        return -MATE_RANK_CEILING
+                    return float(mover_cp)
+
                 return 0.0
 
-            has_terminal_cand = any(e.post_terminal_status is not None for e in res_list)
-            if board.halfmove_clock >= 100 or has_terminal_cand:
-                res_list.sort(key=_candidate_rank_key, reverse=True)
+            # Always sort (U-01): n-invariance requires a stable chess-correct
+            # ordering regardless of halfmove / terminal state. Removing the
+            # gate does not change behavior for positions where Stockfish's
+            # raw order already matches the chess-correct order; it just
+            # fixes the cases where it doesn't.
+            res_list.sort(key=_candidate_rank_key, reverse=True)
 
             # Persist zeroing-move findings on the cache so the cache-hit path
             # below reuses the same policy decision without re-searching.
@@ -3243,6 +3527,18 @@ async def classify_move(
             syntax_warn: str | None = None
             if not rule_before.can_claim_now:
                 raise ValueError("ILLEGAL_ACTION: draw cannot be claimed now")
+            # U-12 (2026-09-01): in strict mode, reject a `move` argument
+            # on claim_draw — the action is purely procedural and the
+            # supplied move is never executed; garbage input previously
+            # slipped through silently. Lenient (non-strict) mode still
+            # accepts (and ignores) the move per the audit's documented
+            # B-02 invariant.
+            if strict and move is not None and move.strip() and move.strip() != "(none)":
+                raise ValueError(
+                    f"STRICT_SAN_ERROR: action_type='claim_draw' must not "
+                    f"include a `move` argument; got {move!r}. Pass move=None "
+                    f"or omit the parameter."
+                )
         else:
             if move is None or not move.strip():
                 raise ValueError(
@@ -3734,7 +4030,20 @@ def _compute_game_metrics(
                 black_inaccuracies += 1
 
         best_san: str | None = None
-        if eval_before.best_move:
+        # U-06 (2026-09-01): reconcile `best_san` with the final classification.
+        # Without this guard, an analyze_game turning point can report
+        # `best_move_san == played_san` while `move_class == "blunder"` —
+        # internally contradictory. The bug surfaced at depth=1 where the
+        # engine's top line happens to be a losing move (audit U-06
+        # promotion-defense reproducer). When the played move equals the
+        # engine's reported best but the classifier decided it was a
+        # blunder/mistake, suppress the best_move_san to avoid the
+        # contradiction. The classify_move path runs a depth+4 verification
+        # search to refine; analyze_game doesn't (per-ply cost), so the
+        # conservative answer is `best_san = None` here.
+        if eval_before.best_move and not (
+            score.is_best_engine_move and score.move_class.value in ("blunder", "mistake")
+        ):
             try:
                 move_obj = chess.Move.from_uci(eval_before.best_move.lower())
                 if move_obj in board_before.legal_moves:
@@ -3899,6 +4208,29 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
         reached_terminal = False
         ignored_trailing_plies = 0
 
+        # U-03 (2026-09-01): if the initial FEN is already terminal (75-move
+        # draw, checkmate, stalemate, insufficient material, fivefold
+        # repetition, dead position), the movetext's first move is bogus —
+        # the board has no legal moves. Strict mode raises a
+        # STRICT_PGN_ERROR. Non-strict mode records a syntax_warning and
+        # treats every following move as a trailing ply so the analysis
+        # surfaces 0 executed plies. Without this check the mainline loop
+        # silently advanced `ignored_trailing_plies` without ever telling
+        # the caller that the starting position was terminal.
+        initial_rule = evaluate_rule_status(curr_board, history_complete="complete")
+        if initial_rule.terminal is not None:
+            auto_termination = initial_rule.terminal
+            reached_terminal = True
+            if strict:
+                raise ValueError(
+                    f"STRICT_PGN_ERROR: Initial FEN '{curr_board.fen()}' is already "
+                    f"terminal ({initial_rule.terminal}); cannot execute movetext."
+                )
+            syntax_warnings.append(
+                f"Initial FEN is terminal ({initial_rule.terminal}); "
+                f"all movetext moves will be ignored."
+            )
+
         # Extract headers ONLY from contiguous header block at the start of canonical_pgn
         header_end = 0
         first_header = TAG_PAIR_REGEX.search(canonical_pgn)
@@ -3974,14 +4306,40 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             canonical_san = curr_board.san(move)
 
             # Advance token index through move number tokens or result tokens
+            # NOTE: do NOT strip the trailing dots here — the U-15 side
+            # marker check needs the original dot count. The previous
+            # code stripped dots which made actual_dots empty for any
+            # single-dot or triple-dot token, and the side-marker check
+            # would then fire as a false positive.
             while tok_idx < len(movetext_tokens):
-                raw_tok = movetext_tokens[tok_idx].strip(".,;:!?")
-                num_m = re.match(r"^(\d+)[\.\:]*$", raw_tok)
+                raw_tok = movetext_tokens[tok_idx]
+                num_m = re.match(r"^(\d+)(\.|\.\.)*$", raw_tok)
                 if num_m:
                     move_num = int(num_m.group(1))
                     if move_num != expected_fullmove:
                         syntax_warnings.append(
                             f"Move number mismatch: found '{movetext_tokens[tok_idx]}' but expected move {expected_fullmove}."
+                        )
+                    # U-15 (2026-09-01): also flag wrong-dot count. A black
+                    # move (board.turn == BLACK at this point in the
+                    # mainline) MUST use "..." (triple dot), not ".".
+                    # Strict mode promotes the warning to a STRICT_PGN_ERROR;
+                    # the final pass at the bottom raises on any
+                    # syntax_warnings in strict mode.
+                    expected_dots = "..." if curr_board.turn == chess.BLACK else "."
+                    actual_dots = num_m.group(2) or ""
+                    if actual_dots != expected_dots:
+                        import sys
+
+                        print(
+                            f"DEBUG U-15: tok={movetext_tokens[tok_idx]!r} "
+                            f"actual_dots={actual_dots!r} expected={expected_dots!r} "
+                            f"turn={curr_board.turn!r}",
+                            file=sys.stderr,
+                        )
+                        syntax_warnings.append(
+                            f"Wrong side marker: found '{movetext_tokens[tok_idx]}' "
+                            f"but expected '{expected_dots}' for the side to move."
                         )
                     tok_idx += 1
                     continue
@@ -4082,6 +4440,27 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
                 termination_header_val = tag_v
 
         metadata_warnings: list[str] = list(lexical_header_warnings)
+
+        # U-14 (2026-09-01): strict mode rejects malformed Date tags.
+        # PGN Date is `YYYY.MM.DD`; anything else (e.g. "2026.99.99",
+        # "hello", "not.a.date") is a non-canonical value. The legacy
+        # behavior silently accepted these and even echoed them back
+        # to clients, which is the audit's P2 finding. Strict mode
+        # records a metadata_warning; the final strict pass at the
+        # bottom of analyze_game raises STRICT_PGN_ERROR on any
+        # metadata_warning, so the malformed Date is rejected. The
+        # regex is tighter than just `\d{4}\.\d{2}\.\d{2}` — it
+        # enforces month 01-12 and day 01-31 so "2026.99.99" is
+        # correctly rejected.
+        if date_val is not None and strict:
+            if not re.fullmatch(
+                r"(?:19|20)\d{2}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[12]\d|3[01])",
+                date_val,
+            ):
+                metadata_warnings.append(
+                    f"Invalid Date tag '{date_val}': must match YYYY.MM.DD "
+                    f"with month 01-12 and day 01-31."
+                )
 
         CANONICAL_RESULTS = {"1-0", "0-1", "1/2-1/2", "*"}
         if result_header_raw is not None and result_header_raw != "?":
@@ -4208,6 +4587,48 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             final_board, result_val, termination_header_val
         )
         metadata_warnings.extend(mate_warnings)
+
+        # U-14 (2026-09-01): strict-mode Termination validation. The
+        # legacy code only flagged Termination when it contradicted
+        # the result; arbitrary strings like "foobar" were stored raw
+        # without rejection. Strict mode now requires the Termination
+        # to either be blank, a known FIDE value, or fall through the
+        # normalize_termination mapper; anything else is a metadata
+        # warning that strict pass will reject.
+        if strict and termination_header_val:
+            norm_term = normalize_termination(termination_header_val)
+            # If normalize_termination returns None AND the string is
+            # not blank/known, it's an unrecognised value.
+            if norm_term is None and termination_header_val.strip() not in (
+                "",
+                "Normal",
+                "Time forfeit",
+                "Rules infraction",
+                "Abandoned",
+                "Unterminated",
+            ):
+                # If normalize_termination returned None but
+                # contains a known FIDE term in lowercase, accept.
+                lower = termination_header_val.strip().lower()
+                if not any(
+                    kw in lower
+                    for kw in (
+                        "resign",
+                        "checkmate",
+                        "stalemate",
+                        "time",
+                        "abandon",
+                        "rule",
+                        "draw",
+                        "repetition",
+                        "insufficient",
+                        "50-move",
+                        "75-move",
+                    )
+                ):
+                    metadata_warnings.append(
+                        f"Unrecognised Termination tag '{termination_header_val}'."
+                    )
 
         # Check for contradictory metadata
         if termination_header_val:

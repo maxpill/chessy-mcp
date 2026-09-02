@@ -318,6 +318,8 @@ def evaluate_rule_status(
     mover_score: int | None = None,
     mate_for_mover: int | None = None,
     history_complete: str | bool = "incomplete",
+    zeroing_move_best_score: int | None = None,
+    zeroing_move_best_mate: int | None = None,
 ) -> RuleStatus:
     """Evaluate terminal rules and optional draw claims with explicit history provenance."""
     if isinstance(history_complete, bool):
@@ -446,6 +448,8 @@ def evaluate_rule_status(
         can_claim_with_intended_move=can_claim_with_intended_move,
         mover_score=mover_score,
         mate_for_mover=mate_for_mover,
+        zeroing_move_best_score=zeroing_move_best_score,
+        zeroing_move_best_mate=zeroing_move_best_mate,
     )
 
     repetition_proven = bool(
