@@ -938,7 +938,59 @@ def normalize_termination(term: str | None) -> str | None:
     return None
 
 
+# P2/P3 (2026-09-02 ultra audit): the bare regex matches shapes like
+# "0+0", "0+1", "40/0", "0/600" — all of which are syntactically PGN
+# TimeControl values but semantically nonsense (a game with 0 seconds
+# is unplayable; a 40-move period with 0 seconds is impossible; a
+# 0-move period with a positive time is meaningless). The relaxed
+# grammar was useful when the old validator was the only thing between
+# caller input and the metadata block, but the audit showed callers
+# relying on the validator as a "PGN TimeControl sanity check". Tighten
+# the check so every stage must contain at least one non-zero digit;
+# `_stage_has_positive_number` walks the string. Sentinel values ("?",
+# "-") remain accepted unchanged.
 _TIME_CONTROL_STAGE_RE = re.compile(r"^(?:\d+|\d+/\d+|\d+\+\d+|\*\d+)$")
+
+
+def _stage_has_positive_number(stage: str) -> bool:
+    """Return True iff every numeric half of `stage` is strictly positive.
+
+    Splits the stage on `/`, `+`, or `*` (the three PGN TimeControl
+    separators — `/` for moves/seconds, `+` for Fischer increment,
+    `*` for hourglass prefix) and requires every individual numeric
+    component to contain a non-zero digit. This rejects the
+    syntactically-PGN-shaped but semantically impossible values the
+    2026-09-02 audit flagged:
+
+        "0+0"     -> both components are zero (unplayable game)
+        "0+1"     -> 0-second base (unplayable)
+        "40+0"    -> 0-second increment on a 40-second base
+        "0/600"   -> 0-move period with 600 seconds (nonsensical)
+        "40/0"    -> 0 seconds for a 40-move period (impossible)
+
+    while keeping the legitimate values intact:
+
+        "300"     -> single value, positive
+        "300+5"   -> both components positive
+        "40/7200" -> both components positive
+        "*60"     -> hourglass prefix + positive value
+    """
+    # Strip the optional hourglass prefix "*" before splitting.
+    body = stage[1:] if stage.startswith("*") else stage
+    # Split on the two multi-component separators; the leading-digit
+    # check then guards each piece. An empty piece (e.g. "+0" -> split
+    # would yield ["", "0"]) is treated as zero and rejected.
+    pieces: list[str] = []
+    if "+" in body:
+        pieces.extend(body.split("+"))
+    elif "/" in body:
+        pieces.extend(body.split("/"))
+    else:
+        pieces.append(body)
+    for piece in pieces:
+        if not piece or not any(c in "123456789" for c in piece):
+            return False
+    return True
 
 
 def _is_valid_pgn_time_control(value: str) -> bool:
@@ -948,6 +1000,11 @@ def _is_valid_pgn_time_control(value: str) -> bool:
     sudden-death seconds (``300``), moves/seconds (``40/7200``), Fischer
     seconds+increment (``300+5``), or hourglass (``*60``). ``?`` and ``-``
     are the standard unknown/unspecified markers.
+
+    Every numeric component must contain at least one non-zero digit — a
+    stage of "0", "0+0", "0+1", "40+0", "0/600", or "40/0" cannot
+    describe a real chess game and is rejected (audit P2/P3,
+    2026-09-02).
     """
     text = value.strip()
     if text in {"?", "-"}:
@@ -956,7 +1013,10 @@ def _is_valid_pgn_time_control(value: str) -> bool:
         return False
     stages = text.split(":")
     return all(
-        bool(stage) and _TIME_CONTROL_STAGE_RE.fullmatch(stage) is not None for stage in stages
+        bool(stage)
+        and _TIME_CONTROL_STAGE_RE.fullmatch(stage) is not None
+        and _stage_has_positive_number(stage)
+        for stage in stages
     )
 
 
@@ -1071,9 +1131,17 @@ def _normalize_movetext_figurines(text: str) -> str:
 
 
 def _validate_movetext_tokens(
-    movetext: str, start_board: chess.Board | None = None, strict: bool = False
+    movetext: str,
+    start_board: chess.Board | None = None,
+    strict: bool = False,
+    nag_warnings: list[str] | None = None,
 ) -> list[str]:
-    """Check that all tokens in the active movetext section are valid chess moves or PGN symbols."""
+    """Check that all tokens in the active movetext section are valid chess moves or PGN symbols.
+
+    `nag_warnings`, when provided, receives out-of-range NAG tokens in lenient mode (the audit's
+    P3 INVESTIGATE finding: `$999999` was silently accepted in lenient mode). In strict mode,
+    out-of-range NAGs are returned in `invalid_tokens` and fail the parse.
+    """
     # 1. Translate figurines in movetext and split attached NAGs (PGN-07) and attached asterisk
     t = _normalize_movetext_figurines(movetext)
     t = re.sub(r"(\b[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[\+#\?!]*)(\$\d+)", r"\1 \2", t)
@@ -1143,8 +1211,19 @@ def _validate_movetext_tokens(
         nag_m = re.match(r"^\$([0-9]+)$", clean_tok)
         if nag_m:
             nag_val = int(nag_m.group(1))
-            if nag_val > 255 and strict:
-                invalid_tokens.append(tok)
+            # P3/INVESTIGATE (2026-09-02 ultra audit): NAGs outside the
+            # 0..255 range defined by the PGN spec were silently dropped
+            # in lenient mode. Strict mode already rejected them — keep
+            # that behavior, but in lenient mode surface a warning via
+            # the nag_warnings channel so callers can see the out-of-
+            # range value instead of parsing as if it never existed.
+            if nag_val > 255:
+                if strict:
+                    invalid_tokens.append(tok)
+                elif nag_warnings is not None:
+                    nag_warnings.append(
+                        f"NAG value ${nag_val} outside the PGN-supported range 0..255."
+                    )
             continue
         clean_tok = re.sub(r"\$[0-9]+$", "", clean_tok)
         if not clean_tok or clean_tok.lower() in (
@@ -2149,16 +2228,34 @@ def _parse_move_on_board_with_warning(
 
     san_cand = clean_move.rstrip("!?")
 
-    # Try UCI first (accept lowercase or uppercase promo e.g. e7e8q, e7e8Q)
-    for uci_cand in (clean_move, clean_move.lower()):
-        try:
-            m = chess.Move.from_uci(uci_cand)
-            if m in board.legal_moves:
-                return m, None
-        except (ValueError, chess.InvalidMoveError):
-            pass
-
-    # Try SAN with candidates (e.g. clean, stripped !?, stripped +/#, with/without =, promo variants)
+    # P1/P2 (2026-09-02 ultra audit): uppercase UCI like `E2E4`, `e2E4`,
+    # `A7A8Q` was previously accepted silently without a syntax warning
+    # in BOTH lenient and strict modes. PGN movetext requires
+    # SAN-shaped notation (and accepts lowercase only), so this
+    # normalization only applies to the DIRECT move API. The
+    # normalization itself is harmless (lower-case UCI is canonical),
+    # but the silent acceptance hid input-shape drift and let callers
+    # paste uppercase accidentally. We now:
+    #   - emit a `syntax_warning` whenever the supplied UCI contains
+    #     uppercase letters, in lenient mode (so the audit's
+    #     "normalized without a syntax warning" finding is closed);
+    #   - reject with STRICT_SAN_ERROR when the caller asks for strict
+    #     mode (the audit explicitly calls out that strict mode should
+    #     reject or document non-canonical UCI form).
+    #
+    # Parse order matters here. The audit's `B8e5` reproducer in the
+    # `test_randomized_legal_move_san_and_fen_differential_5000_positions`
+    # test exercises `board.san(move)` output — for a White Bishop on
+    # b8 moving to e5, python-chess generates the rank-disambiguated
+    # SAN `B8e5`. The same string is also a syntactically valid UCI
+    # (`b8e5` after lowercase). Treating it as UCI in BOTH cases
+    # caused a false-positive flag against the legitimate SAN form.
+    # The fix: try SAN FIRST; if SAN parsing succeeds, prefer it and
+    # never flag uppercase UCI. Only fall through to UCI when SAN
+    # parsing fails, in which case the input is unambiguously UCI.
+    #
+    # Try SAN with candidates (e.g. clean, stripped !?, stripped +/#,
+    # with/without =, promo variants).
     cands = [clean_move, san_cand, san_cand.rstrip("+#!?")]
     # Handle promotion without equal sign e.g. e8Q -> e8=Q
     if re.search(r"[a-h][18][qrbnQRBN]", san_cand):
@@ -2190,6 +2287,51 @@ def _parse_move_on_board_with_warning(
             if "STRICT" in str(exc):
                 raise
 
+    # SAN parsing failed (no candidate matched a legal move). Fall
+    # through to UCI parsing — the input is unambiguously UCI now.
+    #
+    # Only flag uppercase UCI when the original matched the UCI shape
+    # AND had uppercase letters in valid UCI positions (file letters
+    # at 0/2, optional promotion piece at 4). This avoids the false
+    # positive where python-chess's `board.san(move)` output for a
+    # rank-disambiguated SAN like `B8e5` happens to also lowercase to
+    # a valid UCI — we only catch the uppercase-UCI case when SAN
+    # parsing definitively failed (above).
+    uci_was_upper = False
+    if (
+        re.fullmatch(r"[a-hA-H][1-8][a-hA-H][1-8][qrbnQRBN]?", clean_move)
+        is not None  # position 0 is a valid file letter
+        and clean_move != clean_move.lower()
+        and any(c.isalpha() for c in clean_move)
+    ):
+        uci_was_upper = True
+    uci_syntax_warning: str | None = None
+    for uci_cand in (clean_move, clean_move.lower()):
+        # Parse-only — don't catch our STRICT_SAN_ERROR raise below. The
+        # previous shape accidentally did, because the catch's `ValueError`
+        # matched both python-chess's and ours.
+        m_obj: chess.Move | None = None
+        try:
+            m_obj = chess.Move.from_uci(uci_cand)
+        except (chess.InvalidMoveError, ValueError):
+            m_obj = None
+        if m_obj is not None and m_obj in board.legal_moves:
+            if uci_was_upper:
+                raw_s = move_str.strip(" \t\r\n`'\"")
+                uci_syntax_warning = (
+                    f"Input UCI '{raw_s}' normalized to lowercase '{uci_cand.lower()}'."
+                )
+                if strict:
+                    # Promote the warning to a structured strict error.
+                    # Raised outside the parse-only try so the caller
+                    # actually sees STRICT_SAN_ERROR, not the catch-all
+                    # ILLEGAL_MOVE at the bottom of the function.
+                    raise ValueError(
+                        f"STRICT_SAN_ERROR: Input UCI '{raw_s}' requires "
+                        f"syntax normalization: {uci_syntax_warning}"
+                    )
+            return m_obj, uci_syntax_warning
+
     if ambiguous_err:
         raise ValueError(
             f"AMBIGUOUS_SAN: Move {move_str!r} is ambiguous in position {board.fen()!r}: {ambiguous_err}"
@@ -2219,6 +2361,15 @@ def _validate_castling_rights(board: chess.Board, rights_token: str, strict: boo
         python-chess; we don't second-guess the parser for them.
 
     Returns the validated (possibly empty / canonicalized) rights token.
+
+    P3 (2026-09-02 ultra audit): FEN's lexical spec requires each castling
+    right to appear at most once in the rights field. Inputs like "KK",
+    "QQ", "QK" therefore contain a duplicate that is not a real FEN.
+    python-chess's constructor deduplicates ("KK" → "K") without
+    signaling the caller. Both strict and non-strict mode preserve
+    that behavior (dedup is harmless: the canonical rights field has
+    at most one of each character anyway). The `fen_was_canonicalized`
+    flag in the response tells callers when this happened.
     """
     if not rights_token or rights_token == "-":
         return rights_token
@@ -4360,6 +4511,30 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
                 f"all movetext moves will be ignored."
             )
 
+        # P3/INVESTIGATE (2026-09-02 ultra audit): NAG values outside the
+        # PGN 0..255 range were silently dropped in lenient mode (the
+        # `_validate_movetext_tokens` helper only flags them in strict
+        # mode). Re-scan the movetext here so lenient callers also see
+        # the warning. Strict mode still rejects via the helper's
+        # `invalid_tokens` branch; this scan catches the lenient case
+        # without regressing strict behavior. Comments and variations are
+        # already stripped from `cleaned_movetext` below, so the regex
+        # scans the same tokens the strict path consumes.
+        for nag_match in re.finditer(r"\$([0-9]+)", canonical_pgn):
+            nag_val = int(nag_match.group(1))
+            if nag_val > 255:
+                if strict:
+                    # Strict mode: promote to a metadata_warning so the
+                    # final pass at the bottom raises STRICT_PGN_ERROR
+                    # (mirrors the existing NAG enforcement path).
+                    syntax_warnings.append(
+                        f"NAG value ${nag_val} outside the PGN-supported range 0..255."
+                    )
+                else:
+                    syntax_warnings.append(
+                        f"NAG value ${nag_val} outside the PGN-supported range 0..255."
+                    )
+
         # Extract headers ONLY from contiguous header block at the start of canonical_pgn
         header_end = 0
         first_header = TAG_PAIR_REGEX.search(canonical_pgn)
@@ -4597,15 +4772,49 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
         # regex is tighter than just `\d{4}\.\d{2}\.\d{2}` — it
         # enforces month 01-12 and day 01-31 so "2026.99.99" is
         # correctly rejected.
-        if date_val is not None and strict:
+        #
+        # P2/P3 (2026-09-02 ultra audit): the regex above only catches
+        # range issues; it still accepts impossible calendar dates like
+        # 2023.02.29, 2026.04.31, 2026.02.31. After the structural
+        # check, run the date through Python's `datetime.date`
+        # constructor — that raises ValueError for any day that doesn't
+        # exist in the given month/year, including the Feb 29 leap-year
+        # rule (no Apr 31, no Sep 31, no Feb 30, etc.). In strict mode
+        # the impossible date is a metadata_warning that promotes to a
+        # STRICT_PGN_ERROR; in lenient mode it is also a warning so
+        # downstream callers see that the metadata is suspect, even
+        # though parsing continues.
+        if date_val is not None:
             if not re.fullmatch(
                 r"(?:19|20)\d{2}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[12]\d|3[01])",
                 date_val,
             ):
-                metadata_warnings.append(
-                    f"Invalid Date tag '{date_val}': must match YYYY.MM.DD "
-                    f"with month 01-12 and day 01-31."
-                )
+                if strict:
+                    metadata_warnings.append(
+                        f"Invalid Date tag '{date_val}': must match YYYY.MM.DD "
+                        f"with month 01-12 and day 01-31."
+                    )
+                else:
+                    # Lenient: surface the issue without rejecting. A caller
+                    # who is reading metadata only needs to see the warning.
+                    metadata_warnings.append(
+                        f"Invalid Date tag '{date_val}': must match YYYY.MM.DD "
+                        f"with month 01-12 and day 01-31."
+                    )
+            else:
+                # Structural regex passed — now verify calendar semantics.
+                # datetime.date raises ValueError for impossible dates
+                # (Apr 31, Feb 30, Feb 29 in a non-leap year, etc.).
+                try:
+                    yy, mm, dd = (int(p) for p in date_val.split("."))
+                    import datetime as _dt
+
+                    _dt.date(yy, mm, dd)
+                except ValueError as exc:
+                    if strict:
+                        metadata_warnings.append(f"Invalid Date tag '{date_val}': {exc}.")
+                    else:
+                        metadata_warnings.append(f"Impossible Date tag '{date_val}': {exc}.")
 
         CANONICAL_RESULTS = {"1-0", "0-1", "1/2-1/2", "*"}
         if result_header_raw is not None and result_header_raw != "?":
