@@ -1357,6 +1357,46 @@ class MCPMoveAnalysis(BaseModel):
     claim_moves: list[str] = Field(default_factory=list)
     classification_verified: bool = False
 
+    # U-07 (2026-09-01 audit): the action_equivalent flag is overloaded and
+    # the audit asks for three primitive booleans — same_action_type,
+    # same_outcome, within_cp_threshold — exposed on the wire so clients
+    # don't have to reverse-engineer the policy. These are derived from
+    # the same fields the legacy action_equivalent logic used, and they
+    # together determine is_best_action / action_equivalent above.
+    @computed_field  # type: ignore[misc]
+    @property
+    def same_action_type(self) -> bool:
+        """True iff the played action type (claim_draw / play_move / …)
+        equals the engine's recommended best_action type. Stays primitive
+        and side-effect free: a quiet move played while the engine
+        recommends a claim would be False here even if the resulting
+        game-theoretic outcome happens to coincide."""
+        return self.action_type == self.best_action
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def same_outcome(self) -> bool:
+        """True iff the played action leads to the same game-theoretic
+        outcome as the engine's recommended action. Tracks
+        is_best_action — a different action type or payload can still
+        land the same outcome (e.g. two distinct claim UCIs both drawing)."""
+        return self.is_best_action
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def within_cp_threshold(self) -> bool:
+        """True iff the played action's centipawn loss is within
+        ACTION_EQUIVALENCE_THRESHOLD_CP (50) of the engine-recommended
+        play_move (when one exists). For terminal actions (claim_draw /
+        game_over) there is no comparable cp, so this collapses to the
+        same_outcome signal — matching the contract described in the
+        2026-09-01 audit's R-07 case."""
+        if self.action_type != "play_move" or self.best_action != "play_move":
+            return self.is_best_action
+        if self.centipawn_loss is None:
+            return self.is_best_action
+        return self.centipawn_loss <= 50  # ACTION_EQUIVALENCE_THRESHOLD_CP
+
     @model_validator(mode="after")
     def _enforce_action_invariants(self) -> MCPMoveAnalysis:
         engine_best = bool(self.is_engine_best or self.is_best_engine_move)

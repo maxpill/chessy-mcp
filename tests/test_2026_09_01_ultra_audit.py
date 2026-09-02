@@ -1194,3 +1194,84 @@ async def test_u15_strict_wrong_side_marker_rejected():
         await server_module.analyze_game(pgn, depth=10, strict=True)
     msg = str(excinfo.value)
     assert "STRICT" in msg.upper(), f"strict mode must reject wrong side marker; got {msg!r}"
+
+
+@pytest.mark.asyncio
+async def test_u15_non_strict_wrong_side_marker_warning():
+    """U-15 audit: the same PGN in non-strict mode must emit a
+    'Wrong side marker' warning. The earlier regex `(\.|\.\.)*` was a
+    Python footgun — group(2) was always a single dot, so the check
+    never fired and the warning was silent."""
+    await server_module._cache.clear()
+    server_module._analyzer_pool = _NoopEnginePool()  # type: ignore[assignment]
+
+    # Black's move numbered with triple dot when single dot was expected
+    # (because the board has it White-to-move at that point in the
+    # mainline after the prior White move).
+    pgn = "1. e4 e5 2... Nf3 *\n"
+    r = await server_module.analyze_game(pgn, depth=10, strict=False)
+    assert any("side marker" in w.lower() for w in r.syntax_warnings), (
+        f"non-strict must warn on wrong side marker; got {r.syntax_warnings!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_u07_wire_response_exposes_split_primitives():
+    """U-07 audit: the three primitive booleans (same_action_type,
+    same_outcome, within_cp_threshold) must be exposed on the wire
+    response from classify_move, not just on the internal
+    PlayedMoveScore type. Earlier the audit found only the legacy
+    action_equivalent flag, leaving clients to reverse-engineer the
+    policy."""
+    await server_module._cache.clear()
+    server_module._analyzer_pool = _NoopEnginePool()  # type: ignore[assignment]
+
+    res = await server_module.classify_move(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "e4",
+        depth=10,
+    )
+    # Wire-level fields
+    assert "same_action_type" in res.model_dump(), (
+        f"wire response missing same_action_type; keys: {list(res.model_dump().keys())}"
+    )
+    assert "same_outcome" in res.model_dump()
+    assert "within_cp_threshold" in res.model_dump()
+    # For a move that matches the engine's play_move recommendation, all three
+    # should be True.
+    if res.is_engine_best:
+        assert res.same_action_type is True
+        assert res.same_outcome is True
+        assert res.within_cp_threshold is True
+
+
+@pytest.mark.asyncio
+async def test_u08_post_state_cp_none_when_no_reeval():
+    """U-08 audit: post_state_cp is the re-evaluated post-state value.
+    When the engine's multipv is not draw-polluted (strongly positive
+    cp, no draw claim), no re-evaluation happens and post_state_cp is
+    honestly None. The audit's Kxe2 reproducer has a draw claim at the
+    root, so the re-eval is the exception, not the rule."""
+    await server_module._cache.clear()
+    server_module._analyzer_pool = _NoopEnginePool()  # type: ignore[assignment]
+
+    # A position with NO draw claim (halfmove=0). All top_moves candidates
+    # are honest about the post-state: either populated (rare re-eval) or
+    # None (no re-eval). The new fields (root_score_cp, root_score_mate,
+    # post_state_cp, post_state_mate, post_fen) must be present.
+    res = await server_module.top_moves(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", n=3, depth=10
+    )
+    assert res.result, "top_moves should return candidates"
+    for cand in res.result:
+        d = cand.model_dump()
+        for field in (
+            "root_score_cp",
+            "root_score_mate",
+            "post_state_cp",
+            "post_state_mate",
+            "post_fen",
+        ):
+            assert field in d, f"candidate missing U-08 field {field!r}"
+        # post_fen must always be set (it's the FEN after the candidate move)
+        assert d["post_fen"], f"post_fen empty for candidate {d.get('best_move')}"

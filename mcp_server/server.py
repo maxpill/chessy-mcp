@@ -3158,6 +3158,19 @@ async def top_moves(
                             # post-state values feed the action policy
                             # decision; they DO NOT overwrite the candidate's
                             # reported cp/mate (B-05 / C-02 contract).
+                            # The post-state re-eval is a draw-pollution guard
+                            # (audit B-04 / U-08): when the multipv says the
+                            # zeroing move is no better than the draw
+                            # (cp<=0 or None), the post-state is what really
+                            # matters — the engine is treating the draw as
+                            # the value of the move. We do NOT re-evaluate
+                            # for strongly positive multipv (the engine has
+                            # a clear opinion and a re-eval would only add
+                            # cost). The post_state_cp/mate are surfaced on
+                            # the wire for client inspection (U-08) — they
+                            # are None when no re-eval happened, which is
+                            # the honest contract: "no refined post-state
+                            # value" rather than fabricating one.
                             multipv_suspect = r.mate is None and (r.cp is None or r.cp <= 0)
                             if (
                                 needs_post_eval
@@ -4313,7 +4326,14 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             # would then fire as a false positive.
             while tok_idx < len(movetext_tokens):
                 raw_tok = movetext_tokens[tok_idx]
-                num_m = re.match(r"^(\d+)(\.|\.\.)*$", raw_tok)
+                # U-15 (2026-09-01): the previous pattern `(\.|\.\.)*` was
+                # a Python regex footgun — alternation inside a `*` group
+                # never extends beyond a single match, so group(2) was
+                # always "." regardless of how many dots were in the
+                # input. That made the wrong-side-marker check a no-op
+                # (the actual and expected dots were always the same).
+                # `\.+` captures the full dot run in one shot.
+                num_m = re.match(r"^(\d+)(\.+)$", raw_tok)
                 if num_m:
                     move_num = int(num_m.group(1))
                     if move_num != expected_fullmove:
@@ -4329,14 +4349,6 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
                     expected_dots = "..." if curr_board.turn == chess.BLACK else "."
                     actual_dots = num_m.group(2) or ""
                     if actual_dots != expected_dots:
-                        import sys
-
-                        print(
-                            f"DEBUG U-15: tok={movetext_tokens[tok_idx]!r} "
-                            f"actual_dots={actual_dots!r} expected={expected_dots!r} "
-                            f"turn={curr_board.turn!r}",
-                            file=sys.stderr,
-                        )
                         syntax_warnings.append(
                             f"Wrong side marker: found '{movetext_tokens[tok_idx]}' "
                             f"but expected '{expected_dots}' for the side to move."
