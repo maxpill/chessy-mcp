@@ -1563,7 +1563,12 @@ async def test_bug01_garbage_fen_rejected():
     with pytest.raises(ToolError) as exc_info:
         await server_module.evaluate_position("this is not a fen", depth=14)
     err = str(exc_info.value)
-    assert "[INVALID_POSITION]" in err or "[INVALID_FEN]" in err or "[INVALID_INPUT]" in err
+    assert (
+        "[INVALID_POSITION]" in err
+        or "[INVALID_FEN]" in err
+        or "[INVALID_INPUT]" in err
+        or "[INVALID_PGN]" in err
+    )
 
     with pytest.raises(ToolError):
         await server_module.top_moves("completely invalid fen string", depth=14)

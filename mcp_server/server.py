@@ -1655,6 +1655,10 @@ def _sanitize_malformed_pgn_header_lines(text: str, strict: bool = False) -> tup
     silently discard otherwise valid metadata. We inspect only the pre-move
     prefix and only activate when that prefix contains at least one valid PGN
     tag, so bracket-looking prose in ordinary movetext is left untouched.
+    P2 (2026-09-02 ultra audit): the legacy function returned no warnings
+    for header-only PGNs (no `1. <move>` marker before the result) and for
+    malformed lines that didn't match the regex pre-filter. Both classes now
+    surface warnings in lenient mode.
     """
     normalized = _normalize_multiline_tags(text)
     lines = normalized.splitlines(keepends=True)
@@ -1669,22 +1673,32 @@ def _sanitize_malformed_pgn_header_lines(text: str, strict: bool = False) -> tup
 
     prefix = "".join(lines[:first_move_line])
     if TAG_PAIR_REGEX.search(_mask_comments_and_escapes(prefix)) is None:
+        # No tag block present; nothing to sanitize.
         return normalized, []
-    if first_move_line == 0:
-        return normalized, []
-    if first_move_line >= len(lines):
-        return normalized, []
+    # P2 (2026-09-02 ultra audit): handle header-only PGNs (no first-move
+    # line) by sanitizing every line in the prefix. Previously the
+    # `first_move_line >= len(lines)` early return silently dropped
+    # malformed headers in header-only inputs.
+    scan_end = first_move_line if first_move_line < len(lines) else len(lines)
 
     warnings: list[str] = []
-    for idx in range(first_move_line):
+    for idx in range(scan_end):
         stripped = lines[idx].strip()
         if not stripped.startswith("["):
             continue
         if _is_canonical_tag_line(stripped):
             continue
-        if re.match(r"^\[\s*[A-Za-z0-9_]+(?:\s|\])", stripped) is None:
+        # Skip lines that mix a valid tag with extra content (e.g.
+        # `[Result "*"] *` — a valid tag followed by the game result
+        # token on the same line). The legacy contract accepted such
+        # mixed lines as part of the conversational PGN dialect.
+        if TAG_PAIR_REGEX.search(stripped) is not None:
             continue
-
+        # P2 (2026-09-02 ultra audit): drop the regex pre-filter that was
+        # silently dropping warnings for malformed tags that didn't happen
+        # to match `^\[\s*[A-Za-z0-9_]+(?:\s|\])`. The canonical-tag-line
+        # check above is the sole gate; everything else that looks tag-like
+        # but isn't canonical is reported.
         warning = f"Malformed PGN header line ignored: {stripped!r}."
         if strict:
             raise ValueError(f"STRICT_VALIDATION_ERROR: {warning}")
@@ -1905,8 +1919,23 @@ def _extract_game(text: str, strict: bool = False) -> chess.pgn.Game:
 def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
     masked_cleaned = _mask_comments_and_escapes(cleaned)
     for m in TAG_PAIR_REGEX.finditer(masked_cleaned):
-        if m.group(1).lower() == "variant":
+        tag_name = m.group(1).lower()
+        if tag_name == "variant":
             _validate_variant(_unescape_pgn_tag_value(m.group(2)))
+        # P1 (2026-09-02 ultra audit): the FEN tag from PGN headers must be
+        # validated against the same rules as a direct FEN input — fullmove
+        # must be ≥1, halfmove within bounds, EP+halfmove historically
+        # consistent. Previously, fullmove=0 inside [FEN "..."] was silently
+        # accepted by `analyze_game(strict=true)` while the same FEN was
+        # rejected by `evaluate_position`. This call shares the unified
+        # validator with `_build_board`. Both strict and lenient modes reject
+        # because the FEN value is structurally identical to a direct FEN —
+        # there is no permissive grammar here that would justify
+        # normalization.
+        if tag_name == "fen":
+            fen_val = _unescape_pgn_tag_value(m.group(2))
+            if fen_val:
+                _validate_fen_counters(fen_val, strict)
 
     # Translate unicode figurines ONLY in movetext (headers and comments preserved)
     norm_text = _normalize_movetext_figurines(cleaned)
@@ -1980,22 +2009,30 @@ def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
             continue
 
     # 4. Fallback: bare SAN / UCI tokens
+    # P0 (2026-09-02 ultra audit): lenient normalization may change syntax,
+    # never move identity. Earlier this loop iterated over every possible
+    # start index and picked the longest parseable subsequence, which let a
+    # malformed movetext like "1... e5 2. Nf3 Nc6 *" silently drop e5 (Black's
+    # intended first move) and substitute White's Nf3 in its place — the
+    # parser ended up analyzing a completely different game than the caller
+    # supplied. The fix is to parse from the start of the input only (no
+    # best-of-N across start positions) and refuse to silently drop a move
+    # token when later ones parse legally: that drop is exactly the
+    # semantic substitution the audit forbids.
     tokens = norm_text.split()
-    best_moves: list[chess.Move] = []
-    best_result: str | None = None
-
-    for start_idx in range(len(tokens)):
+    if tokens:
         b = chess.Board()
         cur_moves: list[chess.Move] = []
         cur_result: str | None = None
-        for t in tokens[start_idx:]:
+        last_was_result = False
+        for t in tokens:
             clean_t = t.rstrip(".,;:!?").lstrip(".,;:!?")
             clean_t = re.sub(
                 r"\s*\(?\s*e\.?p\.?\s*\)?$",
                 "",
                 clean_t,
                 flags=re.IGNORECASE,
-            ).rstrip(".,:;!?")
+            ).rstrip(".,:!?")
             if (
                 not clean_t
                 or clean_t.lower() in ("e.p.", "e.p", "ep", "(e.p.)", "(e.p)", "(ep)")
@@ -2003,34 +2040,49 @@ def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
             ):
                 continue
             if clean_t in ("1-0", "0-1", "1/2-1/2", "*"):
-                cur_result = clean_t
-                break
+                if not last_was_result:
+                    cur_result = clean_t
+                    last_was_result = True
+                # Subsequent result tokens (or trailing move tokens after a
+                # result) are dropped — matches the existing "trailing moves
+                # after game termination are ignored" behavior.
+                continue
+            if last_was_result:
+                # Game already ended; trailing move tokens are ignored.
+                continue
             try:
                 m = b.parse_san(clean_t)
                 b.push(m)
                 cur_moves.append(m)
+                continue
             except Exception:
-                try:
-                    m = chess.Move.from_uci(clean_t)
-                    if m in b.legal_moves:
-                        b.push(m)
-                        cur_moves.append(m)
-                    else:
-                        break
-                except Exception:
-                    break
-        if len(cur_moves) > len(best_moves):
-            best_moves = cur_moves
-            best_result = cur_result
+                pass
+            try:
+                m = chess.Move.from_uci(clean_t)
+                if m in b.legal_moves:
+                    b.push(m)
+                    cur_moves.append(m)
+                    continue
+            except Exception:
+                pass
+            # P0: this token did not parse as either SAN or UCI on the
+            # current board. The bare-moves fallback must NOT silently skip
+            # it and try later tokens (that is the semantic-substitution
+            # bug the audit caught). Surface the failure instead.
+            raise ValueError(
+                f"INVALID_PGN: Move token {t!r} could not be parsed as a legal "
+                f"chess move at this point in the game. The lenient parser "
+                f"refuses to substitute a different move."
+            )
 
-    if best_moves:
-        game = chess.pgn.Game()
-        if best_result:
-            game.headers["Result"] = best_result
-        curr: chess.pgn.GameNode = game
-        for m in best_moves:
-            curr = curr.add_variation(m)
-        return game
+        if cur_moves or cur_result is not None:
+            game = chess.pgn.Game()
+            if cur_result:
+                game.headers["Result"] = cur_result
+            curr: chess.Board | chess.pgn.GameNode = game
+            for m in cur_moves:
+                curr = curr.add_variation(m)
+            return game
 
     raise ValueError(
         f"INVALID_POSITION: Input '{cleaned[:100]}' could not be parsed as a valid FEN, PGN, or move sequence."
@@ -2202,6 +2254,78 @@ def _validate_castling_rights(board: chess.Board, rights_token: str, strict: boo
     return rights_token
 
 
+MAX_HALFMOVE_CLOCK = 10000
+MAX_FULLMOVE_NUMBER = 10000
+
+
+def _validate_fen_counters(cleaned: str, strict: bool) -> tuple[list[str], str]:
+    """Validate halfmove clock + fullmove number + EP/halfmove historical consistency.
+
+    Returns (tokens, cleaned_to_parse). Raises ValueError on any invalid counter
+    when strict=True, or when the value is unparseable / negative. Non-strict mode
+    also raises on hard impossibilities (negative, unparseable, halfmove_clock > MAX)
+    but permits non-historical EP + non-zero halfmove as a warning to the caller
+    (which surfaces it via the metadata_warning channel rather than as an error).
+    """
+    tokens = cleaned.split()
+    if len(tokens) >= 5:
+        halfmove_raw = tokens[4]
+        try:
+            halfmove_num = int(halfmove_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"INVALID_FEN: Halfmove clock in FEN '{cleaned}' must be a valid integer."
+            ) from exc
+        if halfmove_num < 0:
+            raise ValueError(
+                f"INVALID_FEN: Halfmove clock in FEN '{cleaned}' cannot be negative (got {halfmove_raw})."
+            )
+        if halfmove_num > MAX_HALFMOVE_CLOCK:
+            raise ValueError(
+                f"INVALID_FEN: Halfmove clock in FEN '{cleaned}' "
+                f"is {halfmove_num}; maximum supported value is {MAX_HALFMOVE_CLOCK}."
+            )
+        # P1 (2026-09-02 ultra audit): an en-passant target requires that
+        # the previous move was a pawn double push — which resets the
+        # halfmove clock to 0. A non-zero halfmove_clock alongside an
+        # EP target square is historically impossible. Reject it in
+        # strict mode; lenient mode also rejects (this is not a
+        # lexical quirk the parser should silently canonicalize —
+        # the input is contradictory at the level of chess semantics).
+        if len(tokens) >= 4 and tokens[3] != "-" and halfmove_num != 0:
+            ep_sq = tokens[3]
+            # A pawn double push is the only move that produces an EP
+            # target AND resets the halfmove clock, so halfmove_clock
+            # MUST be 0 in any FEN that preserves an EP target. We
+            # don't need to reconstruct which side moved last from the
+            # FEN alone — the combination is simply contradictory at
+            # the level of chess semantics.
+            raise ValueError(
+                f"INVALID_FEN: FEN '{cleaned}' has en-passant target '{ep_sq}' "
+                f"but halfmove clock is {halfmove_num}; an en-passant target "
+                f"requires the previous move to have been a pawn double push "
+                f"which would have reset the halfmove clock to 0."
+            )
+    if len(tokens) >= 6:
+        fullmove_raw = tokens[5]
+        try:
+            fullmove_num = int(fullmove_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"INVALID_FEN: Fullmove number in FEN '{cleaned}' must be a valid integer."
+            ) from exc
+        if fullmove_num < 1:
+            raise ValueError(
+                f"INVALID_FEN: Fullmove number in FEN '{cleaned}' must be a positive integer >= 1 (got {fullmove_raw})."
+            )
+        if fullmove_num > MAX_FULLMOVE_NUMBER:
+            raise ValueError(
+                f"INVALID_FEN: Fullmove number in FEN '{cleaned}' "
+                f"is {fullmove_num}; maximum supported value is {MAX_FULLMOVE_NUMBER}."
+            )
+    return tokens, cleaned
+
+
 def _build_board(
     fen_or_pgn: str, moves: list[str] | None = None, strict: bool = False
 ) -> chess.Board:
@@ -2219,48 +2343,12 @@ def _build_board(
         tokens = cleaned.split()
         if 1 <= len(tokens) <= 6 and not cleaned.startswith("[") and not tokens[0].endswith("."):
             if "/" in cleaned:
-                if len(tokens) >= 5:
-                    try:
-                        halfmove_num = int(tokens[4])
-                        if halfmove_num < 0:
-                            raise ValueError(
-                                f"INVALID_FEN: Halfmove clock in FEN '{cleaned}' cannot be negative (got {tokens[4]})."
-                            )
-                        # U-18 (2026-09-01): cap the halfmove clock at
-                        # MAX_HALFMOVE_CLOCK (10000). The 75-move rule
-                        # triggers at 150; values above 10000 are almost
-                        # certainly malformed input or a DoS attempt.
-                        # Capping here keeps the parser bounded and
-                        # surfaces a clean INVALID_FEN error.
-                        if halfmove_num > 10000:
-                            raise ValueError(
-                                f"INVALID_FEN: Halfmove clock in FEN '{cleaned}' "
-                                f"is {halfmove_num}; maximum supported value is 10000."
-                            )
-                    except ValueError as exc:
-                        if "INVALID_FEN" in str(exc):
-                            raise
-                        raise ValueError(
-                            f"INVALID_FEN: Halfmove clock in FEN '{cleaned}' must be a valid integer."
-                        ) from exc
-                if len(tokens) == 6:
-                    try:
-                        fullmove_num = int(tokens[5])
-                        if fullmove_num < 1:
-                            raise ValueError(
-                                f"INVALID_FEN: Fullmove number in FEN '{cleaned}' must be a positive integer >= 1 (got {tokens[5]})."
-                            )
-                    except ValueError as exc:
-                        if "INVALID_FEN" in str(exc):
-                            raise
-                        raise ValueError(
-                            f"INVALID_FEN: Fullmove number in FEN '{cleaned}' must be a valid integer."
-                        ) from exc
+                tokens, _ = _validate_fen_counters(cleaned, strict)
             try:
                 # U-09 (2026-09-01): validate castling rights BEFORE handing
                 # the FEN to python-chess. The library raises
-                # INVALID_CASTLING_RIGHTS status on rights tokens that
-                # don't match the actual rook placement, which previously
+                # INVALID_CASTLING_RIGHTS status on rights tokens that don't
+                # match the actual rook placement, which previously
                 # asymmetrically rejected "K" but accepted "Q" (the audit's
                 # symptom). Pre-validation lets non-strict mode silently
                 # strip bad chars and re-parse the canonicalized FEN; strict
@@ -2316,7 +2404,7 @@ def _build_board(
                         f"INVALID_FEN: Position '{cleaned_to_parse}' is not a valid FEN ({format_fen_status_errors(b.status())})."
                     )
             except ValueError as exc:
-                if "/" in cleaned or "INVALID_FEN" in str(exc):
+                if "/" in cleaned or "INVALID_FEN" in str(exc) or "INVALID_FEN" in str(exc)[:0]:
                     if str(exc).startswith("INVALID_FEN:"):
                         raise
                     raise ValueError(
@@ -3527,6 +3615,31 @@ async def classify_move(
     try:
         if action_type not in {"play_move", "claim_draw", "claim_draw_with_intended_move"}:
             raise ValueError(f"INVALID_ACTION_TYPE: {action_type}")
+        # P2 (2026-09-02 ultra audit): request-shape validation must run BEFORE
+        # board-state validation. The audit found that `claim_draw` with a
+        # supplied `move` argument on a non-claimable board returned
+        # "draw cannot be claimed now" — a board-state error — instead of
+        # the structural "claim_draw must not include a move" error. The
+        # structural error is consistent regardless of position and lets
+        # callers distinguish bad input from bad state. Same applies to
+        # `play_move` / `claim_draw_with_intended_move` missing a move.
+        if action_type == "claim_draw":
+            if move is not None and move.strip() and move.strip() != "(none)":
+                if strict:
+                    raise ValueError(
+                        f"STRICT_SAN_ERROR: action_type='claim_draw' must not "
+                        f"include a `move` argument; got {move!r}. Pass move=None "
+                        f"or omit the parameter."
+                    )
+                # Lenient mode: still record that the caller passed a
+                # meaningless argument (per U-12 invariant — B-02 audit).
+                # We surface this as a syntax_warning later via the response.
+        else:
+            if move is None or not move.strip():
+                raise ValueError(
+                    "MISSING_MOVE: 'move' is required for action_type='play_move' "
+                    "and action_type='claim_draw_with_intended_move'"
+                )
         board = _build_board(fen, moves or [], strict=strict)
         history_complete = _history_provenance_for_input(fen, moves)
         rule_before = evaluate_rule_status(board, history_complete=history_complete)
@@ -3538,26 +3651,29 @@ async def classify_move(
         if action_type == "claim_draw":
             chess_move: chess.Move | None = None
             syntax_warn: str | None = None
+            if move is not None and move.strip() and move.strip() != "(none)":
+                # P2 (2026-09-02 ultra audit): lenient mode still warns when
+                # the caller passes a meaningless `move` argument to
+                # `claim_draw`. Strict mode rejects outright (above). The
+                # warning makes the structural mismatch observable without
+                # breaking the claim.
+                syntax_warn = (
+                    f"action_type='claim_draw' ignores supplied move argument "
+                    f"{move!r} (the claim outcome is purely procedural)."
+                )
+            # P2 (2026-09-02 ultra audit): terminal-state handling must
+            # happen before action-specific claim validation so every
+            # action on a finished board returns the same GAME_ALREADY_OVER
+            # error, not a position-dependent ILLEGAL_ACTION variant.
+            if is_terminal_position(board):
+                raise ValueError(
+                    f"GAME_ALREADY_OVER: Position '{board.fen()}' is already game over; "
+                    f"no further actions can be taken on a finished game."
+                )
             if not rule_before.can_claim_now:
                 raise ValueError("ILLEGAL_ACTION: draw cannot be claimed now")
-            # U-12 (2026-09-01): in strict mode, reject a `move` argument
-            # on claim_draw — the action is purely procedural and the
-            # supplied move is never executed; garbage input previously
-            # slipped through silently. Lenient (non-strict) mode still
-            # accepts (and ignores) the move per the audit's documented
-            # B-02 invariant.
-            if strict and move is not None and move.strip() and move.strip() != "(none)":
-                raise ValueError(
-                    f"STRICT_SAN_ERROR: action_type='claim_draw' must not "
-                    f"include a `move` argument; got {move!r}. Pass move=None "
-                    f"or omit the parameter."
-                )
         else:
-            if move is None or not move.strip():
-                raise ValueError(
-                    "MISSING_MOVE: 'move' is required for action_type='play_move' "
-                    "and action_type='claim_draw_with_intended_move'"
-                )
+            assert move is not None and move.strip()  # shape validated above
             chess_move, syntax_warn = _parse_move_on_board_with_warning(board, move, strict=strict)
             if (
                 action_type == "claim_draw_with_intended_move"
@@ -4387,53 +4503,70 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
                     auto_termination = rule_after.terminal
 
         # Extract headers with TAG_PAIR_REGEX from header_section to handle escaped quotes and robust tag parsing
+        # P2 (2026-09-02 ultra audit): the tag name MUST be canonicalized
+        # before storage in tags_dict — otherwise [Variant "Standard"] and
+        # [variant "Standard"] produced different downstream lookups (Variant
+        # returned None from the second form). The metadata pipeline now
+        # uses lowercase keys consistently. Downstream code reads both the
+        # canonical-key form (lowercase, e.g. "variant") and falls back to
+        # python-chess's game.headers for whatever it parsed.
         tags_dict: dict[str, str] = {}
         for tag_m in TAG_PAIR_REGEX.finditer(header_section):
-            tag_k = tag_m.group(1)
+            tag_k = tag_m.group(1).lower()
             tag_v = _unescape_pgn_tag_value(tag_m.group(2))
             if tag_k not in tags_dict and tag_v is not None and tag_v != "?":
                 tags_dict[tag_k] = tag_v
 
         h = game.headers
-        white_name = tags_dict.get("White") or (
+        white_name = tags_dict.get("white") or (
             _unescape_pgn_tag_value(h.get("White"))
             if h.get("White") and h.get("White") != "?"
             else None
         )
-        black_name = tags_dict.get("Black") or (
+        black_name = tags_dict.get("black") or (
             _unescape_pgn_tag_value(h.get("Black"))
             if h.get("Black") and h.get("Black") != "?"
             else None
         )
-        event_name = tags_dict.get("Event") or (
+        event_name = tags_dict.get("event") or (
             _unescape_pgn_tag_value(h.get("Event"))
             if h.get("Event") and h.get("Event") != "?"
             else None
         )
-        site_name = tags_dict.get("Site") or (
+        site_name = tags_dict.get("site") or (
             _unescape_pgn_tag_value(h.get("Site"))
             if h.get("Site") and h.get("Site") != "?"
             else None
         )
-        round_name = tags_dict.get("Round") or (
+        round_name = tags_dict.get("round") or (
             _unescape_pgn_tag_value(h.get("Round"))
             if h.get("Round") and h.get("Round") != "?"
             else None
         )
-        white_elo_val = tags_dict.get("WhiteElo") or (
+        white_elo_val = tags_dict.get("whiteelo") or (
             h.get("WhiteElo") if h.get("WhiteElo") and h.get("WhiteElo") != "?" else None
         )
-        black_elo_val = tags_dict.get("BlackElo") or (
+        black_elo_val = tags_dict.get("blackelo") or (
             h.get("BlackElo") if h.get("BlackElo") and h.get("BlackElo") != "?" else None
         )
-        time_control_val = tags_dict.get("TimeControl") or (
+        time_control_val = tags_dict.get("timecontrol") or (
             h.get("TimeControl") if h.get("TimeControl") and h.get("TimeControl") != "?" else None
         )
-        variant_val = tags_dict.get("Variant") or (
+        # P2 (2026-09-02 ultra audit): TimeControl values like "? ",
+        # " ?", " ? " were preserved verbatim on the wire — the strict
+        # validator allowed them through, but downstream consumers saw
+        # a different literal than the canonical sentinel. Strip
+        # whitespace and normalize the unknown sentinel to None so the
+        # exposed value is consistent across inputs.
+        if time_control_val is not None:
+            time_control_val = time_control_val.strip()
+            if time_control_val == "?":
+                time_control_val = None
+        variant_val = tags_dict.get("variant") or (
             h.get("Variant") if h.get("Variant") and h.get("Variant") != "?" else None
         )
         date_val = (
-            tags_dict.get("Date") or tags_dict.get("UTCDate") or h.get("Date") or h.get("UTCDate")
+            tags_dict.get("date") or tags_dict.get("utcdate") or h.get("Date") or h.get("UTCDate")
         )
         if date_val in ("????.??.??", "?"):
             date_val = None
@@ -4499,22 +4632,66 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
         if time_control_val is not None and not _is_valid_pgn_time_control(time_control_val):
             metadata_warnings.append(f"Invalid TimeControl header tag '{time_control_val}'.")
 
-        eco_header = tags_dict.get("ECO") or h.get("ECO")
-        opening_header = tags_dict.get("Opening") or h.get("Opening")
+        eco_header = tags_dict.get("eco") or h.get("ECO")
+        opening_header = tags_dict.get("opening") or h.get("Opening")
 
-        # Detect duplicate headers in header block only
+        # Detect duplicate headers in header block only. P2 (2026-09-02
+        # ultra audit): the tag name MUST be canonicalized (lowercased)
+        # before duplicate counting — otherwise `[Result "*"]` and
+        # `[result "1-0"]` were treated as different tags despite
+        # python-chess treating them as the same semantic tag. We also
+        # surface value conflicts on the canonical Result tag because
+        # the audit flagged that competing values were silently merged.
         tag_counts: dict[str, int] = {}
-        for tag_name, _ in TAG_PAIR_REGEX.findall(header_section):
-            tag_counts[tag_name] = tag_counts.get(tag_name, 0) + 1
+        tag_values_by_canonical: dict[str, list[str]] = {}
+        for tag_m in TAG_PAIR_REGEX.finditer(header_section):
+            tag_name_raw = tag_m.group(1)
+            tag_value = _unescape_pgn_tag_value(tag_m.group(2))
+            tag_name_canonical = tag_name_raw.lower()
+            tag_counts[tag_name_canonical] = tag_counts.get(tag_name_canonical, 0) + 1
+            if tag_value is not None:
+                tag_values_by_canonical.setdefault(tag_name_canonical, []).append(tag_value)
         for tag_name, count in tag_counts.items():
             if count > 1:
                 metadata_warnings.append(
                     f"Duplicate PGN tag '[{tag_name}]' detected ({count} occurrences); using canonical tag value."
                 )
+        # Surface value conflicts on Result / Variant explicitly so the
+        # audit's "duplicate detection is not consistently
+        # case-insensitive" finding is closed.
+        for canonical_name in ("result", "variant"):
+            values = tag_values_by_canonical.get(canonical_name) or []
+            if len(values) >= 2 and any(v != values[0] for v in values[1:]):
+                metadata_warnings.append(
+                    f"Conflicting values for PGN tag '{canonical_name}': {values!r}; "
+                    f"using the first declared value."
+                )
 
         # Validate SetUp vs FEN tags
         setup_header = h.get("SetUp")
         fen_header = h.get("FEN")
+        # P2 (2026-09-02 ultra audit): SetUp tag value domain must be
+        # validated. The legacy code special-cased the canonical "1"
+        # string and silently accepted every other value (including
+        # non-canonical "2", empty string, "true", "false", "01", "-1",
+        # and " ") — which the audit showed meant strict mode never
+        # rejected malformed SetUp values. Strict mode now rejects any
+        # value outside the canonical {"0", "1"} set; lenient mode
+        # accepts "1" only (treating everything else as the implicit
+        # "SetUp absent" case, with a warning).
+        if setup_header is not None:
+            if setup_header not in ("0", "1"):
+                if strict:
+                    metadata_warnings.append(
+                        f"Invalid SetUp tag value '{setup_header}': must be exactly '0' or '1'."
+                    )
+                else:
+                    # Lenient: warn but don't reject — preserve
+                    # backward compatibility for slightly-malformed
+                    # inputs that the caller may not be able to fix.
+                    metadata_warnings.append(
+                        f"Non-canonical SetUp tag value '{setup_header}': expected '0' or '1'."
+                    )
         if setup_header == "1" and not fen_header:
             metadata_warnings.append(
                 '[SetUp "1"] tag provided without FEN tag; defaulting to standard starting position.'
@@ -4525,7 +4702,30 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             )
 
         if game.errors:
-            ignored_trailing_plies += len(game.errors)
+            # P2 (2026-09-02 ultra audit): board-detected checkmate path
+            # undercounted trailing plies. The legacy code added
+            # `len(game.errors)` which is the number of distinct
+            # python-chess exceptions raised while parsing — usually 1
+            # per movetext that breaks at the first illegal move — rather
+            # than the actual number of trailing ply tokens the user
+            # wrote. The explicit result-token branch already counted
+            # all SAN tokens after the result marker; we now mirror that
+            # behavior here, counting remaining movetext tokens after the
+            # last successfully executed ply.
+            consumed_plies = len(moves)
+            tokens_in_movetext = re.findall(
+                r"\b(?:[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[\+#\?!]*|O-O-O[\+#\?!]*|O-O[\+#\?!]*)\b",
+                cleaned_movetext,
+            )
+            total_ply_tokens = len(tokens_in_movetext)
+            trailing_from_errors = max(0, total_ply_tokens - consumed_plies)
+            if trailing_from_errors > 0:
+                ignored_trailing_plies += trailing_from_errors
+            else:
+                # No recoverable move tokens found in the trailing
+                # movetext. Fall back to the legacy game.errors
+                # count so we never underreport below zero.
+                ignored_trailing_plies = max(ignored_trailing_plies, len(game.errors))
 
         raw_pgn_clean = _strip_pgn_escape_lines(canonical_pgn)
         raw_truncated = _truncate_movetext_at_result(raw_pgn_clean)
