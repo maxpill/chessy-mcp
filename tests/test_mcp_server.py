@@ -3814,7 +3814,7 @@ async def test_gather_evaluate_positions_caps_concurrency(monkeypatch):
         in_flight -= 1
         return (object(), False)
 
-    monkeypatch.setattr("mcp_server.server._evaluate_game_position_cached", fake_eval)
+    monkeypatch.setattr("mcp_server.engine.pool_factory._evaluate_game_position_cached", fake_eval)
 
     boards = [chess.Board() for _ in range(8)]
     pool = object()  # not touched by the fake

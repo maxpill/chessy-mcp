@@ -65,62 +65,17 @@ from mcp_server.urls import lichess_urls
 log = logging.getLogger("chessy_mcp.server")
 
 
-def _format_exception(exc: BaseException) -> str:
-    if isinstance(exc, BaseExceptionGroup):
-        group = cast(BaseExceptionGroup[BaseException], exc)
-        sub_msgs = [_format_exception(e) for e in group.exceptions]
-        return "; ".join(sub_msgs) if sub_msgs else str(group)
-    return str(exc)
-
-
-def _tool_error(code: str, message: str | BaseException, tool: str, **kwargs: Any) -> ToolError:
-    """Create a clean human/agent-readable ToolError payload."""
-    raw = _format_exception(message) if isinstance(message, BaseException) else str(message)
-    clean_msg = raw.strip()
-    clean_msg = re.sub(r"^(?:\[[A-Za-z0-9_]+\]|[A-Za-z0-9_]+:)\s*", "", clean_msg).strip()
-    return ToolError(f"[{code.upper()}] {clean_msg}")
-
-
-# Verbosity levels (audit M-05). `compact` strips Lichess URLs/images and
-# decision_value/engine_eval duplication from every candidate, dropping
-# payload size ~70% for LLM-driven callers that don't need URLs.
-VERBOSITY_FULL = "full"
-VERBOSITY_COMPACT = "compact"
-
-_VERBOSITY_ALIASES = {
-    "compact": "compact",
-    "minimal": "compact",
-    "min": "compact",
-    "full": "full",
-    "standard": "full",
-    "default": "full",
-}
-
-
-def _resolve_verbosity(value: Any) -> str:
-    """Normalize verbosity and reject unknown values instead of silently changing semantics."""
-    if value is None:
-        return VERBOSITY_FULL
-    normalized = str(value).strip().lower()
-    resolved = _VERBOSITY_ALIASES.get(normalized)
-    if resolved is None:
-        raise ValueError(
-            f"INVALID_VERBOSITY: expected one of {sorted(_VERBOSITY_ALIASES)}, got {value!r}"
-        )
-    return resolved
-
-
-def _compact_mcpeval(mcp_eval: MCPEval) -> MCPEval:
-    """Strip verbose payload duplication without rewriting chess semantics."""
-    return mcp_eval.model_copy(
-        update={
-            "lichess_url": None,
-            "lichess_image": None,
-            "decision_value": None,
-            "engine_eval": None,
-            "input_fen": None,
-        }
-    )
+from mcp_server.tools._common import (
+    VERBOSITY_COMPACT,
+    VERBOSITY_FULL,
+    _compact_mcpeval,
+    _format_exception,
+    _resolve_verbosity,
+    _tool_error,
+    _validate_requested_depth,
+    error_code_for,
+    normalize_termination,
+)
 
 
 def _force_draw_outcome(mcp_eval: MCPEval) -> MCPEval:
@@ -336,260 +291,41 @@ def _strip_pgn_escape_lines(text: str) -> str:
     return re.sub(r"(?m)^[ \t]*%[^\r\n]*(?:\r?\n)?", "", text)
 
 
-def _package_version() -> str:
-    """Read the installed package version, with a graceful fallback for local runs.
+# Re-export facade for the engine layer. The implementation now lives in
+# ``mcp_server.engine.pool_factory`` and ``mcp_server.engine.identity``;
+# every public/private symbol is re-bound here so existing call sites
+# (and ``monkeypatch.setattr(server_module, ...)`` in the test suite)
+# keep working unchanged.
+from mcp_server.engine import (  # noqa: E402,F401
+    _create_analyzer_pool,
+    _eval_via_analyzer_or_pool,
+    _evaluate_game_position_cached,
+    _gather_evaluate_positions_bounded,
+    _get_analyzer_pool,
+    _get_evaluate_semaphore,
+    _maybe_ponder_warm,
+    _mcp_lifespan,
+    _pool_stats_logger,
+    _pool_supports_root_moves,
+    _ponder_warm_cache,
+    cache as _cache,
+    close_analyzer_pool,
+    single_flight as _single_flight,
+    build_identity as _build_identity,
+    engine_config as _engine_config,
+    package_version as _package_version,
+    git_sha as _build_sha,
+    stockfish_path as _stockfish_path,
+)
 
-    Order of preference:
-    1. Installed package metadata (production: chessy is installed).
-    2. pyproject.toml in the parent of this file (dev: uv-managed virtualenv,
-       no installed dist-info). This makes service_version reflect the actual
-       declared version (e.g. "0.1.0") instead of an opaque "unknown".
-    3. CHESSY_PACKAGE_VERSION env override.
-    4. Hard-coded fallback "0.0.0+unknown" so the field never disappears.
-    """
-    try:
-        return metadata.version("chessy")
-    except metadata.PackageNotFoundError:
-        pass
-
-    env_override = os.environ.get("CHESSY_PACKAGE_VERSION")
-    if env_override:  # pragma: no cover — env read kept for tests that bypass get_build_metadata
-        return env_override
-
-    try:
-        import re
-        from pathlib import Path
-
-        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-        if pyproject.is_file():
-            text = pyproject.read_text(encoding="utf-8")
-            m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
-            if m:
-                return m.group(1)
-    except Exception:
-        pass
-
-    return "0.0.0+unknown"
-
-
-def _build_sha() -> str:
-    """Best-effort git HEAD sha; falls back to env override or 'unknown'."""
-    env_sha = os.environ.get("BUILD_SHA") or os.environ.get("CHESSY_BUILD_SHA")
-    if env_sha:
-        return env_sha
-    try:
-        out = (
-            subprocess.check_output(
-                ["git", "rev-parse", "--short=12", "HEAD"],
-                stderr=subprocess.DEVNULL,
-                cwd=str(Path(__file__).resolve().parent.parent),
-                timeout=2,
-            )
-            .decode()
-            .strip()
-        )
-        return out or "unknown"
-    except Exception:
-        return "unknown"
-
-
-def _engine_config(pool: AnalyzerPool | TCPAnalyzerPool | None) -> dict[str, Any]:
-    """Snapshot the engine configuration that produced the current response.
-
-    Lets a debugger distinguish 'cp=-3 was returned because Stockfish 18 at
-    depth 14 Hash=256 said so' from 'cp=-3 was returned because depth 1
-    Stockfish 17 at Hash=16 said so' — without these, observability for
-    grading regressions is impossible.
-    """
-    if pool is None:
-        return {}
-    config: dict[str, Any] = {}
-    for attr in ("threads", "hash_mb", "depth"):
-        val = getattr(pool, attr, None)
-        if val is not None:
-            config[attr] = val
-    name = getattr(pool, "engine_version", None) or getattr(pool, "name", None)
-    if name:
-        config["engine_name"] = name
-    return config
-
-
-def _build_identity(pool: AnalyzerPool | TCPAnalyzerPool | None) -> dict[str, Any]:
-    """Single helper for service_version / build_sha / engine_config fields."""
-    return {
-        "service_version": _package_version(),
-        "build_sha": _build_sha(),
-        "engine_config": _engine_config(pool),
-    }
-
-
-_DEFAULT_STOCKFISH_PATH = "/usr/games/stockfish"
-
-
-def _stockfish_path() -> str:
-    import shutil
-
-    which_sf = shutil.which("stockfish")
-    for candidate in (
-        os.environ.get("STOCKFISH_PATH"),
-        _DEFAULT_STOCKFISH_PATH,
-        which_sf,
-        "/opt/homebrew/bin/stockfish",
-        "/usr/local/bin/stockfish",
-        "/usr/bin/stockfish",
-    ):
-        if candidate and Path(candidate).exists():
-            return candidate
-    raise RuntimeError(
-        "No Stockfish binary found. Set STOCKFISH_PATH to the correct binary location."
-    )
-
-
-@asynccontextmanager
-async def _mcp_lifespan(server: MCPServer) -> AsyncGenerator[dict[str, Any]]:
-    """Initialize the Stockfish pool at startup, tear it down at exit.
-
-    Replaces the lazy-init path with eager startup so the first user
-    request doesn't pay the TCP handshake / UCI isready round-trips. The
-    pool is shared with every tool via the lifespan_context["pool"] indirection.
-
-    Side jobs at startup:
-      * Apply UCI options: ShowWDL (when enabled) + SyzygyPath (when set).
-      * Warm-search: one depth=2 eval per worker so UCI isready completes
-        and the engine is primed (saves ~120ms on the first real request).
-      * Periodic structured pool-stats logging every
-        CHESS_MCP_POOL_STATS_INTERVAL_S seconds (queue depth, alive count,
-        cache hit rate). Set to 0 to disable.
-    """
-    from .config import get_mcp_settings
-
-    cfg = get_mcp_settings()
-    cpu = os.cpu_count() or 8
-    pool_size = cfg.pool_size if cfg.pool_size is not None else min(cpu, 4)
-    pool: AnalyzerPool | TCPAnalyzerPool = await _create_analyzer_pool(cfg, pool_size=pool_size)
-
-    # Warm-search: one cheap eval per worker to prime UCI isready. Hidden
-    # inside the healthcheck start_period (5s); saves ~120ms on the first
-    # real user request.
-    warmup_board = chess.Board()
-    try:
-        await asyncio.gather(*[pool.evaluate(warmup_board, depth=2) for _ in range(pool_size)])
-        log.info("Pool warm-search complete (%d workers primed)", pool_size)
-    except Exception as exc:
-        log.warning("Pool warm-search failed (non-fatal): %s", exc)
-
-    stats_task: asyncio.Task[None] | None = None
-    stats_interval = float(cfg.pool_stats_interval_s)
-    if stats_interval > 0:
-        stats_task = asyncio.create_task(
-            _pool_stats_logger(pool, stats_interval), name="pool-stats-logger"
-        )
-
-    try:
-        yield {"pool": pool, "settings": cfg, "pool_size": pool_size}
-    finally:
-        if stats_task is not None:
-            stats_task.cancel()
-            try:
-                await stats_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        log.info("Shutting down analyzer pool (%d engines)", pool_size)
-        await pool.close()
-
-
-async def _pool_stats_logger(pool: AnalyzerPool | TCPAnalyzerPool, interval_s: float) -> None:
-    """Emit a structured pool-stats log line every `interval_s` seconds.
-
-    One log line per interval; log aggregation (loki/journald/etc.) is the
-    consumer. Includes queue depth, alive count, and the in-memory
-    LocalMetricsTracker snapshot (uptime, total requests, cache hit rate,
-    per-tool call counts and p50/p95 latencies).
-    """
-    while True:
-        try:
-            await asyncio.sleep(interval_s)
-        except asyncio.CancelledError:
-            return
-        try:
-            qsize = pool._pool._q.qsize()  # type: ignore[attr-defined]
-            alive = pool._pool._alive_count  # type: ignore[attr-defined]
-            target = pool._pool._target_size  # type: ignore[attr-defined]
-            from .metrics import metrics
-
-            stats = await metrics.get_stats()
-            log.info(
-                "pool_stats queue_depth=%d alive=%d target=%d "
-                "uptime_s=%s total=%s hit_rate_pct=%s tools=%s",
-                qsize,
-                alive,
-                target,
-                stats["uptime_seconds"],
-                stats["total_requests"],
-                stats["cache_hit_rate_percent"],
-                {k: v["calls"] for k, v in stats["tools"].items()},
-            )
-        except Exception as exc:
-            log.warning("pool_stats log iteration failed (continuing): %s", exc)
-
-
-async def _ponder_warm_cache(
-    pool: AnalyzerPool | TCPAnalyzerPool,
-    predicted_board: chess.Board,
-    depth: int,
-    history_complete: str,
-) -> None:
-    """Background cache warmer that preserves the predicted board's move stack."""
-    try:
-        board = predicted_board.copy(stack=True)
-        if board.is_game_over(claim_draw=False):
-            return
-        ckey = eval_cache_key(
-            board,
-            depth,
-            engine_version=getattr(pool, "engine_version", None),
-            history_completeness=history_complete,
-        )
-        if (await _cache.get_eval(ckey)) is not None:
-            return
-        await _evaluate_game_position_cached(
-            board,
-            depth,
-            pool,
-            requested_depth=depth,
-            history_complete=history_complete,
-        )
-    except Exception as exc:
-        log.debug("ponder pre-eval failed: %s", exc)
-
-
-_background_tasks: set[asyncio.Task[Any]] = set()
-
-
-def _maybe_ponder_warm(
-    pool: AnalyzerPool | TCPAnalyzerPool,
-    board: chess.Board,
-    best_move_uci: str | None,
-    depth: int,
-    ponder_enabled: bool,
-    history_complete: str,
-) -> None:
-    """Schedule a provenance-preserving background pre-evaluation."""
-    if not ponder_enabled or not best_move_uci:
-        return
-    try:
-        next_board = board.copy(stack=True)
-        next_board.push_uci(best_move_uci)
-        if next_board.is_game_over(claim_draw=False):
-            return
-        task = asyncio.create_task(
-            _ponder_warm_cache(pool, next_board, depth, history_complete),
-            name="ponder-warm",
-        )
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
-    except Exception:
-        pass
+# Pool / semaphore globals live HERE (not in pool_factory) because the test
+# suite mutates ``server_module._analyzer_pool`` directly to install mock
+# analyzers. ``pool_factory`` reads and writes these exact bindings at call
+# time so the mock reaches the live lookup path.
+_analyzer_pool: AnalyzerPool | TCPAnalyzerPool | None = None
+_pool_lock = asyncio.Lock()
+_evaluate_semaphore: asyncio.Semaphore | None = None
+_evaluate_semaphore_lock = asyncio.Lock()
 
 
 mcp = MCPServer(
@@ -617,240 +353,6 @@ async def _health(request: Any) -> Any:
     )
 
 
-# Multi-Tier Cache (L1 Memory LRU 50k + L2 SQLite WAL Disk Cache) and SingleFlight Coalescer
-_cache: MultiTierCache = MultiTierCache(l1_size=50_000)
-_single_flight: SingleFlight[Any] = SingleFlight()
-
-
-# P1 audit fix: bound concurrent evaluate calls so analyze_game at depth 30
-# cannot self-inflict PoolBusy by spawning hundreds of simultaneous
-# waiters. The semaphore is created lazily on first call so it always
-# belongs to the live event loop (pytest-asyncio's per-function event loop
-# means a module-level asyncio.Semaphore() would be bound to whichever
-# loop runs first and explode on subsequent loops).
-_evaluate_semaphore: asyncio.Semaphore | None = None
-_evaluate_semaphore_lock = asyncio.Lock()
-
-
-async def _get_evaluate_semaphore() -> asyncio.Semaphore:
-    global _evaluate_semaphore
-    async with _evaluate_semaphore_lock:
-        if _evaluate_semaphore is None:
-            from .config import get_mcp_settings
-
-            cfg = get_mcp_settings()
-            _evaluate_semaphore = asyncio.Semaphore(max(1, cfg.max_concurrent_evaluates))
-        return _evaluate_semaphore
-
-
-async def _gather_evaluate_positions_bounded(
-    positions: list[chess.Board],
-    depth: int,
-    pool: AnalyzerPool | TCPAnalyzerPool,
-    *,
-    requested_depth: int,
-    history_complete: str = "complete",
-) -> list[tuple[MCPEval, bool]]:
-    """Evaluate N positions partitioned across the pool with TT reuse per slice.
-
-    Two-stage fan-out:
-      1. Split `positions` into K slices (K = pool size). Each slice is
-         dispatched to its own worker via `pool._pool.run(...)`.
-      2. Within a slice, evaluations run SEQUENTIALLY with `reuse_tt=True`
-         between calls so Stockfish accumulates the TT across consecutive
-         positions. Round-robin distribution keeps slices balanced; for
-         long PGNs most adjacent plies still share a slice's TT context
-         after the first iteration of the cycle.
-
-    The semaphore (`CHESS_MCP_MAX_CONCURRENT_EVALUATES`) bounds the total
-    in-flight evaluate work across all MCP tools. Each slice acquires the
-    semaphore once at entry.
-
-    Compared to the previous "gather N over the whole pool" approach:
-    - Same parallelism across slices (one per worker).
-    - TT reuse within a slice (the old code's TT was 100% cold because
-      consecutive positions landed on different workers).
-    - Fewer pool-acquire round-trips: K acquires instead of N.
-    """
-    if not positions:
-        return []
-    sem = await _get_evaluate_semaphore()
-
-    # K slices, one per pool worker. Try to introspect the pool's target
-    # size; fall back to 4 if the API differs. Tests pass MockPool objects
-    # without the production `_pool` attribute, so be tolerant.
-    pool_target: int
-    try:
-        pool_target = pool._pool._target_size  # type: ignore[attr-defined]
-    except AttributeError:
-        pool_target = 4
-    k = max(1, min(pool_target, len(positions)))
-
-    # Contiguous partition: positions [0:chunk] -> slice 0, [chunk:2*chunk] -> slice 1, ...
-    # Adjacent plies land on the same worker, so Stockfish's TT carries over
-    # across consecutive `reuse_tt=True` calls (round-robin distribution put
-    # positions K-plies apart in the same slice — the TT trees diverged too
-    # far for any useful overlap at depth 14 / 64 MB hash). Last slice gets
-    # the remainder.
-    chunk = math.ceil(len(positions) / k)
-    slices: list[list[chess.Board]] = [
-        list(positions[i : i + chunk]) for i in range(0, len(positions), chunk)
-    ]
-    # Trim to k slices (we may have one fewer if positions divides evenly).
-    slices = slices[:k]
-
-    async def _run_slice(slice_positions: list[chess.Board]) -> list[tuple[MCPEval, bool]]:
-        async with sem:
-            # If the pool exposes the production _pool.run(analyzer-fn) API
-            # (EnginePool), use it to hold one analyzer for the whole slice.
-            # Otherwise (test MockPool objects), call pool.evaluate directly
-            # per position — TT reuse is moot without a real analyzer.
-            if hasattr(pool, "_pool"):
-
-                async def _on_worker(analyzer: object) -> list[tuple[MCPEval, bool]]:
-                    out: list[tuple[MCPEval, bool]] = []
-                    for j, b in enumerate(slice_positions):
-                        r, hit = await _evaluate_game_position_cached(
-                            b,
-                            depth,
-                            pool,
-                            requested_depth=requested_depth,
-                            reuse_tt=(j > 0),
-                            analyzer=analyzer,
-                            history_complete=history_complete,
-                        )
-                        out.append((r, hit))
-                    return out
-
-                return await pool._pool.run(_on_worker)  # type: ignore[attr-defined]
-
-            # Fallback for tests / mock pools.
-            out: list[tuple[MCPEval, bool]] = []
-            for b in slice_positions:
-                r, hit = await _evaluate_game_position_cached(
-                    b,
-                    depth,
-                    pool,
-                    requested_depth=requested_depth,
-                    reuse_tt=False,
-                    history_complete=history_complete,
-                )
-                out.append((r, hit))
-            return out
-
-    slice_results = await asyncio.gather(*[_run_slice(s) for s in slices if s])
-    # Reassemble in original order. With contiguous chunks, slice_results[si]
-    # corresponds to positions[si*chunk : si*chunk + len(slices[si])] in order.
-    out: list[tuple[MCPEval, bool]] = [None] * len(positions)  # type: ignore[list-item]
-    cursor = 0
-    for slice_result in slice_results:
-        for j, item in enumerate(slice_result):
-            out[cursor + j] = item
-        cursor += len(slice_result)
-    return out
-
-
-async def _create_analyzer_pool(
-    cfg: MCPSettings,
-    *,
-    pool_size: int,
-) -> AnalyzerPool | TCPAnalyzerPool:
-    """Single source of truth for analyzer pool creation.
-
-    Used by both the FastMCP lifespan (`_mcp_lifespan`) and the lazy-init
-    fallback in `_get_analyzer_pool` so the two paths cannot drift in their
-    UCI kwargs (the show_wdl/syzygy_path bug shipped in 72e3236 is the kind of
-    drift this function prevents). Returns a pool ready for evaluate/top_moves/
-    classify_move/analyze_game; logs the same "ready" line either way so
-    operators can grep for it regardless of which path built the pool.
-    """
-    threads = max(1, cfg.threads_per_worker)
-    if cfg.host and cfg.port:
-        pool: AnalyzerPool | TCPAnalyzerPool = await TCPAnalyzerPool.create(
-            cfg.host,
-            cfg.port,
-            size=pool_size,
-            name="stockfish",
-            threads=threads,
-            hash_mb=cfg.hash_mb,
-            show_wdl=cfg.show_wdl,
-            syzygy_path=cfg.syzygy_path or None,
-        )
-        log.info(
-            "TCP analyzer pool ready: %d engines @ %s:%d (threads=%d hash=%dMB wdl=%s syzygy=%s ponder=%s)",
-            pool_size,
-            cfg.host,
-            cfg.port,
-            threads,
-            cfg.hash_mb,
-            cfg.show_wdl,
-            cfg.syzygy_path or "(none)",
-            cfg.ponder_enabled,
-        )
-        pool._mcp_ponder_enabled = cfg.ponder_enabled  # type: ignore[attr-defined]
-        return pool
-    pool = await AnalyzerPool.create(
-        _stockfish_path(),
-        size=pool_size,
-        depth=14,
-        threads=threads,
-        hash_mb=cfg.hash_mb,
-        show_wdl=cfg.show_wdl,
-        syzygy_path=cfg.syzygy_path or None,
-    )
-    log.info(
-        "Subprocess analyzer pool ready: %d engines @ %s",
-        pool_size,
-        _stockfish_path(),
-    )
-    return pool
-
-
-async def _get_analyzer_pool(
-    ctx: Context | None = None,
-) -> AnalyzerPool | TCPAnalyzerPool:
-    """Fetch the live analyzer pool from the FastMCP lifespan context.
-
-    Falls back to the legacy lazy-init path when called outside a request
-    (e.g. tests that don't go through the FastMCP runner), so existing test
-    setups keep working without rewriting every fixture.
-    """
-    if ctx is not None:
-        ls = ctx.request_context.lifespan_context
-        pool = ls.get("pool")
-        if pool is not None:
-            return pool
-    global _analyzer_pool
-    async with _pool_lock:
-        if _analyzer_pool is None:
-            from .config import get_mcp_settings
-
-            mcp_cfg = get_mcp_settings()
-            cpu = os.cpu_count() or 8
-            pool_size = mcp_cfg.pool_size if mcp_cfg.pool_size is not None else min(cpu, 4)
-            _analyzer_pool = await _create_analyzer_pool(mcp_cfg, pool_size=pool_size)
-        return _analyzer_pool
-
-
-_analyzer_pool: AnalyzerPool | TCPAnalyzerPool | None = None
-_pool_lock = asyncio.Lock()
-
-
-async def close_analyzer_pool() -> None:
-    """Gracefully close all engine workers in the pool.
-
-    Idempotent: safe to call from tests and from lifespan teardown. Also
-    drops the cached evaluate semaphore so a fresh one is lazily created on
-    the next request — keeps pytest-asyncio's per-function event loop happy.
-    """
-    global _analyzer_pool, _evaluate_semaphore
-    async with _pool_lock:
-        if _analyzer_pool is not None:
-            await _analyzer_pool.close()
-            _analyzer_pool = None
-    _evaluate_semaphore = None
-
-
 SUPPORTED_VARIANTS = {None, "", "standard", "from position"}
 
 
@@ -859,87 +361,6 @@ def _validate_variant(variant: str | None) -> None:
         raise ValueError(
             f"UNSUPPORTED_VARIANT: Variant '{variant.strip()}' is not supported. Chess MCP currently analyzes standard chess only."
         )
-
-
-def normalize_termination(term: str | None) -> str | None:
-    """Normalize PGN termination header string into standard taxonomy."""
-    if not term:
-        return None
-    t = term.strip().lower()
-    # 1. Normal — must be checked FIRST, before any general "time" regex that
-    # would otherwise eat "Normal time control" as time_forfeit.
-    if re.search(r"\bnormal\b", t):
-        return "normal"
-    # 2. Fifty moves rule
-    if re.search(r"\b(?:50|fifty)[-\s]*moves?(?:\s*rule)?\b", t):
-        return "fifty_moves"
-    # 3. Seventy-five moves rule
-    if re.search(r"\b(?:75|seventy[-\s]*five)[-\s]*moves?(?:\s*rule)?\b", t):
-        return "seventyfive_moves"
-    # 4. Fivefold repetition
-    if re.search(r"\b(?:5[-\s]*fold|five[-\s]*fold)(?:\s*repetition)?\b", t):
-        return "fivefold_repetition"
-    # 5. Threefold repetition
-    if re.search(
-        r"\b(?:3[-\s]*fold|three[-\s]*fold)(?:\s*repetition)?(?:\s*claim)?\b|\bthreefold\b",
-        t,
-    ):
-        return "threefold_repetition"
-    if re.search(r"\brepetition\b", t):
-        return "repetition"
-    # 6. Checkmate / stalemate
-    if re.search(r"\bcheckmate\b|\bmate\b", t):
-        return "checkmate"
-    if re.search(r"\bstalemate\b|\bstale\b", t):
-        return "stalemate"
-    # 7. Insufficient material
-    if re.search(r"\binsufficient(?:\s*material)?\b", t):
-        return "insufficient_material"
-    # 8. Resignation
-    if re.search(r"\bresign(?:ed|ation|s)?\b", t):
-        return "resignation"
-    # 9. Time forfeit — STRICT regex. The old /\btime\b/ matched "Normal time
-    # control" and other innocuous phrases. Require an explicit forfeit
-    # marker alongside time/flag: "forfeit", "out of", "expired", "exhausted",
-    # "on time" (a losing condition). Plain "time control" or "increment" alone
-    # is NOT a forfeit.
-    if re.search(
-        r"\btime\s*(?:forfeit|expired|exhausted|loss)\b"
-        r"|\bout\s+of\s+time\b"
-        r"|\bflag\s*(?:fell|fell|fall|dropped)\b"
-        r"|\blost\s+on\s+time\b"
-        r"|\b(?:white|black)\s+(?:wins?|won)\s+on\s+time\b"
-        r"|\bclock\s+(?:flagged|expired)\b",
-        t,
-    ):
-        return "time_forfeit"
-    # 10. Unterminated
-    if re.search(r"\bunterminated\b|\bunfinished\b", t):
-        return "unterminated"
-    # 11. Abandoned
-    if re.search(r"\babandon(?:ed)?\b", t):
-        return "abandoned"
-    # 12. Adjudication
-    if re.search(r"\badjudicat(?:ed|ion)\b", t):
-        return "adjudication"
-    # 13. Death / emergency
-    if re.search(r"\bdeath\b", t):
-        return "death"
-    if re.search(r"\bemergency\b", t):
-        return "emergency"
-    # 14. Rules infraction
-    if re.search(
-        r"\brules?\s+infraction\b|\b(?:second\s+)?illegal\s+move\b|\binfraction\b|\billegal\b",
-        t,
-    ):
-        return "rules_infraction"
-    # 15. Draw agreement — players mutually agreed to draw (vs an auto-terminal
-    # draw from a 50-move claim, threefold, etc.). Without this branch, the
-    # common PGN phrase "Draw by agreement" surfaces as termination=null and
-    # callers have to invent their own classification.
-    if re.search(r"\bdraw\s+by\s+agreement\b|\bagreement\b", t):
-        return "draw_agreement"
-    return None
 
 
 # P2/P3 (2026-09-02 ultra audit): the bare regex matches shapes like
@@ -2662,30 +2083,6 @@ def _validate_fen_counters(cleaned: str, strict: bool) -> tuple[list[str], str]:
     return tokens, cleaned
 
 
-def _validate_requested_depth(depth: Any, tool: str) -> int:
-    """Validate the `depth` argument type for any analysis endpoint.
-
-    R4-§D (2026-09-02 ultra audit round 4): previously non-integer
-    `depth` values raised a raw Python TypeError ("'<' not supported
-    between instances of 'int' and 'str'"). The endpoint now rejects
-    those with `ToolError(INVALID_INPUT)` so every endpoint behaves
-    identically and callers get a structured error.
-
-    Returns the validated integer depth UNCHANGED — the legacy contract
-    is preserved: `requested_depth` carries the caller's raw value, the
-    engine-side `depth` is clamped to `[1, 30]` separately. Only the type
-    check is enforced here; the bounds clamp lives in the per-endpoint
-    body (e.g. `depth = max(1, min(depth, 30))`).
-    """
-    if not isinstance(depth, int) or isinstance(depth, bool):
-        raise _tool_error(
-            "INVALID_INPUT",
-            f"depth must be a positive integer (got {type(depth).__name__}: {depth!r}).",
-            tool,
-        )
-    return depth
-
-
 def _build_board(
     fen_or_pgn: str, moves: list[str] | None = None, strict: bool = False
 ) -> chess.Board:
@@ -3299,27 +2696,7 @@ async def evaluate_position(
     except ValueError as exc:
         await metrics.record("evaluate_position", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
-        code = "invalid_input"
-        if "INVALID_VERBOSITY" in msg:
-            code = "invalid_verbosity"
-        elif "STRICT" in msg:
-            code = "strict_validation_error"
-        elif "UNSUPPORTED_VARIANT" in msg:
-            code = "unsupported_variant"
-        elif "INVALID_FEN" in msg:
-            code = "invalid_fen"
-        elif "INVALID_POSITION" in msg:
-            code = "invalid_position"
-        elif "MULTIPLE_GAMES" in msg:
-            code = "multiple_games_not_supported"
-        elif "ILLEGAL_MOVE" in msg:
-            code = "illegal_move"
-        elif "AMBIGUOUS_SAN" in msg:
-            code = "ambiguous_san"
-        elif "GAME_ALREADY_OVER" in msg:
-            code = "game_already_over"
-        elif "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg:
-            code = "invalid_pgn"
+        code = error_code_for(msg)
         raise _tool_error(code=code, message=msg, tool="evaluate_position", input=fen) from exc
     except Exception as exc:
         await metrics.record("evaluate_position", (time.time() - t0) * 1000, is_error=True)
@@ -3926,27 +3303,7 @@ async def top_moves(
     except ValueError as exc:
         await metrics.record("top_moves", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
-        code = "invalid_input"
-        if "INVALID_VERBOSITY" in msg:
-            code = "invalid_verbosity"
-        elif "STRICT" in msg:
-            code = "strict_validation_error"
-        elif "UNSUPPORTED_VARIANT" in msg:
-            code = "unsupported_variant"
-        elif "INVALID_FEN" in msg:
-            code = "invalid_fen"
-        elif "INVALID_POSITION" in msg:
-            code = "invalid_position"
-        elif "MULTIPLE_GAMES" in msg:
-            code = "multiple_games_not_supported"
-        elif "ILLEGAL_MOVE" in msg:
-            code = "illegal_move"
-        elif "AMBIGUOUS_SAN" in msg:
-            code = "ambiguous_san"
-        elif "GAME_ALREADY_OVER" in msg:
-            code = "game_already_over"
-        elif "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg:
-            code = "invalid_pgn"
+        code = error_code_for(msg)
         raise _tool_error(code=code, message=msg, tool="top_moves", input=fen) from exc
     except Exception as exc:
         await metrics.record("top_moves", (time.time() - t0) * 1000, is_error=True)
@@ -4384,29 +3741,7 @@ async def classify_move(
     except ValueError as exc:
         await metrics.record("classify_move", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
-        code = "invalid_input"
-        if "INVALID_ACTION_TYPE" in msg:
-            code = "invalid_action_type"
-        elif "ILLEGAL_ACTION" in msg:
-            code = "illegal_action"
-        elif "STRICT" in msg:
-            code = "strict_validation_error"
-        elif "UNSUPPORTED_VARIANT" in msg:
-            code = "unsupported_variant"
-        elif "INVALID_FEN" in msg:
-            code = "invalid_fen"
-        elif "INVALID_POSITION" in msg:
-            code = "invalid_position"
-        elif "MULTIPLE_GAMES" in msg:
-            code = "multiple_games_not_supported"
-        elif "ILLEGAL_MOVE" in msg:
-            code = "illegal_move"
-        elif "AMBIGUOUS_SAN" in msg:
-            code = "ambiguous_san"
-        elif "GAME_ALREADY_OVER" in msg:
-            code = "game_already_over"
-        elif "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg:
-            code = "invalid_pgn"
+        code = error_code_for(msg)
         raise _tool_error(code=code, message=msg, tool="classify_move", input=move) from exc
     except Exception as exc:
         await metrics.record("classify_move", (time.time() - t0) * 1000, is_error=True)
@@ -5630,25 +4965,7 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     except ValueError as exc:
         await metrics.record("analyze_game", (time.time() - t0) * 1000, is_error=True)
         msg = str(exc)
-        code = "invalid_input"
-        if "STRICT" in msg:
-            code = "strict_validation_error"
-        elif "UNSUPPORTED_VARIANT" in msg:
-            code = "unsupported_variant"
-        elif "INVALID_FEN" in msg:
-            code = "invalid_fen"
-        elif "INVALID_POSITION" in msg:
-            code = "invalid_position"
-        elif "MULTIPLE_GAMES" in msg:
-            code = "multiple_games_not_supported"
-        elif "ILLEGAL_MOVE" in msg:
-            code = "illegal_move"
-        elif "AMBIGUOUS_SAN" in msg:
-            code = "ambiguous_san"
-        elif "GAME_ALREADY_OVER" in msg:
-            code = "game_already_over"
-        elif "Invalid PGN" in msg or "Could not parse PGN" in msg or "INVALID_PGN" in msg:
-            code = "invalid_pgn"
+        code = error_code_for(msg)
         raise _tool_error(code=code, message=msg, tool="analyze_game", input=pgn[:100]) from exc
     except Exception as exc:
         await metrics.record("analyze_game", (time.time() - t0) * 1000, is_error=True)

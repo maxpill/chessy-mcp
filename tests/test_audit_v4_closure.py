@@ -18,7 +18,12 @@ from mcp_server import config as config_module
 from mcp_server import server as server_module
 from mcp_server.actions import build_legal_actions
 from mcp_server.models import MCPEval
-from mcp_server.rules import RuleStatus, can_checkmate, evaluate_rule_status, validate_mating_possibility
+from mcp_server.rules import (
+    RuleStatus,
+    can_checkmate,
+    evaluate_rule_status,
+    validate_mating_possibility,
+)
 from mcp_server.tcp_analyzer import _white_pov_wdl as tcp_white_pov_wdl
 
 
@@ -176,17 +181,11 @@ def test_10_full_pgn_history_complete():
 
 
 def test_11_arbitrary_fen_history_incomplete():
-    assert (
-        server_module._history_provenance_for_input(chess.STARTING_FEN, None)
-        == "incomplete"
-    )
+    assert server_module._history_provenance_for_input(chess.STARTING_FEN, None) == "incomplete"
 
 
 def test_12_arbitrary_fen_plus_suffix_history_partial():
-    assert (
-        server_module._history_provenance_for_input(chess.STARTING_FEN, ["Nf3"])
-        == "partial"
-    )
+    assert server_module._history_provenance_for_input(chess.STARTING_FEN, ["Nf3"]) == "partial"
 
 
 def test_13_partial_history_can_prove_threefold():
@@ -244,10 +243,12 @@ async def test_16_ponder_preserves_history_provenance_and_stack(monkeypatch: pyt
     ) -> tuple[MCPEval, bool]:
         seen["stack"] = [m.uci() for m in b.move_stack]
         seen["history"] = history_complete
-        ev = MCPEval.from_eval(Eval(cp=0, depth=depth), b.fen(), board=b, history_complete=history_complete)
+        ev = MCPEval.from_eval(
+            Eval(cp=0, depth=depth), b.fen(), board=b, history_complete=history_complete
+        )
         return ev, False
 
-    monkeypatch.setattr(server_module, "_evaluate_game_position_cached", fake_eval)
+    monkeypatch.setattr("mcp_server.engine.pool_factory._evaluate_game_position_cached", fake_eval)
     await server_module._ponder_warm_cache(FlatPool(), board, 2, "complete")  # type: ignore[arg-type]
     assert seen["stack"] == ["g1f3", "g8f6"]
     assert seen["history"] == "complete"
@@ -417,7 +418,9 @@ async def test_33_optional_claim_not_auto_terminal_in_core_classifier():
                 return Eval(cp=200, best_move="a2a4", pv=["a2a4"], depth=2)
             return Eval(cp=150, best_move="h8g8", pv=["h8g8"], depth=2)
 
-        async def top_moves(self, board: chess.Board, n: int = 3, depth: int | None = None) -> list[Eval]:
+        async def top_moves(
+            self, board: chess.Board, n: int = 3, depth: int | None = None
+        ) -> list[Eval]:
             return []
 
         async def close(self) -> None:
@@ -484,14 +487,18 @@ def test_38_39_cache_version_tracks_action_and_transport_semantics():
 
 
 @pytest.mark.asyncio
-async def test_40_authenticated_client_boundary_rejects_spoofed_chatgpt_ua(monkeypatch: pytest.MonkeyPatch):
+async def test_40_authenticated_client_boundary_rejects_spoofed_chatgpt_ua(
+    monkeypatch: pytest.MonkeyPatch,
+):
     called = False
 
     async def app(scope: Any, receive: Any, send: Any) -> None:
         nonlocal called
         called = True
         body = b"ok"
-        await send({"type": "http.response.start", "status": 200, "headers": [(b"content-length", b"2")]})
+        await send(
+            {"type": "http.response.start", "status": 200, "headers": [(b"content-length", b"2")]}
+        )
         await send({"type": "http.response.body", "body": body})
 
     monkeypatch.setattr(
