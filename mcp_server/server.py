@@ -225,7 +225,11 @@ TAG_PAIR_REGEX = re.compile(r'\[\s*([A-Za-z0-9_]+)\s+"((?:[^"\\]|\\.)*)"\s*\]', 
 def _unescape_pgn_tag_value(val: str | None) -> str | None:
     if val is None:
         return None
-    return val.replace('\\"', '"').replace("\\\\", "\\")
+    # R4-§E (2026-09-02 ultra audit round 4): strip embedded NUL bytes
+    # from header values so callers see the natural string instead of a
+    # corrupted version (and downstream code does not have to defend
+    # against NULs in metadata).
+    return val.replace("\x00", "").replace('\\"', '"').replace("\\\\", "\\")
 
 
 def _mask_comments_and_escapes(text: str) -> str:
@@ -1668,6 +1672,19 @@ def _strict_top_level_movetext_tokens(text: str) -> list[str]:
         return f" {match.group(1)}{dots} "
 
     top_level = re.sub(r"(?<![A-Za-z0-9_])(\d+)\.(\.\.)?", split_move_number, top_level)
+    # R4-§C (2026-09-02 ultra audit round 4): PGN §8.1 allows whitespace
+    # around the move-number dot (`1 . e4` is equivalent to `1. e4`). The
+    # adjacent regex above only matches `N.` or `N...` with no whitespace.
+    # Collapse the split-digit / split-dot form back into a single move-
+    # number token so the strict validator does not see a bare digit as
+    # a SAN attempt. Only the leading `N` of a token is considered so
+    # mid-token dots (e.g. `4.0.0` would not match the move-number regex
+    # anyway) are unaffected.
+    top_level = re.sub(
+        r"(?<!\S)(\d+)\s+(\.+)(\s+|$)",
+        lambda m: f" {m.group(1)}{m.group(2)} ",
+        top_level,
+    )
     return top_level.split()
 
 
@@ -1972,7 +1989,16 @@ def _clean_conversational_text(text: str) -> str:
 
 def _extract_canonical_pgn_text(text: str) -> str:
     """Isolate the canonical PGN text from markdown fences, conversational preambles, and trailers."""
-    cleaned = text.replace("\u00a0", " ").replace("\u200b", "").replace("\ufeff", "").strip()
+    # R4-§E (2026-09-02 ultra audit round 4): NUL bytes are silently
+    # stripped from the input. PGN parsers do not expect NUL chars and
+    # treating them as part of a SAN token produces confusing errors.
+    cleaned = (
+        text.replace("\x00", "")
+        .replace("\u00a0", " ")
+        .replace("\u200b", "")
+        .replace("\ufeff", "")
+        .strip()
+    )
     # L-04 audit fix: normalize Unicode PGN markers (½-½ etc.) before any
     # further processing so the rest of the parser sees ASCII PGN.
     cleaned = _normalize_unicode_pgn_results(cleaned)
@@ -2023,6 +2049,11 @@ def _extract_game(text: str, strict: bool = False) -> chess.pgn.Game:
 
 
 def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
+    # Validate all PGN headers (FEN, Variant, etc.) before any shortcut
+    # can return — otherwise a PGN like
+    # `[SetUp "1"][FEN "...w - - 0 1 junk"]\n\n*` (only a result token
+    # after the headers) would silently drop the trailing-junk FEN
+    # validation. R4-§A.
     masked_cleaned = _mask_comments_and_escapes(cleaned)
     for m in TAG_PAIR_REGEX.finditer(masked_cleaned):
         tag_name = m.group(1).lower()
@@ -2041,7 +2072,84 @@ def _extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
         if tag_name == "fen":
             fen_val = _unescape_pgn_tag_value(m.group(2))
             if fen_val:
+                # R4-§A (2026-09-02 ultra audit round 4): reject trailing-
+                # junk FENs inside [FEN ...] headers with the same
+                # INVALID_FEN code that `_build_board` uses. The trailing-
+                # junk check lives in `_build_board` for direct-FEN inputs;
+                # for PGN headers we must run it here too so callers see
+                # consistent semantics across endpoints.
+                fen_tokens = fen_val.split()
+                if "/" in fen_val and len(fen_tokens) > 6:
+                    raise ValueError(
+                        f"INVALID_FEN: FEN header value '{fen_val}' has "
+                        f"{len(fen_tokens)} whitespace-separated fields; a "
+                        f"FEN has exactly 6 (placement, side, castling, "
+                        f"en-passant, halfmove, fullmove). The extra "
+                        f"trailing field(s) cannot be parsed."
+                    )
                 _validate_fen_counters(fen_val, strict)
+
+    # R4-§B (2026-09-02 ultra audit round 4): a PGN that consists entirely
+    # of comments (with or without a result token like '*') is a valid
+    # zero-move game. Previously the lenient parser's bare-moves fallback
+    # tried to parse `{just` as a SAN token, producing a confusing
+    # "Move token '{just' could not be parsed" error. Detect this case
+    # before the parser runs, strip comments + variations, and return an
+    # empty game with the supplied headers (and a metadata_warning so
+    # callers see that the input contained no moves).
+    comment_stripped = _mask_comments_and_escapes(cleaned)
+    # Strip inline comments in { ... } (already gone after mask; double-check)
+    comment_stripped = re.sub(r"\{[^{}]*\}", " ", comment_stripped, flags=re.DOTALL)
+    # Strip variations ( ... )
+    while "(" in comment_stripped and ")" in comment_stripped:
+        prev = comment_stripped
+        comment_stripped = re.sub(r"\([^()]*\)", " ", comment_stripped, flags=re.DOTALL)
+        if comment_stripped == prev:
+            break
+    # Now extract just the header block (consecutive leading tags) — the
+    # body should contain only whitespace + an optional result token.
+    body_start = 0
+    for m in TAG_PAIR_REGEX.finditer(comment_stripped):
+        if comment_stripped[body_start : m.start()].strip() == "":
+            body_start = m.end()
+        else:
+            break
+    body = comment_stripped[body_start:].strip()
+    # Reduce body to just its result token if any.
+    body_tokens = body.split()
+    # R4-§B (2026-09-02 ultra audit round 4): the comment-only shortcut
+    # applies only when the body has no moves AND no explicit result
+    # token OTHER than the wildcard `*`. Explicit `1-0`, `0-1`, or
+    # `1/2-1/2` results must flow through the normal analyzer so the
+    # board-derived outcome can be cross-validated against the supplied
+    # result (e.g. a checkmated position with a `Result "0-1"` header
+    # is still analyzed for its checkmate outcome).
+    non_result_body_tokens = [t for t in body_tokens if t not in ("1-0", "0-1", "1/2-1/2", "*")]
+    has_explicit_result = any(t in ("1-0", "0-1", "1/2-1/2") for t in body_tokens)
+    if not non_result_body_tokens and not has_explicit_result:
+        # Comment-only input (no moves, no explicit result token, or
+        # only the wildcard `*`). Build an empty game carrying only the
+        # parsed headers (if any).
+        game = chess.pgn.Game()
+        for m in TAG_PAIR_REGEX.finditer(comment_stripped[:body_start]):
+            tag_name = m.group(1)
+            tag_value = _unescape_pgn_tag_value(m.group(2))
+            if tag_name in game.headers:
+                # Defer to the standard duplicate-detection path in the
+                # analyzer so the comment-only shortcut behaves the same
+                # as any other input with respect to duplicate headers.
+                continue
+            if tag_value is not None:
+                game.headers[tag_name] = tag_value
+        # Preserve the result token if present.
+        for tok in body_tokens:
+            if tok in ("1-0", "0-1", "1/2-1/2", "*"):
+                game.headers["Result"] = tok
+                break
+        # Stash a sentinel so analyze_game can surface the
+        # comment-only metadata_warning.
+        game.comment_only_input = True  # type: ignore[attr-defined]
+        return game
 
     # Translate unicode figurines ONLY in movetext (headers and comments preserved)
     norm_text = _normalize_movetext_figurines(cleaned)
@@ -2554,6 +2662,30 @@ def _validate_fen_counters(cleaned: str, strict: bool) -> tuple[list[str], str]:
     return tokens, cleaned
 
 
+def _validate_requested_depth(depth: Any, tool: str) -> int:
+    """Validate the `depth` argument type for any analysis endpoint.
+
+    R4-§D (2026-09-02 ultra audit round 4): previously non-integer
+    `depth` values raised a raw Python TypeError ("'<' not supported
+    between instances of 'int' and 'str'"). The endpoint now rejects
+    those with `ToolError(INVALID_INPUT)` so every endpoint behaves
+    identically and callers get a structured error.
+
+    Returns the validated integer depth UNCHANGED — the legacy contract
+    is preserved: `requested_depth` carries the caller's raw value, the
+    engine-side `depth` is clamped to `[1, 30]` separately. Only the type
+    check is enforced here; the bounds clamp lives in the per-endpoint
+    body (e.g. `depth = max(1, min(depth, 30))`).
+    """
+    if not isinstance(depth, int) or isinstance(depth, bool):
+        raise _tool_error(
+            "INVALID_INPUT",
+            f"depth must be a positive integer (got {type(depth).__name__}: {depth!r}).",
+            tool,
+        )
+    return depth
+
+
 def _build_board(
     fen_or_pgn: str, moves: list[str] | None = None, strict: bool = False
 ) -> chess.Board:
@@ -2562,6 +2694,7 @@ def _build_board(
         fen_or_pgn.replace("\u00a0", " ")
         .replace("\u200b", "")
         .replace("\ufeff", "")
+        .replace("\x00", "")
         .strip("`'\" \t\r\n")
     )
     if cleaned.lower() in ("startpos", "initial", "start"):
@@ -2569,6 +2702,18 @@ def _build_board(
     else:
         board = None
         tokens = cleaned.split()
+        # R4-§A (2026-09-02 ultra audit round 4): a FEN must have at most 6
+        # whitespace-separated fields. Inputs that look like FENs (contain
+        # `/` and a placement row) but have 7+ fields previously fell
+        # through to PGN parsing, producing a misleading "INVALID_PGN: Move
+        # token '<placement>' could not be parsed" error. Reject them
+        # explicitly here with INVALID_FEN so callers see the real cause.
+        if "/" in cleaned and len(tokens) > 6 and not cleaned.startswith("["):
+            raise ValueError(
+                f"INVALID_FEN: Position '{cleaned}' has {len(tokens)} whitespace-separated "
+                f"fields; a FEN has exactly 6 (placement, side, castling, en-passant, "
+                f"halfmove, fullmove). The extra trailing field(s) cannot be parsed."
+            )
         if 1 <= len(tokens) <= 6 and not cleaned.startswith("[") and not tokens[0].endswith("."):
             if "/" in cleaned:
                 tokens, _ = _validate_fen_counters(cleaned, strict)
@@ -3107,10 +3252,11 @@ async def evaluate_position(
             caller is an LLM and you want to minimize context spend (audit M-05).
 
     Returns:
-        Eval with cp (from White's perspective), mate (from White's perspective),
-        best_move (UCI), pv (principal variation), and Lichess board URLs.
+         Eval with cp (from White's perspective), mate (from White's perspective),
+         best_move (UCI), pv (principal variation), and Lichess board URLs.
     """
     t0 = time.time()
+    depth = _validate_requested_depth(depth, tool="evaluate_position")
     raw_requested_depth = depth
     depth = max(1, min(depth, 30))
     try:
@@ -3221,9 +3367,10 @@ async def top_moves(
         empty `result: []`.
     """
     t0 = time.time()
+    depth = _validate_requested_depth(depth, tool="top_moves")
     raw_requested_depth = depth
-    raw_requested_n = n
     depth = max(1, min(depth, 30))
+    raw_requested_n = n
     clamped_n = max(1, min(n, 20))
     n = clamped_n
     try:
@@ -3838,6 +3985,7 @@ async def classify_move(
         best_move_san, best_line_san, and played_line_san.
     """
     t0 = time.time()
+    depth = _validate_requested_depth(depth, tool="classify_move")
     raw_requested_depth = depth
     depth = max(1, min(depth, 30))
     try:
@@ -4534,9 +4682,10 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
         strict: When True, reject non-canonical SAN syntax, move number mismatches, or metadata discrepancies (default False).
 
     Returns:
-        GameAnalysisResult with player accuracy %, ACPL, blunder/mistake counts, turning points, and game metadata.
+         GameAnalysisResult with player accuracy %, ACPL, blunder/mistake counts, turning points, and game metadata.
     """
     t0 = time.time()
+    depth = _validate_requested_depth(depth, tool="analyze_game")
     raw_requested_depth = depth
     depth = max(1, min(depth, 30))
     try:
@@ -4654,6 +4803,17 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             cleaned_movetext = re.sub(r"\([^()]*\)", " ", cleaned_movetext, flags=re.DOTALL)
             if cleaned_movetext == prev:
                 break
+
+        # R4-§C (2026-09-02 ultra audit round 4): PGN §8.1 allows whitespace
+        # around the move-number dot (`1 . e4` is equivalent to `1. e4`).
+        # The downstream tokenizer expects a single `N.` / `N...` token and
+        # emits spurious "Input SAN 'N' normalized" warnings otherwise. Collapse
+        # digit-then-dots sequences across whitespace before splitting.
+        cleaned_movetext = re.sub(
+            r"(?<!\S)(\d+)\s+(\.+)(?=\s|$)",
+            lambda m: f" {m.group(1)}{m.group(2)} ",
+            cleaned_movetext,
+        )
 
         movetext_tokens = cleaned_movetext.split()
         tok_idx = 0
@@ -4850,6 +5010,20 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
                 termination_header_val = tag_v
 
         metadata_warnings: list[str] = list(lexical_header_warnings)
+
+        # R4-§B (2026-09-02 ultra audit round 4): the input was comment-only
+        # (no moves after stripping comments + variations). Surface a clear
+        # metadata warning in lenient mode so callers see the input was
+        # non-empty but contained no moves. Strict mode does NOT raise on
+        # this — a comment-only PGN with valid headers is not a metadata
+        # inconsistency, so the warning would only confuse the strict
+        # validator (which promotes every metadata_warning to a STRICT_PGN_
+        # ERROR at the bottom of analyze_game).
+        if getattr(game, "comment_only_input", False) and not strict:
+            metadata_warnings.append(
+                "Input PGN contained only comments (and optionally a result "
+                "token) with no moves; returning an empty game."
+            )
 
         # U-14 (2026-09-01): strict mode rejects malformed Date tags.
         # PGN Date is `YYYY.MM.DD`; anything else (e.g. "2026.99.99",
