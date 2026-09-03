@@ -33,7 +33,7 @@ from mcp_server.tools._common import (
 async def evaluate_position(
     fen: str,
     moves: list[str] | None = None,
-    depth: int = 14,
+    depth: int = 22,
     strict: bool = False,
     verbosity: str | None = None,
     ctx: Context | None = None,
@@ -43,7 +43,14 @@ async def evaluate_position(
     Args:
         fen: FEN or PGN string for the position (or position before `moves` are replayed).
         moves: Optional UCI or SAN moves to replay onto the position first.
-        depth: Stockfish search depth (default 14, clamped 1-30).
+        depth: Stockfish search depth (default 22, clamped 1-30). ``evaluate_position``
+            is the on-demand critical-position evaluator — the higher default reflects
+            per-call usage (caller paid the hit). Bump to 24-26 only when d22 still
+            shifts the best move, and to 28-30 only when d24 is unstable.
+            Sweet-spot reference (Stockfish 18): d20 ≈ 782k nodes, d22 ≈ 1.29M,
+            d24 ≈ 2.06M, d30 ≈ 8M. Depth does NOT map linearly to Elo — fixed depth
+            is a budget signal, not a quality signal; ``nodes``/``movetime`` would
+            be more uniform but are out of MCP's parameter surface today.
         strict: When True, reject non-canonical SAN syntax or move numbers (default False).
         verbosity: "full" (default, every field) or "compact" (strips Lichess URLs,
             images, decision_value/engine_eval duplication). Use compact when the

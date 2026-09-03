@@ -60,7 +60,7 @@ class TCPAnalyzer:
         self._client = client
         self.name: str = client.name
         self._lock = asyncio.Lock()
-        self._depth: int = 14
+        self._depth: int = 20  # default; tools pass their own per-tool depth on each call
 
     @classmethod
     async def create(

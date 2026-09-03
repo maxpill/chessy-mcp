@@ -65,7 +65,7 @@ def _estimate_mcp_request_cost(body: bytes) -> float:
         tool_name = str(params.get("name") or params.get("tool") or "")
         args_any: Any = params.get("arguments")
         args = cast(dict[str, Any], args_any) if isinstance(args_any, dict) else {}
-        depth = max(1, min(int(args.get("depth", 14)), 30))
+        depth = max(1, min(int(args.get("depth", 18)), 30))
         if tool_name == "evaluate_position":
             return 1.0 + depth / 14.0
         if tool_name == "top_moves":

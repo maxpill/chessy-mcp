@@ -50,7 +50,7 @@ async def top_moves(
     fen: str,
     moves: list[str] | None = None,
     n: int = 3,
-    depth: int = 14,
+    depth: int = 20,
     strict: bool = False,
     verbosity: str | None = None,
     ctx: Context | None = None,
@@ -60,8 +60,13 @@ async def top_moves(
     Args:
         fen: FEN or PGN string for the position.
         moves: Optional UCI or SAN moves to replay onto the position first.
-        n: Number of candidates to return (default 3, clamped 1-20).
-        depth: Stockfish search depth (default 14, clamped 1-30).
+        n: Number of candidates to return (default 3, clamped 1-20). Note: MultiPV>1
+            costs real Elo on the top line because Stockfish splits budget across
+            candidates — keep at 1 for best-move confirmation, 3 for genuine comparison.
+        depth: Stockfish search depth (default 20, clamped 1-30). MultiPV-per-depth
+            compound costs are non-linear; d20 is the sweet spot for the candidate
+            ranking, d22 when the top two are close and you need them separated,
+            and d24 only for theoretical positions.
         strict: When True, reject non-canonical SAN syntax or move numbers (default False).
 
     Returns:

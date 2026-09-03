@@ -66,7 +66,7 @@ log = logging.getLogger("chessy_mcp.analyze_game")
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
 async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     pgn: str,
-    depth: int = 14,
+    depth: int = 18,
     strict: bool = False,
     ctx: Context | None = None,
 ) -> GameAnalysisResult:
@@ -80,7 +80,14 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
 
     Args:
         pgn: PGN string, annotated game, or move text.
-        depth: Search depth per move (default 14, clamped 1-30).
+        depth: Search depth per move (default 18, clamped 1-30). ``analyze_game`` fans
+            one Stockfish search per mainline ply — default 18 trims compute vs the
+            previous d14 while staying accurate enough to separate inaccuracy/mistake
+            classes. For "find the turning points" mode, d18 is enough. For precise
+            post-mortems where borderline decisions matter, push to 20 or selectively
+            re-classify borderline plies at d22-24. Avoid going above d24 except for
+            3-7 critical positions: nodes scale roughly 5x from d20→d24 and ~10x to d30
+            (Stockfish 18 figures), with sharply diminishing Elo per added depth.
         strict: When True, reject non-canonical SAN syntax, move number mismatches, or metadata discrepancies (default False).
 
     Returns:

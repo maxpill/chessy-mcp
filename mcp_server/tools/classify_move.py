@@ -56,7 +56,7 @@ async def classify_move(
     fen: str,
     move: str | None = None,
     moves: list[str] | None = None,
-    depth: int = 14,
+    depth: int = 20,
     action_type: Literal["play_move", "claim_draw", "claim_draw_with_intended_move"] = "play_move",
     strict: bool = False,
     ctx: Context | None = None,
@@ -74,7 +74,12 @@ async def classify_move(
             Required for `play_move` and `claim_draw_with_intended_move`; optional for
             `claim_draw` (the claim outcome does not depend on any specific move).
         moves: Optional UCI or SAN moves to replay onto the position first.
-        depth: Stockfish search depth (default 14, clamped 1-30).
+        depth: Stockfish search depth (default 20, clamped 1-30). Sweet spot for
+            per-move classification: d20 ≈ 782k nodes, d22 ≈ 1.29M, d24 ≈ 2.06M.
+            Lower depths (16-18) ship a faster batch mode; d24-26 only when
+            borderline moves need extra sharpening. ``classify_move`` is called
+            once per game move, so the default is intentionally high enough to
+            distinguish mistakes/blunders cleanly.
         action_type: Intended chess action ('play_move', 'claim_draw', 'claim_draw_with_intended_move').
         strict: When True, reject non-canonical SAN syntax or move numbers (default False).
 

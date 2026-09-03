@@ -162,7 +162,7 @@ async def _create_analyzer_pool(
     pool = await AnalyzerPool.create(
         stockfish_path(),
         size=pool_size,
-        depth=14,
+        depth=20,  # default ceiling for per-call depth; tools clamp to caller-supplied value
         threads=threads,
         hash_mb=cfg.hash_mb,
         show_wdl=cfg.show_wdl,
