@@ -41,6 +41,10 @@ from mcp_server.cache import (
     eval_cache_key,
 )
 from mcp_server.config import MCPSettings, get_mcp_settings
+from mcp_server.engine.eval_pipeline import (
+    build_terminal_mcpeval,
+    evaluate_zeroing_post_state,
+)
 from mcp_server.engine.identity import build_identity, stockfish_path
 from mcp_server.metrics import metrics
 from mcp_server.models import MCPEval
@@ -402,72 +406,12 @@ async def _evaluate_game_position_cached(
 
     rule_status = evaluate_rule_status(b, history_complete=history_state)
     if rule_status.terminal is not None:
-        if rule_status.terminal == "checkmate":
-            term_outcome = "win" if rule_status.winner == "white" else "loss"
-            term_cp: int | None = None
-            term_mate: int | None = 0
-        else:
-            term_outcome = "draw"
-            term_cp = 0
-            term_mate = None
-
-        terminal_best_action = build_best_action(
-            recommended_action="game_over",
-            rule_status=rule_status,
-            engine_eval=None,
-            board=b,
-            sign=1 if b.turn == chess.WHITE else -1,
-        )
-        terminal_legal_actions = build_legal_actions(
-            rule_status=rule_status,
-            engine_eval=None,
-            board=b,
-            legal_engine_moves=None,
-        )
         return (
-            MCPEval(
-                status=rule_status.terminal,
-                winner=rule_status.winner,
-                cp=term_cp,
-                mate=term_mate,
-                best_move=None,
-                pv=[],
-                depth=0,
+            build_terminal_mcpeval(
+                rule_status=rule_status,
+                board=b,
                 requested_depth=req_d,
-                searched_depth=0,
-                can_claim_draw=False,
-                claim_reasons=[],
-                can_claim_now=False,
-                claim_reasons_now=[],
-                can_claim_with_intended_move=False,
-                claim_moves=[],
-                recommended_action="game_over",
-                best_action="game_over",
-                best_action_type="game_over",
-                best_action_obj=terminal_best_action,
-                legal_actions=terminal_legal_actions,
-                decision_value={
-                    "outcome": term_outcome,
-                    "cp_equivalent": term_cp,
-                    "best_action": "game_over",
-                    "perspective": "white",
-                },
-                engine_eval={
-                    "cp": term_cp,
-                    "mate": term_mate,
-                    "best_move": None,
-                    "pv": [],
-                    "depth": 0,
-                },
-                history_dependent_status=rule_status.history_dependent_status,
-                lichess_url_reproduces_history=rule_status.fen_sufficient_for_status,
-                requires_move_stack=rule_status.requires_move_stack,
-                fen_sufficient_for_status=rule_status.fen_sufficient_for_status,
-                history_completeness=rule_status.history_completeness,
-                repetition_status=rule_status.repetition_status,
-                lichess_url=url,
-                lichess_image=img,
-                **build_identity(pool),
+                pool=pool,
             ),
             True,
         )
