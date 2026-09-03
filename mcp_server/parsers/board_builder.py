@@ -17,7 +17,7 @@ from __future__ import annotations
 import chess
 
 from mcp_server.parsers.move_parser import _parse_move_on_board_with_warning
-from mcp_server.parsers.pgn_canonical import _extract_game
+from mcp_server.parsers.pgn import _extract_game
 from mcp_server.parsers.pgn_validate import (
     _validate_castling_rights,
     _validate_fen_counters,

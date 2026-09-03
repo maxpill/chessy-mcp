@@ -24,7 +24,7 @@ from mcp_server.parsers.move_parser import (
     parse_move_on_board,
     parse_move_on_board_with_warning,
 )
-from mcp_server.parsers.pgn_canonical import (
+from mcp_server.parsers.pgn import (
     FIGURINE_MAP,
     TAG_PAIR_REGEX,
     UNICODE_HYPHEN_MAP,

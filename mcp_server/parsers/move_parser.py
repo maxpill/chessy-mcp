@@ -15,7 +15,7 @@ import re
 import chess
 
 from mcp_server.rules import is_terminal_position
-from mcp_server.parsers.pgn_canonical import _FIGURINE_MAP, _UNICODE_HYPHEN_MAP
+from mcp_server.parsers.pgn import _FIGURINE_MAP, _UNICODE_HYPHEN_MAP
 
 __all__ = [
     "parse_move_on_board",
@@ -23,12 +23,8 @@ __all__ = [
 ]
 
 
-
-
 def parse_move_on_board(board: chess.Board, move_str: str) -> chess.Move:
     return _parse_move_on_board_with_warning(board, move_str)[0]
-
-
 
 
 def parse_move_on_board_with_warning(
@@ -202,8 +198,6 @@ def parse_move_on_board_with_warning(
     raise ValueError(
         f"ILLEGAL_MOVE: Move {move_str!r} is not a valid legal move in position {board.fen()!r}"
     )
-
-
 
 
 # Underscored aliases for backwards-compatible import paths.
