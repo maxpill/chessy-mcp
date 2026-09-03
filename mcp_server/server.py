@@ -1608,6 +1608,11 @@ def _is_canonical_tag_line(line: str) -> bool:
     return bool(re.match(r'^(?:\[\s*[A-Za-z0-9_]+\s+"(?:[^"\\]|\\.)*"\s*\]\s*)+$', stripped))
 
 
+def _strip_promotion_eq(s: str) -> str:
+    """Strip the optional '=' in PGN promotion (e8=Q vs e8Q per §8.1.4)."""
+    return re.sub(r"=([QRBN])$", r"\1", s)
+
+
 def _validate_strict_header_syntax(text: str) -> None:
     """Reject malformed PGN tag lines that tolerant cleaning would otherwise discard."""
     normalized = _normalize_unicode_pgn_results(text)
@@ -1713,9 +1718,31 @@ def _validate_strict_mainline_surface(text: str, game: chess.pgn.Game) -> None:
         move = moves[move_index]
         canonical = board.san(move)
         supplied_san = clean.rstrip("!?")
-        if supplied_san != canonical:
+
+        # Per PGN §8.1.4, promotion can use either '=X' or 'X' form. Strip
+        # the optional '=' so 'e8=Q' and 'e8Q' both compare equal.
+        # python-chess's san() inconsistently emits '+' / '#' for check /
+        # mate moves — some moves like 'Qh5' come back without '+' even
+        # though they give check, while 'Rd8' returns 'Rd8+'. Compare the
+        # base forms (both sides stripped of '+' / '#'), then validate the
+        # supplied marker separately against actual check / mate state.
+        canonical_base = _strip_promotion_eq(canonical.rstrip("+#"))
+        supplied_base = _strip_promotion_eq(supplied_san.rstrip("+#"))
+        if supplied_base != canonical_base:
             raise ValueError(
                 f"STRICT_PGN_ERROR: Non-canonical SAN: found {clean!r}, expected {canonical!r}."
+            )
+        test_board = board.copy()
+        test_board.push(move)
+        is_check = test_board.is_check()
+        is_mate = test_board.is_checkmate()
+        if supplied_san.endswith("+") and not is_check:
+            raise ValueError(
+                f"STRICT_PGN_ERROR: SAN {clean!r} marks check ('+') but the move does not give check."
+            )
+        if supplied_san.endswith("#") and not is_mate:
+            raise ValueError(
+                f"STRICT_PGN_ERROR: SAN {clean!r} marks mate ('#') but the move is not mate."
             )
         board.push(move)
         move_index += 1
@@ -2407,6 +2434,56 @@ def _validate_castling_rights(board: chess.Board, rights_token: str, strict: boo
 
 MAX_HALFMOVE_CLOCK = 10000
 MAX_FULLMOVE_NUMBER = 10000
+
+
+def _validate_pgn_date(date_val: str) -> str | None:
+    """Validate a PGN Date tag value. Returns an error message or None.
+
+    PGN §7.1 allows `????` for unknown year and `??` for unknown month /
+    day. Each component is validated independently; calendar semantics
+    (Apr 31, Sep 31, Feb 29 in non-leap year) only run when all three
+    components are concrete. Caller is responsible for normalizing
+    sentinel values (empty, '?', '????.??.??') to None before calling.
+    """
+    parts = date_val.split(".")
+    if len(parts) != 3:
+        return (
+            f"Invalid Date tag '{date_val}': must match YYYY.MM.DD "
+            f"(with ? wildcards allowed per component)."
+        )
+
+    year_str, month_str, day_str = parts
+
+    if year_str == "????":
+        year: int | None = None
+    elif re.fullmatch(r"(?:19|20)\d{2}", year_str):
+        year = int(year_str)
+    else:
+        return f"Invalid Date tag '{date_val}': year must be 19xx/20xx or '????' for unknown."
+
+    if month_str == "??":
+        month: int | None = None
+    elif re.fullmatch(r"(?:0[1-9]|1[0-2])", month_str):
+        month = int(month_str)
+    else:
+        return f"Invalid Date tag '{date_val}': month must be 01-12 or '??' for unknown."
+
+    if day_str == "??":
+        day: int | None = None
+    elif re.fullmatch(r"(?:0[1-9]|[12]\d|3[01])", day_str):
+        day = int(day_str)
+    else:
+        return f"Invalid Date tag '{date_val}': day must be 01-31 or '??' for unknown."
+
+    if year is not None and month is not None and day is not None:
+        try:
+            import datetime as _dt
+
+            _dt.date(year, month, day)
+        except ValueError as exc:
+            return f"Impossible Date tag '{date_val}': {exc}."
+
+    return None
 
 
 def _validate_fen_counters(cleaned: str, strict: bool) -> tuple[list[str], str]:
@@ -4654,7 +4731,15 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             if tok_idx < len(movetext_tokens):
                 raw_tok = movetext_tokens[tok_idx].strip(".,;:!?")
                 raw_tok_san = raw_tok.rstrip("!?")
-                if raw_tok_san != canonical_san and not re.fullmatch(
+                # Round-3 (further super deep): the old check compared the
+                # raw SAN to canonical_san verbatim. That rejected the valid
+                # PGN §8.1.4 promotion form 'e8Q' (no '=') because
+                # canonical_san is 'e8=Q'. Strip the optional '=' from BOTH
+                # sides so 'e8=Q' and 'e8Q' both compare equal — same
+                # comparison the strict surface validator uses.
+                raw_tok_promotionless = _strip_promotion_eq(raw_tok_san)
+                canonical_promotionless = _strip_promotion_eq(canonical_san)
+                if raw_tok_promotionless != canonical_promotionless and not re.fullmatch(
                     r"[a-h][1-8][a-h][1-8][qrbn]?", raw_tok_san.lower()
                 ):
                     syntax_warnings.append(
@@ -4743,7 +4828,12 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
         date_val = (
             tags_dict.get("date") or tags_dict.get("utcdate") or h.get("Date") or h.get("UTCDate")
         )
-        if date_val in ("????.??.??", "?"):
+        # Round-3 (further super deep): normalize empty / whitespace-only
+        # Date tags to None — they all mean "no date" per PGN §7.1. The
+        # audit found `[Date ""]` silently accepted (the truthy check above
+        # fell through because Python treats "" as falsy) while `[Date " "]`
+        # was rejected — inconsistent. Treat them identically.
+        if date_val is not None and date_val.strip() in ("", "?", "????.??.??"):
             date_val = None
 
         result_movetext = _find_movetext_result(canonical_pgn)
@@ -4785,36 +4875,24 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
         # downstream callers see that the metadata is suspect, even
         # though parsing continues.
         if date_val is not None:
-            if not re.fullmatch(
-                r"(?:19|20)\d{2}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[12]\d|3[01])",
-                date_val,
-            ):
+            # Round-3 (further super deep): the old regex required ALL
+            # three components to be concrete digits, which silently
+            # rejected the per-component wildcards PGN §7.1 allows
+            # (????.09.02, 2026.09.??, 2026.??.02, 2026.??.??). At the
+            # same time it accepted ???? and '?' because of the truthy
+            # fallback above, which was inconsistent. Validate each
+            # component independently:
+            #   - YYYY  |  ????   (year)
+            #   - MM    |  ??     (month)
+            #   - DD    |  ??     (day)
+            # Calendar semantics only run when all three components are
+            # concrete (Apr 31 / Sep 31 / Feb 29 in non-leap year / etc.).
+            _date_err = _validate_pgn_date(date_val)
+            if _date_err is not None:
                 if strict:
-                    metadata_warnings.append(
-                        f"Invalid Date tag '{date_val}': must match YYYY.MM.DD "
-                        f"with month 01-12 and day 01-31."
-                    )
+                    metadata_warnings.append(_date_err)
                 else:
-                    # Lenient: surface the issue without rejecting. A caller
-                    # who is reading metadata only needs to see the warning.
-                    metadata_warnings.append(
-                        f"Invalid Date tag '{date_val}': must match YYYY.MM.DD "
-                        f"with month 01-12 and day 01-31."
-                    )
-            else:
-                # Structural regex passed — now verify calendar semantics.
-                # datetime.date raises ValueError for impossible dates
-                # (Apr 31, Feb 30, Feb 29 in a non-leap year, etc.).
-                try:
-                    yy, mm, dd = (int(p) for p in date_val.split("."))
-                    import datetime as _dt
-
-                    _dt.date(yy, mm, dd)
-                except ValueError as exc:
-                    if strict:
-                        metadata_warnings.append(f"Invalid Date tag '{date_val}': {exc}.")
-                    else:
-                        metadata_warnings.append(f"Impossible Date tag '{date_val}': {exc}.")
+                    metadata_warnings.append(_date_err)
 
         CANONICAL_RESULTS = {"1-0", "0-1", "1/2-1/2", "*"}
         if result_header_raw is not None and result_header_raw != "?":
