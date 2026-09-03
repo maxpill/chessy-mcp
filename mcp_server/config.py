@@ -8,6 +8,7 @@ pydantic-settings so values are validated and documented in one place.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,23 +38,34 @@ class MCPSettings(BaseSettings):
 
     # Cap on concurrent `_evaluate_game_position_cached` calls across all
     # tools. The game analyzer fans out positions, so admission is bounded.
-    max_concurrent_evaluates: int = Field(default=8, validation_alias="CHESS_MCP_MAX_CONCURRENT_EVALUATES")
+    max_concurrent_evaluates: int = Field(
+        default=8, validation_alias="CHESS_MCP_MAX_CONCURRENT_EVALUATES"
+    )
 
     # Ponder (search opponent's likely reply during idle time). Disabled by
     # default because it consumes spare CPU.
     ponder_enabled: bool = Field(default=False, validation_alias="CHESS_MCP_PONDER_ENABLED")
 
     # Periodic pool-stats logging interval (seconds).
-    pool_stats_interval_s: float = Field(default=30.0, validation_alias="CHESS_MCP_POOL_STATS_INTERVAL_S")
+    pool_stats_interval_s: float = Field(
+        default=30.0, validation_alias="CHESS_MCP_POOL_STATS_INTERVAL_S"
+    )
 
     # Syzygy tablebase path. Empty disables tablebases.
     syzygy_path: str = Field(default="", validation_alias="CHESS_MCP_SYZYGY_PATH")
+
+    # Absolute path to the project root (parent of mcp_server/). Used by the
+    # cache-version logic-hash to locate pyproject.toml and core/engines/.
+    # Computed at instantiation from ``__file__`` if not set.
+    project_root: Path = Field(default_factory=lambda: Path(__file__).resolve().parent.parent)
 
     # UCI_ShowWDL: include White-POV Win/Draw/Loss data in responses.
     show_wdl: bool = Field(default=True, validation_alias="CHESS_MCP_SHOW_WDL")
 
     # Multi-tier cache (L1 in-memory + L2 SQLite WAL).
-    cache_db: str = Field(default="/tmp/chess_mcp_eval_cache.sqlite3", validation_alias="CHESS_MCP_CACHE_DB")
+    cache_db: str = Field(
+        default="/tmp/chess_mcp_eval_cache.sqlite3", validation_alias="CHESS_MCP_CACHE_DB"
+    )
 
     # Transport - stdio or streamable HTTP.
     transport: str = Field(default="stdio", validation_alias="CHESS_MCP_TRANSPORT")
