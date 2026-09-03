@@ -87,7 +87,13 @@ def _package_version() -> str:
 # evaluations after a semantic fix, masking the bug forever.
 _LOGIC_FILES = (
     "mcp_server/cache.py",
-    "mcp_server/rules.py",
+    "mcp_server/rules/__init__.py",
+    "mcp_server/rules/constants.py",
+    "mcp_server/rules/terminal.py",
+    "mcp_server/rules/dead_position.py",
+    "mcp_server/rules/status.py",
+    "mcp_server/rules/action_choice.py",
+    "mcp_server/rules/pv.py",
     "mcp_server/models.py",
     "mcp_server/actions.py",
     "mcp_server/server.py",
@@ -201,7 +207,9 @@ def eval_cache_key(
     """Generate canonical cache key for position evaluation."""
     fp = history_fingerprint(board)
     ev = _resolve_engine_version(engine_version)
-    return f"mcp:{CACHE_VERSION}:eng={ev}:eval:hist={history_completeness}:{board.fen()}{fp}:{depth}"
+    return (
+        f"mcp:{CACHE_VERSION}:eng={ev}:eval:hist={history_completeness}:{board.fen()}{fp}:{depth}"
+    )
 
 
 def top_moves_cache_key(
@@ -320,7 +328,9 @@ class SQLiteDiskCache:
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS eval_cache (key TEXT PRIMARY KEY, val TEXT NOT NULL, created_at REAL NOT NULL);"
                 )
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_eval_cache_created ON eval_cache(created_at);")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_eval_cache_created ON eval_cache(created_at);"
+                )
                 conn.commit()
         except Exception:
             pass

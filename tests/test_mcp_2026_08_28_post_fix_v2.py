@@ -130,9 +130,7 @@ async def test_p0_analyze_game_pgn_ending_75_move_loss_blunders():
             pass
 
     server_module._analyzer_pool = _QueenMate()  # type: ignore
-    pgn = (
-        '[SetUp "1"]\n[FEN "7k/5Q2/5K2/8/8/8/8/8 w - - 149 75"]\n[Termination "normal"]\n\n75. Qf8 1/2-1/2\n'
-    )
+    pgn = '[SetUp "1"]\n[FEN "7k/5Q2/5K2/8/8/8/8/8 w - - 149 75"]\n[Termination "normal"]\n\n75. Qf8 1/2-1/2\n'
     res = await server_module.analyze_game(pgn, depth=10)
     assert res.white_blunders >= 1, "analyze_game hidden the blunder under 75-move draw"
 
@@ -154,7 +152,9 @@ async def test_p0_claim_draw_with_forced_mate_is_blunder():
 
     server_module._analyzer_pool = _Mate99()  # type: ignore
     fen = "7k/5Q2/5K2/8/8/8/8/8 w - - 99 51"
-    cl = await server_module.classify_move(fen, "Qg8+", depth=10, action_type="claim_draw_with_intended_move")
+    cl = await server_module.classify_move(
+        fen, "Qg8+", depth=10, action_type="claim_draw_with_intended_move"
+    )
     # The action claims draw — but a forced mate exists; this must be punished.
     assert cl.move_class in (MoveClass.BLUNDER, MoveClass.MISTAKE)
     assert (cl.effective_loss or 0) >= 300
@@ -296,7 +296,9 @@ async def test_p1_top_moves_candidate_post_move_state_consistent():
 def test_p1_cache_version_format_includes_engine_and_build():
     """CACHE_VERSION must bundle git SHA + package version + logic hash so
     a Stockfish binary upgrade invalidates stale cached entries."""
-    assert "+" in CACHE_VERSION, f"CACHE_VERSION must include '+'-separated segments, got {CACHE_VERSION!r}"
+    assert "+" in CACHE_VERSION, (
+        f"CACHE_VERSION must include '+'-separated segments, got {CACHE_VERSION!r}"
+    )
     # It should not be the old "v10" flat version.
     assert CACHE_VERSION != "v10"
 
@@ -550,7 +552,9 @@ def test_p1_logic_hash_changes_when_rules_change():
     import mcp_server.cache as cache_mod
     from mcp_server.cache import _compute_logic_hash
 
-    rules_path = Path(server_module.__file__).resolve().parent / "rules.py"
+    # Probe a file under the new rules package layout (rules/ is a directory
+    # post-phase-12; pick rules/__init__.py as the most-likely-to-be-touched).
+    rules_path = Path(server_module.__file__).resolve().parent / "rules" / "__init__.py"
     original = rules_path.read_text(encoding="utf-8")
     sentinel = "\n# __cache_invalidation_test_marker__\n"
     rules_path.write_text(original + sentinel, encoding="utf-8")
@@ -637,7 +641,9 @@ async def test_p1_single_flight_cancellation_isolation():
     # The external executor must STILL be running. asyncio.shield on the
     # waiter branch must have prevented waiter_a's cancellation from leaking
     # back into the shared future.
-    assert not executor_task.done(), "Cancellation of one waiter must not cancel the external executor"
+    assert not executor_task.done(), (
+        "Cancellation of one waiter must not cancel the external executor"
+    )
 
     # Allow the executor to complete; b should receive the result.
     proceed.set()
