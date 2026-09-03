@@ -48,8 +48,8 @@ from mcp_server.models import (
     MCPMoveAnalysis,
     PlyAnalysisItem,
     TopMovesResult,
-    score_played_move,
 )
+from mcp_server.move_grading import score_played_move  # noqa: E402,F401
 from mcp_server.rules import (
     choose_recommended_action,
     evaluate_rule_status,
