@@ -21,14 +21,13 @@ from mcp_server.parsers.pgn_canonical import _extract_game
 from mcp_server.parsers.pgn_validate import (
     _validate_castling_rights,
     _validate_fen_counters,
-    _validate_pgn_date,
 )
 from mcp_server.rules import format_fen_status_errors
 
 __all__ = [
     "build_board",
-    "history_provenance_for_input",
     "build_board_with_metadata",
+    "history_provenance_for_input",
 ]
 
 

@@ -8,9 +8,7 @@ trimming.
 from __future__ import annotations
 
 import time
-from typing import Literal
 
-import chess
 
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
@@ -23,7 +21,6 @@ from mcp_server.parsers import _build_board_with_metadata, _history_provenance_f
 from mcp_server.server import mcp
 from mcp_server.tools._common import (
     VERBOSITY_COMPACT,
-    VERBOSITY_FULL,
     _compact_mcpeval,
     _resolve_verbosity,
     _tool_error,

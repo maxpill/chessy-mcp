@@ -1,71 +1,29 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
-import io
-import ipaddress
-import json
 import logging
-import math
-import os
-import re
-import subprocess
-import time
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
-from importlib import metadata
-from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any
 
-import chess
-import chess.pgn
-from mcp.server.mcpserver import Context, MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
-from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ToolAnnotations
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from mcp.server.mcpserver import MCPServer
 
-from core.engines.analyzer import pv_to_san
-from core.engines.openings import lookup_opening
 from core.engines.pool import AnalyzerPool
-from core.engines.types import Eval, MoveClass
-from mcp_server.actions import build_played_action
 from mcp_server.cache import (
     CACHE_VERSION as CACHE_VERSION,
 )
-from mcp_server.cache import (
-    MultiTierCache,
-    SingleFlight,
+from mcp_server.cache import (  # noqa: F401
     classify_cache_key,
     eval_cache_key,
+    MultiTierCache,
+    SingleFlight,
     top_moves_cache_key,
 )
-from mcp_server.config import MCPSettings
-from mcp_server.metrics import metrics
-from mcp_server.models import (
-    GameAnalysisResult,
-    MCPEval,
-    MCPMoveAnalysis,
-    PlyAnalysisItem,
-    TopMovesResult,
-)
-from mcp_server.move_grading import score_played_move  # noqa: E402,F401
-from mcp_server.rules import (
-    choose_recommended_action,
-    evaluate_rule_status,
-    format_fen_status_errors,
-    is_locked_dead_position,
-    is_terminal_position,
-    validate_mating_possibility,
-)
-from mcp_server.tcp_analyzer import TCPAnalyzerPool
-from mcp_server.urls import lichess_urls
+from mcp_server.metrics import metrics  # noqa: F401
 
 
-log = logging.getLogger("chessy_mcp.server")
-
-
-from mcp_server.tools._common import (
+# Tools _common helpers (verbosity / error formatting / validation) — used
+# by the tool modules. Re-exported here so the test suite can keep importing
+# them via server_module._tool_error etc.
+from mcp_server.tools._common import (  # noqa: E402,F401
     VERBOSITY_COMPACT,
     VERBOSITY_FULL,
     _compact_mcpeval,
@@ -76,6 +34,18 @@ from mcp_server.tools._common import (
     error_code_for,
     normalize_termination,
 )
+from mcp_server.models import (
+    GameAnalysisResult,  # noqa: F401
+    MCPEval,
+    MCPMoveAnalysis,  # noqa: F401
+    PlyAnalysisItem,  # noqa: F401
+    TopMovesResult,  # noqa: F401
+)
+from mcp_server.move_grading import score_played_move  # noqa: F401
+from mcp_server.tcp_analyzer import TCPAnalyzerPool
+
+
+log = logging.getLogger("chessy_mcp.server")
 
 
 # Draw-claim projection — implementation lives in mcp_server.claims.draw_projection.

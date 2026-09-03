@@ -49,19 +49,19 @@ from mcp_server.tcp_analyzer import TCPAnalyzerPool
 from mcp_server.urls import lichess_urls
 
 __all__ = [
-    "_mcp_lifespan",
-    "_pool_stats_logger",
-    "_ponder_warm_cache",
-    "_maybe_ponder_warm",
     "_create_analyzer_pool",
-    "_get_analyzer_pool",
-    "close_analyzer_pool",
-    "_evaluate_game_position_cached",
     "_eval_via_analyzer_or_pool",
-    "_pool_supports_root_moves",
+    "_evaluate_game_position_cached",
     "_gather_evaluate_positions_bounded",
+    "_get_analyzer_pool",
     "_get_evaluate_semaphore",
+    "_maybe_ponder_warm",
+    "_mcp_lifespan",
+    "_ponder_warm_cache",
+    "_pool_stats_logger",
+    "_pool_supports_root_moves",
     "cache",
+    "close_analyzer_pool",
     "single_flight",
 ]
 

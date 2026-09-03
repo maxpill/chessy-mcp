@@ -7,10 +7,9 @@ aware legal action surface.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
-from typing import Literal, cast
+from typing import cast
 
 import chess
 
@@ -19,12 +18,10 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from mcp_server.actions import build_best_action, build_legal_actions
 from mcp_server.cache import top_moves_cache_key
 from mcp_server.engine import (
     _build_identity,
     _cache,
-    _evaluate_game_position_cached,
     _get_analyzer_pool,
     _single_flight,
 )
@@ -34,17 +31,11 @@ from mcp_server.parsers import _build_board_with_metadata, _history_provenance_f
 from mcp_server.rules import (
     choose_recommended_action,
     evaluate_rule_status,
-    is_locked_dead_position,
-    is_terminal_position,
-    truncate_pv_at_terminal,
-    validate_mating_possibility,
 )
 from mcp_server.server import mcp
 from mcp_server.tools._common import (
     VERBOSITY_COMPACT,
-    VERBOSITY_FULL,
     _compact_mcpeval,
-    _format_exception,
     _resolve_verbosity,
     _tool_error,
     _validate_requested_depth,

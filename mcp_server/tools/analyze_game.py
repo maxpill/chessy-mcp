@@ -27,25 +27,21 @@ from mcp_server.engine import (
     _get_analyzer_pool,
 )
 from mcp_server.metrics import metrics
-from mcp_server.models import GameAnalysisResult, MCPEval, PlyAnalysisItem
+from mcp_server.models import GameAnalysisResult, MCPEval
 from mcp_server.parsers import (
     TAG_PAIR_REGEX,
     _check_multiple_games,
-    _clean_conversational_text,
     _extract_canonical_pgn_text,
     _extract_game_inner,
     _find_movetext_result,
     _infer_result_from_termination,
-    _mask_comments_and_escapes,
     _normalize_movetext_figurines,
-    _normalize_unicode_pgn_results,
     _sanitize_malformed_pgn_header_lines,
     _strip_pgn_escape_lines,
     _strip_promotion_eq,
     _truncate_movetext_at_result,
     _unescape_pgn_tag_value,
     _is_valid_pgn_time_control,
-    _validate_movetext_tokens,
     _validate_pgn_date,
     _validate_strict_header_syntax,
     _validate_strict_mainline_surface,

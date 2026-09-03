@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
-    "BuildIdentity",
     "DEFAULT_STOCKFISH_PATH",
+    "BuildIdentity",
     "build_identity",
     "engine_config",
     "git_sha",
@@ -143,7 +143,7 @@ class BuildIdentity:
     engine_config: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def for_pool(cls, pool: Any) -> "BuildIdentity":
+    def for_pool(cls, pool: Any) -> BuildIdentity:
         """Build a :class:`BuildIdentity` snapshot for the given analyzer pool."""
         return cls(
             service_version=_package_version(),

@@ -9,4 +9,4 @@ from mcp_server.claims.draw_projection import (
     force_draw_outcome,
 )
 
-__all__ = ["force_draw_outcome", "_force_draw_outcome"]
+__all__ = ["_force_draw_outcome", "force_draw_outcome"]

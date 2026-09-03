@@ -26,44 +26,41 @@ import chess.pgn
 from mcp_server.rules import format_fen_status_errors
 
 from mcp_server.parsers.pgn_sanitize import (
-    TAG_PAIR_REGEX as _TAG_PAIR_REGEX_SANITIZE,
     _mask_comments_and_escapes,
     _sanitize_brackets_in_variations_and_comments,
     _strip_pgn_escape_lines,
     _unescape_pgn_tag_value,
 )
 from mcp_server.parsers.pgn_validate import (
-    _is_valid_pgn_time_control,
     _validate_fen_counters,
     _validate_variant,
-    SUPPORTED_VARIANTS,
 )
 
 __all__ = [
     "FIGURINE_MAP",
     "TAG_PAIR_REGEX",
     "UNICODE_HYPHEN_MAP",
-    "normalize_unicode_pgn_results",
-    "normalize_movetext_figurines",
-    "validate_movetext_tokens",
-    "truncate_movetext_at_result",
-    "parse_pgn_game_candidate",
     "check_multiple_games",
-    "normalize_multiline_tags",
-    "has_completed_game_before",
-    "is_prose_line",
-    "is_canonical_tag_line",
-    "strip_promotion_eq",
-    "validate_strict_header_syntax",
-    "strict_top_level_movetext_tokens",
-    "validate_strict_mainline_surface",
-    "extract_canonical_pgn_text",
     "clean_conversational_text",
+    "extract_canonical_pgn_text",
     "extract_game",
     "extract_game_inner",
     "find_movetext_result",
-    "sanitize_malformed_pgn_header_lines",
+    "has_completed_game_before",
     "infer_result_from_termination",
+    "is_canonical_tag_line",
+    "is_prose_line",
+    "normalize_movetext_figurines",
+    "normalize_multiline_tags",
+    "normalize_unicode_pgn_results",
+    "parse_pgn_game_candidate",
+    "sanitize_malformed_pgn_header_lines",
+    "strict_top_level_movetext_tokens",
+    "strip_promotion_eq",
+    "truncate_movetext_at_result",
+    "validate_movetext_tokens",
+    "validate_strict_header_syntax",
+    "validate_strict_mainline_surface",
 ]
 
 

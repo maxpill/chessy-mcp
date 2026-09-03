@@ -21,7 +21,7 @@ from core.engines.analyzer import pv_to_san
 from core.engines.pool import AnalyzerPool
 from core.engines.types import MoveClass
 from mcp_server.actions import build_played_action
-from mcp_server.cache import classify_cache_key, top_moves_cache_key
+from mcp_server.cache import classify_cache_key
 from mcp_server.claims.draw_projection import _force_draw_outcome
 from mcp_server.engine import (
     _cache,
@@ -38,13 +38,11 @@ from mcp_server.parsers import (
 )
 from mcp_server.rules import (
     evaluate_rule_status,
-    is_locked_dead_position,
     is_terminal_position,
 )
 from mcp_server.server import mcp
 from mcp_server.tcp_analyzer import TCPAnalyzerPool
 from mcp_server.tools._common import (
-    _format_exception,
     _tool_error,
     _validate_requested_depth,
     error_code_for,

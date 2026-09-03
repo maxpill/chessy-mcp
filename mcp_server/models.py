@@ -5,16 +5,13 @@ from typing import Any, Literal
 import chess
 from pydantic import BaseModel, Field, model_validator, computed_field
 
-from core.engines.grading import classify_centipawn_loss
 from core.engines.types import Eval, MoveAnalysis, MoveClass
-from core.winprob import win_prob as _win_pct
 from mcp_server.actions import (
     build_best_action,
     build_legal_actions,
     build_played_action,
 )
 from mcp_server.rules import (
-    ChessActionType,
     evaluate_rule_status,
     truncate_pv_at_terminal,
 )
@@ -490,7 +487,7 @@ class PlayedMoveScore(BaseModel):
 # `score_played_move` was extracted to :mod:`mcp_server.move_grading` for
 # navigability. Re-exported here so existing call sites that import from
 # :mod:`mcp_server.models` keep working byte-identical.
-from mcp_server.move_grading import score_played_move  # noqa: E402,F401
+from mcp_server.move_grading import score_played_move  # noqa: E402
 
 class MCPMoveAnalysis(BaseModel):
     model_config = {"populate_by_name": True}

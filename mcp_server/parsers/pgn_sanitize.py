@@ -13,11 +13,11 @@ from typing import Final
 
 __all__ = [
     "TAG_PAIR_REGEX",
-    "unescape_pgn_tag_value",
     "mask_comments_and_escapes",
     "sanitize_brackets_in_variations_and_comments",
-    "strip_pgn_escape_lines",
     "sanitize_malformed_pgn_header_lines",
+    "strip_pgn_escape_lines",
+    "unescape_pgn_tag_value",
 ]
 
 TAG_PAIR_REGEX: Final[re.Pattern[str]] = re.compile(

@@ -14,7 +14,6 @@ Owns:
 
 from __future__ import annotations
 
-import asyncio
 import hmac
 import ipaddress
 import json

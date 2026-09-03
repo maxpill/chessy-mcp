@@ -24,12 +24,12 @@ MAX_FULLMOVE_NUMBER: Final[int] = 10_000
 __all__ = [
     "SUPPORTED_VARIANTS",
     "TIME_CONTROL_STAGE_RE",
-    "validate_variant",
-    "stage_has_positive_number",
     "is_valid_pgn_time_control",
-    "validate_pgn_date",
-    "validate_fen_counters",
+    "stage_has_positive_number",
     "validate_castling_rights",
+    "validate_fen_counters",
+    "validate_pgn_date",
+    "validate_variant",
 ]
 
 
