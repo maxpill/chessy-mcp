@@ -3999,6 +3999,13 @@ async def classify_move(
         # structural error is consistent regardless of position and lets
         # callers distinguish bad input from bad state. Same applies to
         # `play_move` / `claim_draw_with_intended_move` missing a move.
+        # R5 (2026-09-02 round-5 super-deep audit): the move parameter
+        # must be a string. A non-string (int, list, None-as-empty) used
+        # to fall through to `move.strip()` and produce a confusing
+        # AttributeError. Validate type first so the rejection is a clean
+        # INVALID_INPUT message.
+        if move is not None and not isinstance(move, str):
+            raise ValueError(f"INVALID_INPUT: 'move' must be a string, got {type(move).__name__}.")
         if action_type == "claim_draw":
             if move is not None and move.strip() and move.strip() != "(none)":
                 if strict:
