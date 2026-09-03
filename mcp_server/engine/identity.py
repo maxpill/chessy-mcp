@@ -159,6 +159,11 @@ class BuildIdentity:
         }
 
 
+def _engine_version_str(pool: Any) -> str:
+    """Pool-agnostic engine version fingerprint for cache + observability."""
+    return getattr(pool, "engine_version", getattr(pool, "name", "Stockfish"))
+
+
 def _build_identity(pool: Any) -> dict[str, Any]:
     return BuildIdentity.for_pool(pool).as_dict()
 
