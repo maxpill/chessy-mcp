@@ -13,6 +13,11 @@ The two modules split the engine concerns:
 from mcp_server.engine.identity import (
     BuildIdentity,
     DEFAULT_STOCKFISH_PATH,
+    _build_identity,
+    _build_sha,
+    _engine_config,
+    _package_version,
+    _stockfish_path,
     build_identity,
     engine_config,
     git_sha,
@@ -20,6 +25,7 @@ from mcp_server.engine.identity import (
     stockfish_path,
 )
 from mcp_server.engine.pool_factory import (
+    _cache,
     _create_analyzer_pool,
     _eval_via_analyzer_or_pool,
     _evaluate_game_position_cached,
@@ -31,6 +37,7 @@ from mcp_server.engine.pool_factory import (
     _pool_stats_logger,
     _pool_supports_root_moves,
     _ponder_warm_cache,
+    _single_flight,
     cache,
     close_analyzer_pool,
     single_flight,
@@ -47,6 +54,7 @@ __all__ = [
     "package_version",
     "single_flight",
     "stockfish_path",
+    "_cache",
     "_create_analyzer_pool",
     "_eval_via_analyzer_or_pool",
     "_evaluate_game_position_cached",
@@ -58,4 +66,5 @@ __all__ = [
     "_pool_stats_logger",
     "_pool_supports_root_moves",
     "_ponder_warm_cache",
+    "_single_flight",
 ]

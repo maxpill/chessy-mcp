@@ -164,3 +164,11 @@ def _build_identity(pool: Any) -> dict[str, Any]:
 
 
 build_identity = _build_identity
+
+
+# Underscored aliases for backwards-compatible import paths.
+_package_version = _package_version
+_build_sha = _build_sha
+_engine_config = _engine_config
+_build_identity = _build_identity
+_stockfish_path = _stockfish_path

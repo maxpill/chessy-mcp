@@ -71,7 +71,9 @@ log = logging.getLogger("chessy_mcp.engine")
 
 # Module-level cache + SingleFlight — shared across every tool entry point.
 cache: MultiTierCache = MultiTierCache(l1_size=50_000)
+_cache = cache
 single_flight: SingleFlight[Any] = SingleFlight()
+_single_flight = single_flight
 
 
 # P1 audit fix: bound concurrent evaluate calls so analyze_game at depth 30
