@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from mcp_server.domain.rule_status import RuleStatus
-from mcp_server.models import PlayedMoveScore
+from mcp_server.models.legacy import PlayedMoveScore
 
 __all__ = ["finalize_score"]
 
