@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 from mcp_server.cache import MultiTierCache, SingleFlight
 from mcp_server.config import MCPSettings
@@ -73,8 +74,8 @@ class ToolContext:
     ) -> ToolContext:
         """Build a context from a live engine + cache setup.
 
-        Defaults pull from :mod:\`mcp_server.engine\` so the lifespan can
-        construct one with a single ``engine\` handle. Tests pass the
+        Defaults pull from :mod:`mcp_server.engine` so the lifespan can
+        construct one with a single ``engine` handle. Tests pass the
         field-by-field overrides to swap in stubs.
         """
         from mcp_server.engine import (
@@ -124,7 +125,7 @@ class ToolContext:
     ) -> ToolContext:
         """Build a context with sensible defaults for tests.
 
-        Use :func:\`make_test_context\` in conftest.py for a one-line fixture.
+        Use :func:`make_test_context` in conftest.py for a one-line fixture.
         """
         from mcp_server.config import get_mcp_settings
 
@@ -150,7 +151,7 @@ class ToolContext:
 
 
 def _empty_eval():
-    """Fallback ``MCPEval\` for the default tool-context — empty
+    """Fallback ``MCPEval` for the default tool-context — empty
     placeholder used when the test forgets to inject a real evaluator."""
     from mcp_server.models import MCPEval
 

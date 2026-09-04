@@ -18,8 +18,8 @@ from mcp_server.config import get_mcp_settings
 
 __all__ = [
     "LEGACY_CACHE_DB_PATH",
-    "SQLiteDiskCache",
     "_LEGACY_CACHE_DB_PATH",
+    "SQLiteDiskCache",
     "_migrate_legacy_cache",
     "migrate_legacy_cache",
 ]

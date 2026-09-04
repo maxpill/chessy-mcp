@@ -1,9 +1,9 @@
-"""SAN / line-conversion helpers for the ``classify_move\` tool.
+"""SAN / line-conversion helpers for the ``classify_move` tool.
 
-Extracted from :mod:\`mcp_server.tools.classify_move\` so the tool
+Extracted from :mod:`mcp_server.tools.classify_move` so the tool
 entry point stays focused on FastMCP plumbing (cache lookup, single-
 flight, error translation). All helpers here are pure functions over
-``chess.Board\` + ``MCPEval\`.
+``chess.Board` + ``MCPEval`.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def best_san_for_score(
 
 
 def safe_san(board: chess.Board, uci: str) -> str | None:
-    """Best-effort ``san()\` for a UCI string; never raises."""
+    """Best-effort ``san()` for a UCI string; never raises."""
     try:
         m = chess.Move.from_uci(uci.lower())
         if m in board.legal_moves:
@@ -50,7 +50,7 @@ def safe_san(board: chess.Board, uci: str) -> str | None:
 
 
 def played_continuation_san(board_after: chess.Board, eval_after: Any) -> str | None:
-    """Render the engine's post-state PV as SAN, or ``None\` if the position
+    """Render the engine's post-state PV as SAN, or ``None` if the position
     is already terminal."""
     if eval_after.pv and not board_after.is_game_over():
         return pv_to_san(board_after, eval_after.pv)
@@ -58,8 +58,8 @@ def played_continuation_san(board_after: chess.Board, eval_after: Any) -> str | 
 
 
 def to_core_eval(mcp_eval: Any) -> Eval:
-    """Lift an :class:\`MCPEval\` to the core :class:\`Eval\` shape for
-    downstream callers (e.g. ``core.engines.analyzer\` helpers)."""
+    """Lift an :class:`MCPEval` to the core :class:`Eval` shape for
+    downstream callers (e.g. ``core.engines.analyzer` helpers)."""
     return Eval(
         cp=mcp_eval.cp,
         mate=mcp_eval.mate,
@@ -70,8 +70,8 @@ def to_core_eval(mcp_eval: Any) -> Eval:
 
 
 def board_after_for_chess_move(board: chess.Board, chess_move: chess.Move | None) -> chess.Board:
-    """Return a copy of ``board\` with ``chess_move\` pushed, or just the
-    copy when the move is ``None\` (claim_draw path)."""
+    """Return a copy of ``board` with ``chess_move` pushed, or just the
+    copy when the move is ``None` (claim_draw path)."""
     b = board.copy(stack=True)
     if chess_move is not None:
         b.push(chess_move)
@@ -98,12 +98,12 @@ def build_classification(
     action_type: str,
     syntax_warning: str | None,
 ) -> MCPMoveAnalysis:
-    """Single construction path for :class:\`MCPMoveAnalysis\`.
+    """Single construction path for :class:`MCPMoveAnalysis`.
 
     Replaces the two divergent builders previously in
-    :mod:\`mcp_server.tools.classify_move\` (the ``pool.classify_move\`
-    fast-path that called :meth:\`MCPMoveAnalysis.from_analysis\` and the
-    standard path that called :class:\`MCPMoveAnalysis\` directly).
+    :mod:`mcp_server.tools.classify_move` (the ``pool.classify_move`
+    fast-path that called :meth:`MCPMoveAnalysis.from_analysis` and the
+    standard path that called :class:`MCPMoveAnalysis` directly).
 
     Audit invariants preserved: B-01..B-03, P0, P1, P2, P3, U-02..U-15.
     """

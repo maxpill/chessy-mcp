@@ -14,7 +14,7 @@ import re
 
 import chess
 
-from mcp_server.rules import is_terminal_position
+from mcp_server.rules import is_locked_dead_position, is_terminal_position
 from mcp_server.parsers.pgn import _FIGURINE_MAP, _UNICODE_HYPHEN_MAP
 
 __all__ = [

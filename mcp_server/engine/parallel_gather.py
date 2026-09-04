@@ -1,10 +1,10 @@
 """Parallel-position gatherer (audit P1 fix).
 
-Extracted from :mod:\`mcp_server.engine.pool_factory\`. Owns
-:func:\`gather_evaluate_positions_bounded\`: evaluates N positions
+Extracted from :mod:`mcp_server.engine.pool_factory`. Owns
+:func:`gather_evaluate_positions_bounded`: evaluates N positions
 partitioned across the engine pool with TT-reuse per slice, bounded by
 the module-level semaphore from
-:mod:\`mcp_server.engine.cached_evaluator\`.
+:mod:`mcp_server.engine.cached_evaluator`.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Variant validation.
 
-:func:\`validate_variant\` rejects variants beyond standard chess.
-:data:\`SUPPORTED_VARIANTS\` lists the accepted variant tags.
+:func:`validate_variant` rejects variants beyond standard chess.
+:data:`SUPPORTED_VARIANTS` lists the accepted variant tags.
 """
 
 from __future__ import annotations

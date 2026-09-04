@@ -174,7 +174,7 @@ def build_best_action(
     rule_status: Any,
     engine_eval: Any | None = None,
     board: Any | None = None,
-    sign: int = 1,  # noqa: ARG001 — kept for back-compat with audit invariants
+    sign: int = 1,
 ) -> dict[str, Any]:
     if rule_status.terminal is not None:
         if rule_status.terminal == "checkmate":
@@ -221,7 +221,7 @@ def build_best_action(
 
 def build_legal_actions(
     rule_status: Any,
-    engine_eval: Any | None,  # noqa: ARG001 — kept for back-compat
+    engine_eval: Any | None,
     board: Any | None,
     legal_engine_moves: list[Any] | None = None,
 ) -> list[dict[str, Any]]:

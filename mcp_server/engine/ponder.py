@@ -1,9 +1,9 @@
 """Ponder-warming background tasks.
 
-Extracted from :mod:\`mcp_server.engine.pool_factory\`. Owns the
-provenance-preserving :func:\`ponder_warm_cache\` background eval and
-the :func:\`maybe_ponder_warm\` dispatcher that schedules it after a
-successful :func:\`cached_evaluator.evaluate_game_position_cached\` call.
+Extracted from :mod:`mcp_server.engine.pool_factory`. Owns the
+provenance-preserving :func:`ponder_warm_cache` background eval and
+the :func:`maybe_ponder_warm` dispatcher that schedules it after a
+successful :func:`cached_evaluator.evaluate_game_position_cached` call.
 """
 
 from __future__ import annotations

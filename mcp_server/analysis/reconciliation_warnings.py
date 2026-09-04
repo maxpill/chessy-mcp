@@ -1,17 +1,17 @@
 """Reconciliation warnings — strict-mode rejection + contradiction findings.
 
-Extracted from :mod:\`mcp_server.analysis.result_reconciliation\`. Owns
-the four ``emit_*\` warning helpers + :func:\`compute_result_inferred\`:
+Extracted from :mod:`mcp_server.analysis.result_reconciliation`. Owns
+the four ``emit_*` warning helpers + :func:`compute_result_inferred`:
 
-  * :func:\`emit_strict_termination_warning\` — strict-mode rejection of
+  * :func:`emit_strict_termination_warning` — strict-mode rejection of
     unknown Termination tokens that don't normalize to a FIDE value.
-  * :func:\`emit_contradiction_warnings\` — Termination says draw, Result
+  * :func:`emit_contradiction_warnings` — Termination says draw, Result
     says decisive — and the symmetrical mismatches.
-  * :func:\`emit_premature_draw_warning\` — draw agreement declared
+  * :func:`emit_premature_draw_warning` — draw agreement declared
     before either side completed a move.
-  * :func:\`infer_from_termination\` — winner/loser grammar in the
+  * :func:`infer_from_termination` — winner/loser grammar in the
     Termination header that triggers a Result inference.
-  * :func:\`compute_result_inferred\` — the ``result_inferred\` field
+  * :func:`compute_result_inferred` — the ``result_inferred` field
     on the response: board-derived result if available, else the
     canonical Result token when header and movetext agreed on
     unterminated.
@@ -26,7 +26,7 @@ def infer_from_termination(termination_header: str | None) -> str | None:
     """Infer the PGN Result token from a Termination header's wording.
 
     Only winner/loser grammar triggers an inference; ambiguous terminations
-    (``Normal\`, ``Unterminated\`) leave the result alone so the caller can
+    (``Normal`, ``Unterminated`) leave the result alone so the caller can
     fall back to the board truth.
     """
     if not termination_header:
@@ -48,8 +48,8 @@ def emit_strict_termination_warning(
     """Strict mode rejects Termination tokens that don't normalize to a
     known FIDE value AND don't contain a recognised lowercase keyword.
 
-    The strict-pass at the end of ``analyze_game\` promotes this warning
-    to a ``STRICT_PGN_ERROR\`.
+    The strict-pass at the end of ``analyze_game` promotes this warning
+    to a ``STRICT_PGN_ERROR`.
     """
     if not (strict and termination_header):
         return
@@ -142,9 +142,9 @@ def compute_result_inferred(
     result_header_raw: str | None,
     result_movetext: str | None,
 ) -> str | None:
-    """``result_inferred\` on the response: the board-derived result if
+    """``result_inferred` on the response: the board-derived result if
     available, else the canonical Result token when both header and
-    movetext agreed it was unterminated (``*\`).
+    movetext agreed it was unterminated (``*`).
     """
     if result_board is not None:
         return result_board

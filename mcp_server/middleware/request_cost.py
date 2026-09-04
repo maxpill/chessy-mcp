@@ -1,9 +1,9 @@
 """MCP request cost estimator (audit P1 admission control).
 
-Extracted from :mod:\`mcp_server.middleware.request_logger\`. Owns
-:func:\`estimate_mcp_request_cost\` — a per-tool approximation of the
+Extracted from :mod:`mcp_server.middleware.request_logger`. Owns
+:func:`estimate_mcp_request_cost` — a per-tool approximation of the
 CPU admission cost given the request body. Used by
-:class:\`ASGIRequestLoggerMiddleware\` to charge the rate limiter
+:class:`ASGIRequestLoggerMiddleware` to charge the rate limiter
 fairly per tool.
 """
 

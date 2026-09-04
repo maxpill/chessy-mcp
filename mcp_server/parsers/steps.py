@@ -22,7 +22,6 @@ from mcp_server.parsers.pgn_sanitize import (
 
 __all__ = [
     "MaskComments",
-    "NormalizePunctuation",
     "StripEscapeLines",
     "StripPromotionEq",
     "canonical_pgn_pipeline",

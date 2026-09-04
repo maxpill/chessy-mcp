@@ -1,8 +1,8 @@
 """Engine lifespan + pool-stats logger.
 
-Extracted from :mod:\`mcp_server.engine.pool_factory\`. Owns the
-:func:\`mcp_lifespan\` FastMCP lifespan handler (eager pool init, warm
-search, periodic pool-stats logging) and the :func:\`pool_stats_logger\`
+Extracted from :mod:`mcp_server.engine.pool_factory`. Owns the
+:func:`mcp_lifespan` FastMCP lifespan handler (eager pool init, warm
+search, periodic pool-stats logging) and the :func:`pool_stats_logger`
 background task.
 """
 

@@ -1,9 +1,9 @@
 """``MoveClassifier`` service — thin orchestration facade.
 
 The actual per-move classification logic already lives as a focused
-sequence of helper calls inside :mod:\`mcp_server.tools.classify_move\`.
+sequence of helper calls inside :mod:`mcp_server.tools.classify_move`.
 Phase 21 extracts that orchestration into a typed service object with
-constructor-injected dependencies, leaving the ``classify_move\` MCP
+constructor-injected dependencies, leaving the ``classify_move` MCP
 tool as a thin dispatcher.
 
 The service is intentionally NOT a re-implementation: it delegates to
@@ -13,22 +13,19 @@ shape-validity rules must keep firing in the same conditions).
 
 Public surface:
 
-  * :class:\`MoveClassifier\` — :meth:\`classify\` returns a populated
-    ``MCPMoveAnalysis\`; constructor takes async + pure-function deps
+  * :class:`MoveClassifier` — :meth:`classify` returns a populated
+    ``MCPMoveAnalysis`; constructor takes async + pure-function deps
     so tests can construct one with stubs.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Literal
+from collections.abc import Awaitable, Callable
 
 import chess
-from core.engines.analyzer import pv_to_san
-from core.engines.types import Eval, MoveAnalysis, MoveClass
+from core.engines.types import Eval, MoveClass
 
-from mcp_server.actions import build_played_action
 from mcp_server.claims.draw_projection import force_draw_outcome
 from mcp_server.models import MCPMoveAnalysis, MCPEval, PlayedMoveScore
 from mcp_server.parsers import (
@@ -45,7 +42,7 @@ log = logging.getLogger("chessy_mcp.analysis.move_classifier")
 
 
 class _ValidationOutcome:
-    """Bundled output of :func:\`validate_classify_input\`: board, rule
+    """Bundled output of :func:`validate_classify_input`: board, rule
     status, parsed move (if any), and a structural warning to surface
     on the response."""
 
@@ -140,14 +137,14 @@ class MoveClassifier:
     """Per-move classification service.
 
     Constructor-injected dependencies:
-      * :meth:\`evaluate_position\` — async ``(board, depth, pool,
+      * :meth:`evaluate_position` — async ``(board, depth, pool,
         requested_depth, history_complete) -> (MCPEval, cache_hit)``.
-      * :meth:\`compute_score\` — pure ``(board, move, eval_before,
+      * :meth:`compute_score` — pure ``(board, move, eval_before,
         eval_after, board_after, eval_played, action_type) ->
-        PlayedMoveScore\``. Default wires :func:\`score_played_move\`.
-      * :meth:\`build_classification\` — pure ``(analysis, fen_before,
-        fen_after, ...) -> MCPMoveAnalysis\``. Default wires
-        :meth:\`MCPMoveAnalysis.from_analysis\`.
+        PlayedMoveScore``. Default wires :func:`score_played_move`.
+      * :meth:`build_classification` — pure ``(analysis, fen_before,
+        fen_after, ...) -> MCPMoveAnalysis``. Default wires
+        :meth:`MCPMoveAnalysis.from_analysis`.
     """
 
     def __init__(
@@ -186,7 +183,7 @@ class MoveClassifier:
 
         Caller is responsible for the verification-step reflow on
         ``MISTAKE/BLUNDER + matches engine best`` so the
-        :class:\`MCPMoveAnalysis\` builder sees the post-verification
+        :class:`MCPMoveAnalysis` builder sees the post-verification
         verdict.
         """
         board = outcome.board
@@ -253,8 +250,8 @@ class MoveClassifier:
 
         Returns the (possibly updated) eval_before, eval_after, score,
         and a bool indicating whether verification ran. Caller passes
-        the result into :meth:\`MCPMoveAnalysis.from_analysis\` so the
-        response's ``classification_verified\` reflects the actual
+        the result into :meth:`MCPMoveAnalysis.from_analysis` so the
+        response's ``classification_verified` reflects the actual
         outcome (no silent downgrading).
         """
         verification_attempted = False

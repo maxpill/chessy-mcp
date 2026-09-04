@@ -1,9 +1,9 @@
-"""Back-compat shim — :mod:\`mcp_server.engine\` was split into focused
+"""Back-compat shim — :mod:`mcp_server.engine` was split into focused
 modules in Phase 24.
 
 This module is kept so existing test monkeypatch paths like
-\`monkeypatch.setattr(\"mcp_server.engine.pool_factory._evaluate_game_position_cached\", ...)\`
-keep working. New code should import from :mod:\`mcp_server.engine\`
+`monkeypatch.setattr(\"mcp_server.engine.pool_factory._evaluate_game_position_cached\", ...)`
+keep working. New code should import from :mod:`mcp_server.engine`
 directly.
 """
 

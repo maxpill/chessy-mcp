@@ -1,8 +1,8 @@
 """FEN counter validation (halfmove clock + fullmove number + EP / halfmove consistency).
 
-:func:\`validate_fen_counters\` validates the halfmove / fullmove
+:func:`validate_fen_counters` validates the halfmove / fullmove
 counters and the EP / halfmove historical consistency check (audit
-P1). Constants :data:\`MAX_HALFMOVE_CLOCK\` + :data:\`MAX_FULLMOVE_NUMBER\`
+P1). Constants :data:`MAX_HALFMOVE_CLOCK` + :data:`MAX_FULLMOVE_NUMBER`
 bound the accepted range.
 """
 
@@ -18,7 +18,7 @@ MAX_FULLMOVE_NUMBER: Final[int] = 10_000
 def validate_fen_counters(cleaned: str, strict: bool) -> tuple[list[str], str]:
     """Validate halfmove clock + fullmove number + EP/halfmove historical consistency.
 
-    Returns ``(tokens, cleaned_to_parse)``. Raises ``ValueError\` on any
+    Returns ``(tokens, cleaned_to_parse)``. Raises ``ValueError` on any
     invalid counter when strict=True, or when the value is unparseable /
     negative. Non-strict mode also raises on hard impossibilities
     (negative, unparseable, halfmove_clock > MAX) but permits non-historical

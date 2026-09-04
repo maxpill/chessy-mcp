@@ -1,7 +1,7 @@
 """Zeroing-post-state evaluator (audit U-02 helper).
 
-Extracted from :mod:\`mcp_server.engine.eval_pipeline\`. The original
-inline block (was inside :func:\`_evaluate_game_position_cached\`) was
+Extracted from :mod:`mcp_server.engine.eval_pipeline`. The original
+inline block (was inside :func:`_evaluate_game_position_cached`) was
 lifting the engine's best zeroing move, re-evaluating the post-state,
 and reporting a winning cp/mate when draw pollution was suppressing
 the root score. Lifts that pure decision into a focused helper.
@@ -36,7 +36,7 @@ async def evaluate_zeroing_post_state(
     b: chess.Board,
     best_move_uci: str,
     depth: int,
-    pool: "AnalyzerPool | TCPAnalyzerPool",
+    pool: AnalyzerPool | TCPAnalyzerPool,
 ) -> ZeroingPostState:
     """If the engine's best move is zeroing and ``b.halfmove_clock >= 100``
     and the position isn't already terminal, re-eval the post-state from the

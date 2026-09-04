@@ -1,9 +1,9 @@
 """Client-IP detection from ASGI scope.
 
-Extracted from :mod:\`mcp_server.middleware.request_logger\`. Owns:
+Extracted from :mod:`mcp_server.middleware.request_logger`. Owns:
 
-  * :func:\`is_trusted_proxy_peer\` — true for loopback / private IPs.
-  * :func:\`effective_client_ip\` — picks the X-Forwarded-For value when
+  * :func:`is_trusted_proxy_peer` — true for loopback / private IPs.
+  * :func:`effective_client_ip` — picks the X-Forwarded-For value when
     the peer is a trusted proxy, falls back to the raw peer.
 """
 

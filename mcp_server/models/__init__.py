@@ -15,32 +15,28 @@ from mcp_server.models.history import HistoryBlock
 from mcp_server.models.mcpeval import MCPEval
 from mcp_server.models.mcpeval_factory import attach_factory
 from mcp_server.models.policy import PolicyBlock
-
-# Bind ``from_eval`` so MCPEval.from_eval(...) keeps working unchanged.
-attach_factory(MCPEval)
-
-# ``score_played_move`` lives in :mod:`mcp_server.move_grading` for
-# navigability. To break the circular import (``mcp_server.move_grading``
-# uses ``MCPEval`` / ``PlayedMoveScore`` from this package), expose it via
-# a function that defers the actual import to call time.
-
-
-def score_played_move(*args: Any, **kwargs: Any) -> Any:
-    from mcp_server.move_grading import score_played_move as _impl
-
-    return _impl(*args, **kwargs)
-
-
-# Other models that lived in the legacy ``mcp_server/models.py`` and
-# remained unchanged. Splitting them out is on the Phase 18 follow-up.
 from core.engines.types import MoveClass
-from mcp_server.models.legacy import (  # noqa: E402
+from mcp_server.models.legacy import (
     GameAnalysisResult,
     MCPMoveAnalysis,
     PlayedMoveScore,
     PlyAnalysisItem,
     TopMovesResult,
 )
+
+# Bind ``from_eval`` so MCPEval.from_eval(...) keeps working unchanged.
+attach_factory(MCPEval)
+
+
+# ``score_played_move`` lives in :mod:`mcp_server.move_grading` for
+# navigability. To break the circular import (``mcp_server.move_grading``
+# uses ``MCPEval`` / ``PlayedMoveScore`` from this package), expose it via
+# a function that defers the actual import to call time.
+def score_played_move(*args, **kwargs):
+    from mcp_server.move_grading import score_played_move as _impl
+
+    return _impl(*args, **kwargs)
+
 
 __all__ = [
     "ActionBlock",

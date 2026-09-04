@@ -17,23 +17,19 @@ from __future__ import annotations
 
 import hmac
 import logging
-from typing import Any, cast
+from typing import cast
 
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from mcp_server.middleware.client_ip import effective_client_ip, is_trusted_proxy_peer
+from mcp_server.middleware.client_ip import effective_client_ip
 from mcp_server.middleware.rate_limit import TokenBucketRateLimiter
-from mcp_server.middleware.request_cost import estimate_mcp_request_cost
 
 
 __all__ = [
     "ASGIRequestLoggerMiddleware",
     "TokenBucketRateLimiter",
     "_build_app",
-    "_effective_client_ip",
-    "_estimate_mcp_request_cost",
-    "_is_trusted_proxy_peer",
     "main",
 ]
 

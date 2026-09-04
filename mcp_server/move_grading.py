@@ -62,12 +62,12 @@ _score_standard_cp = score_standard_cp
 
 __all__ = [
     "MoveGrader",
-    "_is_before_winning",
-    "_is_mover_forced_win",
-    "_material_balance",
     "_is_after_losing",
     "_is_after_winning",
+    "_is_before_winning",
     "_is_down_material",
+    "_is_mover_forced_win",
+    "_material_balance",
     "_score_blundered_terminal_draw",
     "_score_claim_draw_action",
     "_score_conceded_draw",

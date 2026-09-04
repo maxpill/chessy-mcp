@@ -1,6 +1,6 @@
 """FEN castling-rights validation (audit U-09 + P3).
 
-:func:\`validate_castling_rights\` validates the FEN castling rights
+:func:`validate_castling_rights` validates the FEN castling rights
 field symmetrically. Strict mode rejects tokens that reference
 non-existent rooks. Non-strict mode silently strips invalid chars.
 """
@@ -31,7 +31,7 @@ def validate_castling_rights(board: chess.Board, rights_token: str, strict: bool
     "QQ", "QK" therefore contain a duplicate that is not a real FEN.
     Both strict and non-strict mode preserve python-chess's deduplication
     behavior (the canonical rights field has at most one of each character
-    anyway). The ``fen_was_canonicalized\` flag in the response tells
+    anyway). The ``fen_was_canonicalized` flag in the response tells
     callers when this happened.
     """
     if not rights_token or rights_token == "-":

@@ -1,6 +1,6 @@
 """MultiPV candidate evaluator (one candidate = one MCPEval entry).
 
-Extracted from :mod:\`mcp_server.analysis.top_moves_finder\`. Owns the
+Extracted from :mod:`mcp_server.analysis.top_moves_finder`. Owns the
 per-candidate post-state evaluation: zeroing-move re-eval (audit
 B-04/B-05), candidate claim policy, candidate action object, and the
 post-terminal outcome dict.
@@ -34,7 +34,7 @@ async def evaluate_candidate(
     depth: int,
     needs_post_eval: bool,
 ) -> MCPEval:
-    """Build the :class:\`MCPEval\` entry for one MultiPV candidate.
+    """Build the :class:`MCPEval` entry for one MultiPV candidate.
 
     Audit B-04/B-05/C-03 invariants: zeroing-move post-state is re-eval'd
     when multipv looks draw-polluted, but the candidate's reported cp/mate
@@ -162,7 +162,7 @@ async def _walk_candidate_post_state(
 ]:
     """Push the candidate move, re-eval the zeroing post-state if needed,
     and collect audit-relevant fields. Returns a 12-tuple matching the
-    receiver signature in :func:\`evaluate_candidate\`.
+    receiver signature in :func:`evaluate_candidate`.
 
     Raises on any decode / parse error so the caller can swallow it and
     fall back to a no-op candidate row.

@@ -18,7 +18,7 @@ These functions are side-effect free; the orchestrator handles the I/O.
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import chess
 

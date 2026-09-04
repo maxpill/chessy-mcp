@@ -30,8 +30,8 @@ from mcp_server.parsers.pgn.unicode import (
 from mcp_server.parsers.pgn_sanitize import _mask_comments_and_escapes
 
 __all__ = [
-    "strip_promotion_eq",
     "strict_top_level_movetext_tokens",
+    "strip_promotion_eq",
     "validate_movetext_tokens",
     "validate_strict_mainline_surface",
 ]

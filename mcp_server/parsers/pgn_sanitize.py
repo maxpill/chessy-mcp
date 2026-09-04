@@ -11,6 +11,11 @@ from __future__ import annotations
 import re
 from typing import Final
 
+from mcp_server.parsers.pgn.multiline_tags import (
+    is_canonical_tag_line as _is_canonical_tag_line,
+    normalize_multiline_tags as _normalize_multiline_tags,
+)
+
 __all__ = [
     "TAG_PAIR_REGEX",
     "mask_comments_and_escapes",
@@ -23,8 +28,6 @@ __all__ = [
 TAG_PAIR_REGEX: Final[re.Pattern[str]] = re.compile(
     r'\[\s*([A-Za-z0-9_]+)\s+"((?:[^"\\]|\\.)*)"\s*\]', re.DOTALL
 )
-
-
 
 
 def unescape_pgn_tag_value(val: str | None) -> str | None:

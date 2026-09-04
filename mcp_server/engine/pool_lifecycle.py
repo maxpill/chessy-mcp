@@ -1,23 +1,22 @@
 """Analyzer pool lifecycle — creation, lookup, and capability probes.
 
-Extracted from :mod:\`mcp_server.engine.pool_factory\`. The pool itself
-lives in :mod:\`core.engines.pool\` (subprocess pool) or
-:mod:\`mcp_server.tcp_analyzer\` (TCP pool); this module owns the
-:func:\`_create_analyzer_pool\` factory, the lifespan-aware lookup
-:func:\`_get_analyzer_pool\`, the runtime capability probe
-:func:\`_pool_supports_root_moves\`, and the dispatcher
-:func:\`_eval_via_analyzer_or_pool\`.
+Extracted from :mod:`mcp_server.engine.pool_factory`. The pool itself
+lives in :mod:`core.engines.pool` (subprocess pool) or
+:mod:`mcp_server.tcp_analyzer` (TCP pool); this module owns the
+:func:`_create_analyzer_pool` factory, the lifespan-aware lookup
+:func:`_get_analyzer_pool`, the runtime capability probe
+:func:`_pool_supports_root_moves`, and the dispatcher
+:func:`_eval_via_analyzer_or_pool`.
 
-The :func:\`close_analyzer_pool\` teardown is also here.
+The :func:`close_analyzer_pool` teardown is also here.
 """
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import logging
 import os
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import chess
 
@@ -84,7 +83,7 @@ async def create_analyzer_pool(
     return pool
 
 
-async def get_analyzer_pool(ctx: "Context | None" = None) -> AnalyzerPool | TCPAnalyzerPool:
+async def get_analyzer_pool(ctx: Context | None = None) -> AnalyzerPool | TCPAnalyzerPool:
     """Fetch the live analyzer pool from the FastMCP lifespan context.
 
     Falls back to the legacy lazy-init path when called outside a request
@@ -155,7 +154,7 @@ async def eval_via_analyzer_or_pool(
 
 
 def stockfish_path() -> str:
-    """Local import shim — delegates to :mod:\`mcp_server.engine.identity\`."""
+    """Local import shim — delegates to :mod:`mcp_server.engine.identity`."""
     from mcp_server.engine.identity import stockfish_path as _impl
 
     return _impl()

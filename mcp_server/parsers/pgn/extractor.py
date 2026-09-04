@@ -2,19 +2,19 @@
 
 Layered approach:
 
-    :func:\`extract_canonical_pgn_text\` — first-pass cleaner: NUL/zero-width /
+    :func:`extract_canonical_pgn_text` — first-pass cleaner: NUL/zero-width /
     Unicode-result normalization, markdown fence ranking, conversational
     preamble/trailer trim, returns raw text the caller can then parse.
-    :func:\`extract_game\` — public entry point; pre-sanitizes headers,
+    :func:`extract_game` — public entry point; pre-sanitizes headers,
     multi-game-checks, canonicalizes, parses, applies strict-mode surface
-    checks. Returns a :class:\`chess.pgn.Game\`.
-    :func:\`extract_game_inner\` — parsing-only path used by both the public
-    ``extract_game\` and re-entry from ``parse_pgn_game_candidate\`. Implements
+    checks. Returns a :class:`chess.pgn.Game`.
+    :func:`extract_game_inner` — parsing-only path used by both the public
+    ``extract_game` and re-entry from ``parse_pgn_game_candidate`. Implements
     comment-only input shortcut (audit R4-§B), FEN validation, and bare-moves
-    fallback (audit P0). Lives in :mod:\`mcp_server.parsers.pgn.game_inner\`.
-    :func:\`parse_pgn_game_candidate\` — delegate to ``chess.pgn.read_game\`
+    fallback (audit P0). Lives in :mod:`mcp_server.parsers.pgn.game_inner`.
+    :func:`parse_pgn_game_candidate` — delegate to ``chess.pgn.read_game`
     with preflight checks. Lives in
-    :mod:\`mcp_server.parsers.pgn.parse_candidate\`.
+    :mod:`mcp_server.parsers.pgn.parse_candidate`.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def extract_canonical_pgn_text(text: str) -> str:
 
 
 def extract_game(text: str, strict: bool = False) -> chess.pgn.Game:
-    """Extract a ``chess.pgn.Game\` from raw, dirty, annotated, or conversational text."""
+    """Extract a ``chess.pgn.Game` from raw, dirty, annotated, or conversational text."""
     sanitized, _header_warnings = sanitize_malformed_pgn_header_lines(text, strict=strict)
     check_multiple_games(sanitized)
     canonical = extract_canonical_pgn_text(sanitized)

@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
+from collections.abc import Awaitable, Callable
 
 import chess
 import chess.pgn
@@ -42,8 +43,6 @@ if TYPE_CHECKING:
     from mcp.server.mcpserver import Context
 
     from mcp_server.models import GameAnalysisResult, MCPEval
-    from mcp_server.tcp_analyzer import TCPAnalyzerPool
-    from core.engines.pool import AnalyzerPool
 
 from mcp_server.analysis.game_validation import GameMetadata, extract_game_metadata
 from mcp_server.analysis.mainline_parser import parse_mainline
@@ -103,13 +102,13 @@ class GameAnalyzer:
 
     def __init__(
         self,
-        get_pool: Callable[["Context | None"], Awaitable["EnginePool"]],
-        evaluate_positions: Callable[..., Awaitable[list[tuple["MCPEval", bool]]]],
+        get_pool: Callable[[Context | None], Awaitable[EnginePool]],
+        evaluate_positions: Callable[..., Awaitable[list[tuple[MCPEval, bool]]]],
         compute_metrics: Callable[
-            [list[chess.Board], list[chess.Move], list["MCPEval"]], GameMetrics
+            [list[chess.Board], list[chess.Move], list[MCPEval]], GameMetrics
         ],
-        identity: Callable[["EnginePool"], dict[str, Any]],
-        engine_version: Callable[["EnginePool"], str],
+        identity: Callable[[EnginePool], dict[str, Any]],
+        engine_version: Callable[[EnginePool], str],
     ) -> None:
         self._get_pool = get_pool
         self._evaluate_positions = evaluate_positions
@@ -134,7 +133,7 @@ class GameAnalyzer:
         depth: int,
         *,
         strict: bool,
-        ctx: "Context | None",
+        ctx: Context | None,
         metrics: Any | None = None,
     ) -> GameAnalysisResult:
         """Run a full PGN game analysis. Returns a populated

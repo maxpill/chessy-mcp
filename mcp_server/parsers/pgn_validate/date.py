@@ -1,7 +1,7 @@
 """PGN Date tag validation.
 
-:func:\`validate_pgn_date\` returns an error message or ``None\`.
-PGN §7.1 allows ``????\` for unknown year and ``??\` for unknown month
+:func:`validate_pgn_date` returns an error message or ``None`.
+PGN §7.1 allows ``????` for unknown year and ``??` for unknown month
 / day. Calendar semantics (Apr 31, etc.) only run when all three
 components are concrete.
 """
@@ -15,8 +15,8 @@ import re
 def validate_pgn_date(date_val: str) -> str | None:
     """Validate a PGN Date tag value. Returns an error message or None.
 
-    Caller is responsible for normalizing sentinel values (empty, ``?\`,
-    ``????.??.??\`) to ``None\` before calling.
+    Caller is responsible for normalizing sentinel values (empty, ``?`,
+    ``????.??.??`) to ``None` before calling.
     """
     parts = date_val.split(".")
     if len(parts) != 3:

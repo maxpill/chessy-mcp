@@ -2,23 +2,23 @@
 
 The split into focused modules (Phase 24):
 
-  * :mod:\`mcp_server.engine.identity\` — version / git SHA / engine
-    configuration snapshot via the :class:\`BuildIdentity\` dataclass,
+  * :mod:`mcp_server.engine.identity` — version / git SHA / engine
+    configuration snapshot via the :class:`BuildIdentity` dataclass,
     plus Stockfish binary path resolution.
-  * :mod:\`mcp_server.engine.pool_lifecycle\` — pool creation, lifespan-
+  * :mod:`mcp_server.engine.pool_lifecycle` — pool creation, lifespan-
     aware lookup, capability probes (root_moves), and the analyzer-or-
     pool eval dispatcher.
-  * :mod:\`mcp_server.engine.lifespan\` — FastMCP lifespan handler +
+  * :mod:`mcp_server.engine.lifespan` — FastMCP lifespan handler +
     pool-stats logger.
-  * :mod:\`mcp_server.engine.cached_evaluator\` — single-position eval
+  * :mod:`mcp_server.engine.cached_evaluator` — single-position eval
     with rule status, terminal short-circuit, multi-tier cache, single-
     flight, U-02 zeroing post-state, P0 rule-aware best-move override,
     identity stamping, ponder warming.
-  * :mod:\`mcp_server.engine.zeroing_post_state\` — U-02 pure helper.
-  * :mod:\`mcp_server.engine.parallel_gather\` — N-position parallel
+  * :mod:`mcp_server.engine.zeroing_post_state` — U-02 pure helper.
+  * :mod:`mcp_server.engine.parallel_gather` — N-position parallel
     gather with TT reuse (audit P1).
-  * :mod:\`mcp_server.engine.ponder\` — background cache warmer.
-  * :mod:\`mcp_server.engine.eval_pipeline\` — terminal / zeroing post
+  * :mod:`mcp_server.engine.ponder` — background cache warmer.
+  * :mod:`mcp_server.engine.eval_pipeline` — terminal / zeroing post
     helpers used by the cached evaluator.
 """
 
@@ -30,7 +30,7 @@ from mcp_server.engine.cached_evaluator import (
     cache,
     single_flight,
 )
-from mcp_server.engine.identity import (
+from mcp_server.engine.identity import (  # noqa: F401
     BuildIdentity,
     DEFAULT_STOCKFISH_PATH,
     _build_identity,

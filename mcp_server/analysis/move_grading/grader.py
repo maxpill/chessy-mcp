@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import chess
 
@@ -29,8 +29,8 @@ class MoveGrader:
     def __init__(
         self,
         *,
-        win_prob_fn: Optional[Callable[[float], float]] = None,
-        cp_classifier: Optional[Callable[[int], "MoveClass"]] = None,  # noqa: F821
+        win_prob_fn: Callable[[float], float] | None = None,
+        cp_classifier: Callable[[int], MoveClass] | None = None,  # noqa: F821
     ) -> None:
         self._win_prob_fn = win_prob_fn if win_prob_fn is not None else win_prob_fn_default()
         self._cp_classifier = (

@@ -176,10 +176,7 @@ async def classify_move(
                 best_line_san = pv_to_san(outcome.board, eval_before.pv)
             if best_line_san is None:
                 best_line_san = best_san
-            played_line_san = played_san
             played_continuation = played_continuation_san(board_after, eval_after)
-            if played_continuation and played_san is not None:
-                played_line_san = f"{played_san} {played_continuation}"
 
             if verification_attempted:
                 from core.engines.types import MoveClass
@@ -223,7 +220,7 @@ async def classify_move(
 
 
 def _uses_pool_classify_fast_path(pool: Any, outcome: Any) -> bool:
-    """Custom analyzer pools (test fixtures) expose ``classify_move\`. The
+    """Custom analyzer pools (test fixtures) expose ``classify_move`. The
     standard pool types do not — keep the audit-aligned slow path."""
     return (
         outcome.chess_move is not None
@@ -242,9 +239,9 @@ def _build_from_pool_classify(
     action_type: str,
     syntax_warning: str | None,
 ) -> MCPMoveAnalysis:
-    """Build an :class:\`MCPMoveAnalysis\` from a pool-classify's
-    ``MoveAnalysis\` output. Delegates to the single
-    :func:\`build_classification\` builder so both paths produce
+    """Build an :class:`MCPMoveAnalysis` from a pool-classify's
+    ``MoveAnalysis` output. Delegates to the single
+    :func:`build_classification` builder so both paths produce
     identical responses.
 
     Audit invariants preserved byte-for-byte: B-01..B-03, P0, P1, P2,
@@ -283,7 +280,6 @@ def _build_from_pool_classify(
 
         best_san = pv_to_san(board, [eval_bef.best_move]) if eval_bef.best_move else None
     best_line_san = ma.best_line_san or best_san
-    played_line_san = ma.played_line_san or played_san
     played_continuation = None
     if eval_aft.pv and not board_after.is_game_over():
         from core.engines.analyzer import pv_to_san

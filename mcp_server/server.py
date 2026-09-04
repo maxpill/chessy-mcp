@@ -23,7 +23,7 @@ from mcp_server.metrics import metrics  # noqa: F401
 # Tools _common helpers (verbosity / error formatting / validation) — used
 # by the tool modules. Re-exported here so the test suite can keep importing
 # them via server_module._tool_error etc.
-from mcp_server.tools._common import (  # noqa: E402,F401
+from mcp_server.tools._common import (  # noqa: F401
     VERBOSITY_COMPACT,
     VERBOSITY_FULL,
     _compact_mcpeval,
@@ -36,7 +36,7 @@ from mcp_server.tools._common import (  # noqa: E402,F401
 )
 from mcp_server.models import (
     GameAnalysisResult,  # noqa: F401
-    MCPEval,
+    MCPEval,  # noqa: F401
     MCPMoveAnalysis,  # noqa: F401
     PlyAnalysisItem,  # noqa: F401
     TopMovesResult,  # noqa: F401

@@ -1,25 +1,25 @@
 """PGN validation: variant + TimeControl + dates + castling + FEN counters.
 
-Phase 30: package-ized from :mod:\`mcp_server.parsers.pgn_validate\`
+Phase 30: package-ized from :mod:`mcp_server.parsers.pgn_validate`
 (303 lines) into four focused modules:
 
-  * :mod:\`mcp_server.parsers.pgn_validate.variant\` — :func:\`validate_variant\`
-    + :data:\`SUPPORTED_VARIANTS\`.
-  * :mod:\`mcp_server.parsers.pgn_validate.time_control\` — TimeControl
-    tag grammar validation (:func:\`is_valid_pgn_time_control\`,
-    :func:\`stage_has_positive_number\`).
-  * :mod:\`mcp_server.parsers.pgn_validate.date\` — :func:\`validate_pgn_date\`.
-  * :mod:\`mcp_server.parsers.pgn_validate.castling\` — :func:\`validate_castling_rights\`
+  * :mod:`mcp_server.parsers.pgn_validate.variant` — :func:`validate_variant`
+    + :data:`SUPPORTED_VARIANTS`.
+  * :mod:`mcp_server.parsers.pgn_validate.time_control` — TimeControl
+    tag grammar validation (:func:`is_valid_pgn_time_control`,
+    :func:`stage_has_positive_number`).
+  * :mod:`mcp_server.parsers.pgn_validate.date` — :func:`validate_pgn_date`.
+  * :mod:`mcp_server.parsers.pgn_validate.castling` — :func:`validate_castling_rights`
     (U-09 + P3 audit).
-  * :mod:\`mcp_server.parsers.pgn_validate.fen_counters\` — :func:\`validate_fen_counters\`
+  * :mod:`mcp_server.parsers.pgn_validate.fen_counters` — :func:`validate_fen_counters`
     (P1 audit).
 
-Module-level :data:\`MAX_HALFMOVE_CLOCK\` + :data:\`MAX_FULLMOVE_NUMBER\`
-consts live in :mod:\`mcp_server.parsers.pgn_validate.fen_counters\`.
+Module-level :data:`MAX_HALFMOVE_CLOCK` + :data:`MAX_FULLMOVE_NUMBER`
+consts live in :mod:`mcp_server.parsers.pgn_validate.fen_counters`.
 
 Public symbols are re-exported here for backward-compatible import paths
-(\`from mcp_server.parsers.pgn_validate import validate_variant\`,
-\`from mcp_server.parsers.pgn_validate import _validate_variant\`, etc.).
+(`from mcp_server.parsers.pgn_validate import validate_variant`,
+`from mcp_server.parsers.pgn_validate import _validate_variant`, etc.).
 """
 
 from __future__ import annotations

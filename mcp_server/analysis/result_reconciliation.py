@@ -2,15 +2,15 @@
 
 Takes the final board, headers, movetext result, and orchestration
 metadata, and returns the canonical ``(result, termination, warnings)``
-triple plus :class:\`ResultInferred\`. Side-effect free; no engine calls.
+triple plus :class:`ResultInferred`. Side-effect free; no engine calls.
 
 The reconciliation order matters and is documented inline:
 
-  1. Board truth: if the final board is terminal, derive ``result\`
-     and ``auto_termination\` from the rule status (checkmate vs draw).
+  1. Board truth: if the final board is terminal, derive ``result`
+     and ``auto_termination` from the rule status (checkmate vs draw).
   2. Header / movetext disagreement: warn if the three signals disagree.
-  3. Header truth: if no board truth, prefer ``Result\` header or
-     movetext token (skipping ``*\` / ``?\`).
+  3. Header truth: if no board truth, prefer ``Result` header or
+     movetext token (skipping ``*` / ``?`).
   4. Termination inference: lift the result from a winner/loser
      Termination header when otherwise unknown.
   5. Mating possibility: drop a "mate impossible" finding if the
@@ -21,8 +21,8 @@ The reconciliation order matters and is documented inline:
      premature-draw-agreement detection.
 
 Termination-resolution logic lives in
-:mod:\`mcp_server.analysis.termination_resolution\`. Warning emission
-lives in :mod:\`mcp_server.analysis.reconciliation_warnings\`.
+:mod:`mcp_server.analysis.termination_resolution`. Warning emission
+lives in :mod:`mcp_server.analysis.reconciliation_warnings`.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class ReconciledResult:
-    """Final result/termination triple produced by :func:\`reconcile_result\`.
+    """Final result/termination triple produced by :func:`reconcile_result`.
 
     Public surface is the dataclass; module-level functions are private.
     """
@@ -62,18 +62,18 @@ class ReconciledResult:
 
 def reconcile_result(
     final_board: chess.Board,
-    metadata: "GameMetadata",
+    metadata: GameMetadata,
     *,
     result_movetext: str | None,
     moves_count: int,
     strict: bool,
 ) -> ReconciledResult:
-    """Reconcile PGN ``Result\` / ``Termination\` headers, movetext token,
+    """Reconcile PGN ``Result` / ``Termination` headers, movetext token,
     and board truth into a single canonical answer.
 
-    The function copies ``metadata.metadata_warnings\` into a local list
+    The function copies ``metadata.metadata_warnings` into a local list
     and appends to it — callers receive the merged warnings plus the
-    canonical ``result\` / ``termination\` values.
+    canonical ``result` / ``termination` values.
     """
     warnings: list[str] = list(metadata.metadata_warnings)
     rule_final = evaluate_rule_status(final_board, history_complete="complete")
@@ -148,12 +148,12 @@ def reconcile_result(
 def _pick_result_value(
     *,
     result_board: str | None,
-    metadata: "GameMetadata",
+    metadata: GameMetadata,
     result_movetext: str | None,
     warnings: list[str],
 ) -> str | None:
-    """Pick the canonical ``result\` string given the board truth, header,
-    and movetext token. Mutates ``warnings\` with disagreement findings."""
+    """Pick the canonical ``result` string given the board truth, header,
+    and movetext token. Mutates ``warnings` with disagreement findings."""
     if result_board is not None:
         result_val = result_board
         if metadata.result_header and metadata.result_header not in ("*", "?"):

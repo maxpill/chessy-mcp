@@ -96,7 +96,7 @@ def _collect_tags(header_section: str) -> dict[str, str]:
 
 def _header_lookup(
     tags_dict: dict[str, str],
-    game_headers: "chess.pgn.Headers",
+    game_headers: chess.pgn.Headers,
     tag_name: str,
     header_attr: str,
 ) -> str | None:
@@ -127,7 +127,7 @@ def _validate_elo_value(value: str | None) -> str | None:
 
 def extract_game_metadata(
     canonical_pgn: str,
-    game: "chess.pgn.Game",
+    game: chess.pgn.Game,
     *,
     strict: bool,
     lexical_warnings: list[str] | None = None,

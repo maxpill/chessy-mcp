@@ -1,11 +1,11 @@
-"""Termination resolution for :func:\`reconcile_result\`.
+"""Termination resolution for :func:`reconcile_result`.
 
-Extracted from :mod:\`mcp_server.analysis.result_reconciliation\`. Owns
-:func:\`resolve_termination\` — cross-checking the PGN ``Termination``
+Extracted from :mod:`mcp_server.analysis.result_reconciliation`. Owns
+:func:`resolve_termination` — cross-checking the PGN ``Termination``
 header against the board state and the auto-derived termination. Also
-:func:\`is_concurrent_board_match\`, the truth table that decides when
-the header and board-trace are concurrent (e.g. ``stalemate\` +
-``is_stalemate()\`).
+:func:`is_concurrent_board_match`, the truth table that decides when
+the header and board-trace are concurrent (e.g. ``stalemate` +
+``is_stalemate()`).
 """
 
 from __future__ import annotations

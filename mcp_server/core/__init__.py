@@ -1,11 +1,11 @@
 """``mcp_server.core`` — cross-cutting types: domain type aliases and the
-unified DI :class:\`ToolContext\`.
+unified DI :class:`ToolContext`.
 
 Currently exposes:
 
-  * :mod:\`mcp_server.core.types\` — Position / Move / San / CpLoss etc.
-  * :mod:\`mcp_server.core.context\` — :class:\`ToolContext\` (frozen DI
-    container) + :func:\`make_test_context\` factory.
+  * :mod:`mcp_server.core.types` — Position / Move / San / CpLoss etc.
+  * :mod:`mcp_server.core.context` — :class:`ToolContext` (frozen DI
+    container) + :func:`make_test_context` factory.
 """
 
 from __future__ import annotations

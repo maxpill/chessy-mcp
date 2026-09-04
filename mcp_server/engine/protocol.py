@@ -30,7 +30,7 @@ class EnginePoolLike(Protocol):
 
     async def evaluate(
         self,
-        board: "chess.Board",
+        board: chess.Board,
         *,
         depth: int = ...,
         root_moves: Any = ...,

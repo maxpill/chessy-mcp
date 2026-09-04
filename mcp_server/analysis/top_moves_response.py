@@ -1,8 +1,8 @@
 """Top-moves response builder.
 
-Extracted from :mod:\`mcp_server.analysis.top_moves_finder\`. Owns the
-:class:\`TopMovesResult\` construction logic — the boilerplate at the
-end of :meth:\`TopMovesFinder.run\` that copies cache-hit metadata,
+Extracted from :mod:`mcp_server.analysis.top_moves_finder`. Owns the
+:class:`TopMovesResult` construction logic — the boilerplate at the
+end of :meth:`TopMovesFinder.run` that copies cache-hit metadata,
 action objects, and engine identity into a typed response.
 """
 
@@ -12,11 +12,9 @@ from typing import Any
 
 import chess
 
-from core.engines.pool import AnalyzerPool
 
 from mcp_server.engine import _build_identity
 from mcp_server.models import MCPEval, TopMovesResult
-from mcp_server.tcp_analyzer import TCPAnalyzerPool
 
 
 def build_top_moves_response(

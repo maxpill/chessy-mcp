@@ -1,16 +1,16 @@
 """``chess.pgn.read_game`` preflight wrapper.
 
-Extracted from :mod:\`mcp_server.parsers.pgn.extractor\`. Wraps
-:func:\`chess.pgn.read_game\` with the preflight checks needed to
+Extracted from :mod:`mcp_server.parsers.pgn.extractor`. Wraps
+:func:`chess.pgn.read_game` with the preflight checks needed to
 match audit P0 / R4-§B behavior:
 
-  * Variant validation (via :func:\`_validate_variant\`).
-  * FEN counter validation (via :func:\`_validate_fen_counters\`).
+  * Variant validation (via :func:`_validate_variant`).
+  * FEN counter validation (via :func:`_validate_fen_counters`).
   * Attached-asterisk + bracket sanitization.
   * movetext token validation.
   * Game-errors surface with reasonable error messages.
 
-Returns ``None\` on parse failure that *might* succeed elsewhere
+Returns ``None` on parse failure that *might* succeed elsewhere
 (e.g. when the caller can fall back to bare-moves parsing).
 """
 
@@ -30,7 +30,7 @@ from mcp_server.parsers.pgn_sanitize import (
     _sanitize_brackets_in_variations_and_comments,
     _unescape_pgn_tag_value,
 )
-from mcp_server.parsers.pgn_validate import _validate_fen_counters, _validate_variant
+from mcp_server.parsers.pgn_validate import _validate_variant
 from mcp_server.rules import format_fen_status_errors
 
 
@@ -39,9 +39,9 @@ _ATTACHED_ASTERISK_CASTLE_RE = re.compile(r"\b(O-O-O|O-O)([\+#\?!]*)\*")
 
 
 def parse_pgn_game_candidate(text: str, strict: bool = False) -> chess.pgn.Game | None:
-    """Wrap :func:\`chess.pgn.read_game\` with preflight checks.
+    """Wrap :func:`chess.pgn.read_game` with preflight checks.
 
-    Returns ``None\` on parse failure that *might* succeed elsewhere.
+    Returns ``None` on parse failure that *might* succeed elsewhere.
     """
     try:
         masked_for_tags = _mask_comments_and_escapes(text)

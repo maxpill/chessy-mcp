@@ -34,17 +34,18 @@ from mcp_server.rules.terminal import (
     is_terminal_position,
 )
 from mcp_server.rules.action_choice import choose_recommended_action
-from mcp_server.rules.constants import ChessActionType  # noqa: E402,F401
-from mcp_server.domain.rule_status import RuleStatus  # noqa: E402,F401 — re-export for back-compat
+from mcp_server.rules.constants import ChessActionType
+from mcp_server.domain.rule_status import RuleStatus
 
 __all__ = [
     "ACTION_EQUIVALENCE_THRESHOLD_CP",
     "ACTION_MATERIAL_DOWN_THRESHOLD_CP",
     "ACTION_POLICY_NAME",
     "ACTION_POLICY_VERSION",
-    "ChessActionType",
     "FORCED_WIN_THRESHOLD_CP",
     "TERMINAL_VS_HISTORY_INDEPENDENT",
+    "ChessActionType",
+    "RuleStatus",
     "can_checkmate",
     "choose_recommended_action",
     "evaluate_rule_status",
@@ -52,7 +53,6 @@ __all__ = [
     "is_locked_dead_position",
     "is_terminal_position",
     "make_rule_status",
-    "RuleStatus",
     "truncate_pv_at_terminal",
     "validate_mating_possibility",
 ]

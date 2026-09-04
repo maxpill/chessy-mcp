@@ -2,14 +2,14 @@
 
 Modules split the middleware concerns (Phase 28):
 
-  * :mod:\`mcp_server.middleware.rate_limit\` — weighted token-bucket rate
+  * :mod:`mcp_server.middleware.rate_limit` — weighted token-bucket rate
     limiter.
-  * :mod:\`mcp_server.middleware.request_logger\` — request logging,
+  * :mod:`mcp_server.middleware.request_logger` — request logging,
     weighted admission control, token authentication, ASGI app
-    composition, and the CLI ``main()\` entry point.
-  * :mod:\`mcp_server.middleware.client_ip\` — :func:\`effective_client_ip\`
-    + :func:\`is_trusted_proxy_peer\` (X-Forwarded-For unwrap).
-  * :mod:\`mcp_server.middleware.request_cost\` — per-tool admission cost
+    composition, and the CLI ``main()` entry point.
+  * :mod:`mcp_server.middleware.client_ip` — :func:`effective_client_ip`
+    + :func:`is_trusted_proxy_peer` (X-Forwarded-For unwrap).
+  * :mod:`mcp_server.middleware.request_cost` — per-tool admission cost
     estimator.
 """
 

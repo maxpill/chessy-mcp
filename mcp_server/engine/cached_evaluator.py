@@ -1,23 +1,23 @@
 """Cached single-position evaluator.
 
-Extracted from :mod:\`mcp_server.engine.pool_factory\`. Owns
-:func:\`evaluate_game_position_cached\` — the per-position entry point
+Extracted from :mod:`mcp_server.engine.pool_factory`. Owns
+:func:`evaluate_game_position_cached` — the per-position entry point
 that ties rule status, terminal short-circuits, multi-tier cache,
 SingleFlight coalescing, the U-02 zeroing-post-state re-eval, the P0
 75-move / 50-move rule-aware override, identity stamping, and ponder
 warming into one place.
 
-The :func:\`evaluate_zeroing_post_state\` helper in
-:mod:\`mcp_server.engine.zeroing_post_state\` (lifted from
-:mod:\`mcp_server.engine.eval_pipeline\`) is now an explicit
+The :func:`evaluate_zeroing_post_state` helper in
+:mod:`mcp_server.engine.zeroing_post_state` (lifted from
+:mod:`mcp_server.engine.eval_pipeline`) is now an explicit
 co-conspirator of the U-02 path.
 
 Module-level state lives here:
 
-  * :data:\`cache\` — :class:\`MultiTierCache\`, shared with every tool.
-  * :data:\`single_flight\` — :class:\`SingleFlight\`, coalesces in-flight
+  * :data:`cache` — :class:`MultiTierCache`, shared with every tool.
+  * :data:`single_flight` — :class:`SingleFlight`, coalesces in-flight
     cache misses.
-  * :data:\`evaluate_semaphore\` — async bound on concurrent evaluate calls.
+  * :data:`evaluate_semaphore` — async bound on concurrent evaluate calls.
     Created lazily on first call so it always belongs to the live event loop.
 """
 

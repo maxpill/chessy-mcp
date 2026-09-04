@@ -251,7 +251,7 @@ def score_cp_to_mate(
     mover_mate_after: int | None,
     baseline_mover: int,
     optimal_claim_recommended: bool,
-    after_mover: int,  # noqa: ARG001
+    after_mover: int,
     is_best_engine_move: bool,
     canonical_best_action: str,
     rule_before: RuleStatus,

@@ -8,7 +8,6 @@ unit-test and to substitute test doubles for the win-probability fn.
 
 from __future__ import annotations
 
-from typing import Any
 
 import chess
 

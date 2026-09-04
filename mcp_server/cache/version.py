@@ -19,7 +19,6 @@ import os
 import re
 import subprocess
 from importlib import metadata
-from pathlib import Path
 
 from mcp_server.config import get_mcp_settings
 

@@ -24,7 +24,7 @@ def score_claim_draw_action(
     *,
     action_type: str,
     move: chess.Move,
-    eval_before: MCPEval,  # noqa: ARG001 — kept for parity with original signature
+    eval_before: MCPEval,
     rule_before: RuleStatus,
     canonical_best_action: str,
     before_mover: int,
@@ -135,7 +135,7 @@ def score_conceded_draw(
     opponent_will_claim: bool,
     rule_after: RuleStatus,
     eval_after: MCPEval,
-    is_before_winning: bool,  # noqa: ARG001 — kept for parity
+    is_before_winning: bool,
     raw_cpl: int,
     raw_board_delta: int,
     before_mover: int,
@@ -192,9 +192,9 @@ def score_optimal_claim_recommended(
     canonical_best_action: str,
     action_type: str,
     is_after_losing: bool,
-    is_after_winning: bool,  # noqa: ARG001
+    is_after_winning: bool,
     is_down_material: bool,
-    is_mover_forced_win: bool,  # noqa: ARG001
+    is_mover_forced_win: bool,
     before_mover: int,
     after_mover: int,
     opp_mat: int,

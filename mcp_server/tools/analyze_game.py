@@ -16,7 +16,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from mcp_server.analysis.game_analyzer import GameAnalyzer
-from mcp_server.metrics import metrics  # noqa: F401 — re-exported via server
+from mcp_server.metrics import metrics
 from mcp_server.models import GameAnalysisResult
 from mcp_server.server import mcp
 from mcp_server.tools._common import (

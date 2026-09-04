@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import chess
 
-from mcp_server.analysis.move_grading.dispatcher import dispatch_score
+from mcp_server.analysis.move_grading.dispatcher import dispatch_score  # noqa: F401
 from mcp_server.analysis.move_grading.grader import MoveGrader
 from mcp_server.analysis.move_grading.helpers import (
     is_after_losing,

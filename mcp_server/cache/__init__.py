@@ -47,16 +47,16 @@ _LOGIC_HASH = _compute_logic_hash()
 
 
 __all__ = [
-    "AsyncLRUCache",
     "CACHE_VERSION",
     "ENGINE_VERSION_KEY",
     "LEGACY_CACHE_DB_PATH",
-    "MultiTierCache",
-    "SQLiteDiskCache",
-    "SingleFlight",
     "_LEGACY_CACHE_DB_PATH",
     "_LOGIC_FILES",
     "_LOGIC_HASH",
+    "AsyncLRUCache",
+    "MultiTierCache",
+    "SQLiteDiskCache",
+    "SingleFlight",
     "_compute_logic_hash",
     "_git_sha",
     "_migrate_legacy_cache",

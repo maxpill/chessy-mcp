@@ -7,7 +7,7 @@ Lives in its own module so :class:`MCPEval` (which embeds it in
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from mcp_server.rules.constants import (
     ACTION_EQUIVALENCE_THRESHOLD_CP,

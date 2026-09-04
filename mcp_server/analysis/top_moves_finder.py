@@ -9,15 +9,15 @@ Pipeline:
      candidate's post-state for draw-pollution, build MCPEval entries,
      sort by chess-correct rank, persist to cache, pick root action.
 
-Per-candidate evaluation lives in :mod:\`mcp_server.analysis.candidate_evaluator\`.
-Response building lives in :mod:\`mcp_server.analysis.top_moves_response\`.
+Per-candidate evaluation lives in :mod:`mcp_server.analysis.candidate_evaluator`.
+Response building lives in :mod:`mcp_server.analysis.top_moves_response`.
 """
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 import chess
 from mcp.server.mcpserver import Context
@@ -34,7 +34,6 @@ from mcp_server.engine import (
     _single_flight,
 )
 from mcp_server.engine.identity import _engine_version_str
-from mcp_server.metrics import metrics
 from mcp_server.models import MCPEval, TopMovesResult
 from mcp_server.parsers import _build_board_with_metadata, _history_provenance_for_input
 from mcp_server.rules import evaluate_rule_status
@@ -43,7 +42,7 @@ from mcp_server.tools._common import VERBOSITY_COMPACT, _compact_mcpeval
 
 @dataclass
 class TopMovesOutput:
-    """Result wrapper for :meth:\`TopMovesFinder.run\`."""
+    """Result wrapper for :meth:`TopMovesFinder.run`."""
 
     result: TopMovesResult
     cache_hit: bool

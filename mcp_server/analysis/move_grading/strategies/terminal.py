@@ -9,10 +9,9 @@ from __future__ import annotations
 import chess
 from core.engines.types import MoveClass
 
-from mcp_server.analysis.move_grading.helpers import is_before_winning
 from mcp_server.analysis.move_grading.types import finalize_score
 from mcp_server.domain.rule_status import RuleStatus
-from mcp_server.models import MCPEval, PlayedMoveScore
+from mcp_server.models import PlayedMoveScore
 
 __all__ = [
     "score_blundered_terminal_draw",
@@ -108,7 +107,7 @@ def score_blundered_terminal_draw(
     *,
     is_auto_terminal_draw: bool,
     is_before_winning: bool,
-    board_after: chess.Board,  # noqa: ARG001 — kept for parity with original signature
+    board_after: chess.Board,
     is_best_engine_move: bool,
     raw_cpl: int,
     raw_board_delta: int,

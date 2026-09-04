@@ -18,11 +18,9 @@ from typing import Any, Literal
 import chess
 from pydantic import BaseModel, Field, computed_field, model_validator
 
-from core.engines.types import Eval, MoveAnalysis, MoveClass
+from core.engines.types import MoveAnalysis, MoveClass
 from mcp_server.actions import build_played_action
 from mcp_server.models.action_policy import ActionPolicyMetadata
-from mcp_server.models.mcpeval import MCPEval
-from mcp_server.rules import evaluate_rule_status
 from mcp_server.models.mcpeval import MCPEval
 from mcp_server.rules import evaluate_rule_status
 

@@ -12,7 +12,6 @@ enough to deserve isolation).
 
 from __future__ import annotations
 
-from collections import deque
 
 import chess
 

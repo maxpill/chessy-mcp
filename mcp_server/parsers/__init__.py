@@ -73,7 +73,7 @@ from mcp_server.parsers.pgn import (
     validate_strict_header_syntax,
     validate_strict_mainline_surface,
 )
-from mcp_server.parsers.pgn_sanitize import (
+from mcp_server.parsers.pgn_sanitize import (  # noqa: F401
     TAG_PAIR_REGEX as _TAG_PAIR_REGEX_FROM_SANITIZE,
     _mask_comments_and_escapes,
     _sanitize_brackets_in_variations_and_comments,

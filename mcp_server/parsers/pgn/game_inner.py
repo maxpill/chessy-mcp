@@ -1,13 +1,13 @@
-"""``extract_game_inner\` — the parsing-only entry for :mod:\`extractor\`.
+"""``extract_game_inner` — the parsing-only entry for :mod:`extractor`.
 
-Extracted from :mod:\`mcp_server.parsers.pgn.extractor\`. Handles the
+Extracted from :mod:`mcp_server.parsers.pgn.extractor`. Handles the
 "inner" PGN game extraction: comment-only input shortcut (audit
 R4-§B), FEN validation, NUL/zero-width cleanup, unicode normalization,
 bare-moves fallback (audit P0).
 
 The header-sanitization and strict-mode surface checks live in
-:func:\`extractor.extract_game\`. The chess.pgn preflight wrapper lives
-in :mod:\`mcp_server.parsers.pgn.parse_candidate\`.
+:func:`extractor.extract_game`. The chess.pgn preflight wrapper lives
+in :mod:`mcp_server.parsers.pgn.parse_candidate`.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ def _try_build_comment_only_game(cleaned: str) -> chess.pgn.Game | None:
     """R4-§B: comment-only input is a zero-move game with header tags
     extracted and the body result captured.
 
-    Returns ``None\` when the body has actual move tokens or an explicit
+    Returns ``None` when the body has actual move tokens or an explicit
     result — those belong on the mainline-parsing path, not the
     comment-only shortcut.
     """
@@ -135,7 +135,7 @@ def _build_comment_only_game(
     body_tokens: list[str],
 ) -> chess.pgn.Game:
     """Compose the zero-move game. Body may be empty (pure comments) or
-    contain only result tokens (``*\`, ``1-0\`, etc.)."""
+    contain only result tokens (``*`, ``1-0`, etc.)."""
     game = chess.pgn.Game()
     for m in TAG_PAIR_REGEX.finditer(comment_stripped[:body_start]):
         tag_name = m.group(1)
@@ -155,7 +155,7 @@ def _build_comment_only_game(
 
 def _normalize_text(cleaned: str) -> str:
     """Translate unicode figurines, attach NAGs/asterisks with spaces,
-    normalize ``0-0\` / ``o-o\`, strip e.p. markers."""
+    normalize ``0-0` / ``o-o`, strip e.p. markers."""
     norm_text = normalize_movetext_figurines(cleaned)
     norm_text = _ATTACHED_NAG_RE.sub(r"\1 \2", norm_text)
     norm_text = _ATTACHED_NAG_CASTLE_RE.sub(r"\1\2 \3", norm_text)
