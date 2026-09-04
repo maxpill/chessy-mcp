@@ -128,14 +128,17 @@ class _EnginePool:
                 timeout=self._acquire_timeout,
             )
         except TimeoutError as exc:
-            raise PoolBusy(
-                f"no engine free within {self._acquire_timeout}s"
-            ) from exc
+            raise PoolBusy(f"no engine free within {self._acquire_timeout}s") from exc
 
         replace = False
         try:
             return await fn(inst)
-        except (chess.engine.EngineTerminatedError, ConnectionError, OSError):
+        except (
+            chess.engine.EngineError,
+            chess.engine.EngineTerminatedError,
+            ConnectionError,
+            OSError,
+        ):
             replace = True
             raise
         finally:
@@ -219,11 +222,7 @@ class AnalyzerPool:
             )
 
         instances = [await factory() for _ in range(max(1, size))]
-        engine_name = (
-            getattr(instances[0], "name", "Stockfish")
-            if instances
-            else "Stockfish"
-        )
+        engine_name = getattr(instances[0], "name", "Stockfish") if instances else "Stockfish"
         log.info(
             "analyzer pool ready: %d engines (%s)",
             len(instances),

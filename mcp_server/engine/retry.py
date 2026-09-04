@@ -21,7 +21,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-from chess.engine import EngineTerminatedError
+from chess.engine import EngineError, EngineTerminatedError
 
 
 log = logging.getLogger("chessy_mcp.engine.retry")
@@ -31,6 +31,7 @@ _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
     ConnectionError,
     OSError,
     EngineTerminatedError,
+    EngineError,
 )
 
 

@@ -7,8 +7,11 @@ wraps it as engine_error.
 
 from __future__ import annotations
 
+import chess
+import chess.engine
 import pytest
 
+from core.engines.pool import _EnginePool
 from core.engines.types import Eval
 from mcp_server import server as server_module
 
@@ -98,3 +101,66 @@ async def test_permanent_failure_does_not_retry_storm():
         )
     # 2 total: initial + 1 retry. NO storm.
     assert pool.calls <= 3, f"too many attempts ({pool.calls}); retry storm suspected"
+
+
+class _DeadFirstAliveSecondPool:
+    """Per-instance death toggle. When ``die_on_next=True`` the next evaluate
+    call raises chess.engine.EngineError; the instance is then "alive" forever
+    (i.e. simulates a one-shot TCPTransport closure that leaves the underlying
+    channel working on next connect). The pool must discard the instance after
+    the error and refilled via the factory.
+    """
+
+    def __init__(self, *, die_on_next: bool) -> None:
+        self._die_on_next = die_on_next
+        self.success_calls = 0
+        self.failed_calls = 0
+
+    async def evaluate(self, board, *, depth=14, root_moves=None):
+        if self._die_on_next:
+            self._die_on_next = False
+            self.failed_calls += 1
+            raise chess.engine.EngineError(
+                "unable to perform operation on <TCPTransport closed=True reading=False 0xdeadbeef>"
+            )
+        self.success_calls += 1
+        legal = list(board.legal_moves)
+        best = legal[0].uci() if legal else None
+        return Eval(cp=42, best_move=best, pv=[best] if best else [], depth=depth)
+
+    async def close(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_pool_replaces_dead_instance_on_engine_error():
+    """Pool must discard an instance whose call raises EngineError and try again.
+
+    Without the fix the dead instance is returned to the queue untouched and
+    every subsequent call hits the same closed transport.
+    """
+    pool_size = 2
+    spawn_index = 0
+
+    async def make():
+        nonlocal spawn_index
+        spawn_index += 1
+        return _DeadFirstAliveSecondPool(die_on_next=(spawn_index == 1))
+
+    pool = _EnginePool([await make() for _ in range(pool_size)], make, acquire_timeout=5.0)
+    assert pool._alive_count == pool_size
+
+    board = chess.Board()
+    with pytest.raises(chess.engine.EngineError):
+        await pool.run(lambda a: a.evaluate(board, depth=12))
+    assert spawn_index == pool_size + 1, (
+        f"factory spawn count={spawn_index}, expected {pool_size + 1} after dead-instance discard"
+    )
+    assert pool._alive_count == pool_size, (
+        f"pool did not self-heal: alive={pool._alive_count}/{pool_size}"
+    )
+
+    good_call = await pool.run(lambda a: a.evaluate(board, depth=12))
+    assert good_call.cp == 42
+
+    await pool.close()
