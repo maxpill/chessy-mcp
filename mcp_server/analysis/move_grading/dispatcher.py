@@ -99,7 +99,11 @@ def dispatch_score(
     rule_after = evaluate_rule_status(board_after, history_complete=history_state)
     canonical_best_action = eval_before.best_action or rule_before.recommended_action
 
-    # 1. Checkmate on either side — fires before claim / terminal-draw branches.
+    # win_before = is_before_winning(before_mover, mover_mate_before)
+    # print(
+    #     f"DISPATCHER: rule_after.cn={rule_after.can_claim_now} eval_after.cn={eval_after.can_claim_now} eval_after.cd={eval_after.can_claim_draw} win_before={win_before} before_mover={before_mover} canonical_best_action={canonical_best_action} board_after.fen={board_after.fen()} board_after.hm={board_after.halfmove_clock} board_after.is_repetition(3)={board_after.is_repetition(3)}",
+    #     flush=True,
+    # )
     for dispatched in (
         lambda: score_delivered_checkmate(
             action_type=action_type,
