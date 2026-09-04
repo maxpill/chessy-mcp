@@ -29,23 +29,17 @@ stamp() {
     local key="$1" value="$2" file="$3"
     if grep -qE "^${key}=" "${file}"; then
         # Update in place — preserve order, only mutate the value.
-        python3 - "$key" "$value" "${file}" <<'PY'
-import sys, pathlib
-key, value, path = sys.argv[1], sys.argv[2], sys.argv[3]
-p = pathlib.Path(path)
-lines = p.read_text().splitlines()
-out = []
-seen = False
-for line in lines:
-    if line.startswith(f"{key}="):
-        out.append(f"{key}={value}")
-        seen = True
-    else:
-        out.append(line)
-if not seen:
-    out.append(f"{key}={value}")
-p.write_text("\n".join(out) + ("\n" if out else ""))
-PY
+        # Pure awk so this runs inside the Komodo periphery container
+        # which has bash + awk but no python3.
+        local tmp
+        tmp="$(mktemp "${file}.XXXXXX")"
+        awk -v k="${key}" -v v="${value}" '
+            BEGIN { seen = 0 }
+            index($0, k "=") == 1 { print k "=" v; seen = 1; next }
+            { print }
+            END { if (!seen) print k "=" v }
+        ' "${file}" > "${tmp}"
+        mv "${tmp}" "${file}"
     else
         printf "%s=%s\n" "${key}" "${value}" >> "${ENVFILE}"
     fi
