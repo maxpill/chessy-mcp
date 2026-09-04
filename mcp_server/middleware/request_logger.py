@@ -4,26 +4,28 @@ Owns:
 
 - :class:`ASGIRequestLoggerMiddleware` — request logging, weighted admission
   control, token authentication, and 32 MiB POST body cap.
-- :func:`_effective_client_ip` / :func:`_is_trusted_proxy_peer` /
-  :func:`_estimate_mcp_request_cost` — small helpers used by the middleware.
 - :func:`_build_app` — composes the FastMCP streamable-HTTP app with
   :class:`GZipMiddleware` (innermost) and the request logger (outermost).
 - :func:`main` — CLI entry point; picks stdio vs streamable-http based on
   ``MCPSettings.transport``.
+
+IP / CORS helpers live in :mod:`mcp_server.middleware.client_ip`.
+Per-tool cost estimation lives in :mod:`mcp_server.middleware.request_cost`.
 """
 
 from __future__ import annotations
 
 import hmac
-import ipaddress
-import json
 import logging
 from typing import Any, cast
 
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from mcp_server.middleware.client_ip import effective_client_ip, is_trusted_proxy_peer
 from mcp_server.middleware.rate_limit import TokenBucketRateLimiter
+from mcp_server.middleware.request_cost import estimate_mcp_request_cost
+
 
 __all__ = [
     "ASGIRequestLoggerMiddleware",
@@ -37,49 +39,6 @@ __all__ = [
 
 
 log = logging.getLogger("chessy_mcp.middleware")
-
-
-def _is_trusted_proxy_peer(ip: str) -> bool:
-    try:
-        addr = ipaddress.ip_address(ip.strip().strip("[]"))
-    except ValueError:
-        return False
-    return addr.is_loopback or addr.is_private
-
-
-def _effective_client_ip(peer_ip: str, forwarded_for: str) -> str:
-    peer = peer_ip.strip().strip("[]")
-    if forwarded_for and _is_trusted_proxy_peer(peer):
-        candidate = forwarded_for.split(",", 1)[0].strip().strip("[]")
-        return candidate or peer
-    return peer
-
-
-def _estimate_mcp_request_cost(body: bytes) -> float:
-    """Approximate CPU admission cost from tool, depth, MultiPV and PGN size."""
-    try:
-        payload_any: Any = json.loads(body.decode("utf-8"))
-        payload = cast(dict[str, Any], payload_any) if isinstance(payload_any, dict) else {}
-        params_any: Any = payload.get("params")
-        params = cast(dict[str, Any], params_any) if isinstance(params_any, dict) else {}
-        tool_name = str(params.get("name") or params.get("tool") or "")
-        args_any: Any = params.get("arguments")
-        args = cast(dict[str, Any], args_any) if isinstance(args_any, dict) else {}
-        depth = max(1, min(int(args.get("depth", 18)), 30))
-        if tool_name == "evaluate_position":
-            return 1.0 + depth / 14.0
-        if tool_name == "top_moves":
-            n = max(1, min(int(args.get("n", 3)), 20))
-            return 1.0 + (depth * n) / 14.0
-        if tool_name == "classify_move":
-            return 2.0 + depth / 10.0
-        if tool_name == "analyze_game":
-            pgn = str(args.get("pgn", ""))
-            estimated_plies = max(1.0, min(200.0, len(pgn) / 24.0))
-            return 5.0 + (depth * estimated_plies) / 28.0
-    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
-        pass
-    return 1.0
 
 
 class ASGIRequestLoggerMiddleware:
@@ -114,7 +73,7 @@ class ASGIRequestLoggerMiddleware:
         client_tuple = cast(tuple[str, int] | None, scope.get("client"))
         peer_ip = client_tuple[0] if client_tuple else "127.0.0.1"
         forwarded_for = headers_dict.get(b"x-forwarded-for", b"").decode("utf-8", "ignore")
-        client_ip = _effective_client_ip(peer_ip, forwarded_for)
+        client_ip = effective_client_ip(peer_ip, forwarded_for)
 
         if method == "OPTIONS":
             await send(
@@ -127,8 +86,8 @@ class ASGIRequestLoggerMiddleware:
                             (b"access-control-allow-origin", b"*"),
                             (b"access-control-allow-methods", b"GET, POST, OPTIONS"),
                             (b"access-control-allow-headers", b"*"),
-                            (b"access-control-max-age", b"86400"),
                             (b"content-length", b"0"),
+                            (b"access-control-max-age", b"86400"),
                         ],
                     },
                 )

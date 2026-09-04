@@ -179,9 +179,9 @@ async def _health(request: Any) -> Any:
 # Each name is bound here as a module attribute so existing call sites
 # (and ``monkeypatch.setattr(server_module, \"ASGIRequestLoggerMiddleware\", ...)``)
 # keep working unchanged.
-from mcp_server.middleware.rate_limit import TokenBucketRateLimiter  # noqa: E402,F401
-from mcp_server.middleware.request_logger import (  # noqa: E402,F401
+from mcp_server.middleware import (  # noqa: E402,F401
     ASGIRequestLoggerMiddleware,
+    TokenBucketRateLimiter,
     _build_app,
     _effective_client_ip,
     _estimate_mcp_request_cost,
