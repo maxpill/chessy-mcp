@@ -107,9 +107,32 @@ def build_classification(
 
     Audit invariants preserved: B-01..B-03, P0, P1, P2, P3, U-02..U-15.
     """
-    from mcp_server.actions import build_played_action
+    from mcp_server.actions import build_best_action, build_played_action
+    from mcp_server.domain.types import Outcome
 
     verified = _classification_verified(score, action_type)
+    played_outcome, played_value = _outcome_from_action(
+        action_type, eval_after, board_after, board.turn
+    )
+    # best_outcome reflects the action the *policy* recommends, not the move
+    # that happens to coincide with the engine's MultiPV top.
+    best_outcome, best_value = _outcome_from_action(
+        score.best_action, eval_before, board, board.turn
+    )
+
+    # Bug fix (chessy-mcp-deep-audit §6): when best_move == played_move,
+    # best_action_obj.value must equal played_action_obj.value. Both describe
+    # the same LegalAction so they must carry the same post-position value.
+    is_same_move = (
+        eval_before.best_move and played_uci and eval_before.best_move.lower() == played_uci.lower()
+    )
+    unify_best_with_played = is_same_move and action_type == "play_move"
+    if unify_best_with_played:
+        best_post_cp = eval_after.cp
+        best_post_mate = eval_after.mate
+    else:
+        best_post_cp = eval_before.cp
+        best_post_mate = eval_before.mate
     return MCPMoveAnalysis(
         played=played_uci,
         played_san=played_san,
@@ -146,7 +169,34 @@ def build_classification(
             cp=eval_after.cp,
             mate=eval_after.mate,
         ),
-        best_action_obj=eval_before.best_action_obj,
+        # Bug fix (chessy-mcp-deep-audit §6): same LegalAction → same value.
+        # When played == best, rebuild best_action_obj from post-state so
+        # best.value == played.value.
+        best_action_obj=(
+            build_best_action(
+                recommended_action="play_move",
+                rule_status=rule_status,
+                engine_eval=type(
+                    "E",
+                    (),
+                    {
+                        "cp": best_post_cp,
+                        "mate": best_post_mate,
+                        "best_move": eval_before.best_move,
+                    },
+                )(),
+                board=board,
+                sign=1 if board.turn == chess.WHITE else -1,
+            )
+            if unify_best_with_played
+            else eval_before.best_action_obj
+        ),
+        played_outcome=played_outcome.value
+        if hasattr(played_outcome, "value")
+        else str(played_outcome),
+        best_outcome=best_outcome.value if hasattr(best_outcome, "value") else str(best_outcome),
+        played_canonical_value=played_value,
+        best_canonical_value=best_value,
         missed_draw_claim=score.missed_draw_claim,
         conceded_draw_claim=score.conceded_draw_claim,
         claim_reason=score.claim_reason,
@@ -156,6 +206,73 @@ def build_classification(
         claim_moves=score.claim_moves,
         classification_verified=verified,
     )
+
+
+def _outcome_from_action(
+    action_type: str,
+    eval_obj: Any,
+    board: chess.Board,
+    mover_color: chess.Color,
+) -> tuple[Any, int | None]:
+    """Compute the Outcome of an action evaluation from the mover's POV.
+
+    For draw claims the outcome is unconditionally DRAW regardless of the
+    engine's evaluation. For play_move / game_over we inspect the eval.
+    """
+    from mcp_server.domain.types import Outcome
+
+    if action_type in ("claim_draw", "claim_draw_with_intended_move"):
+        return Outcome.DRAW, 0
+    return _outcome_from_eval(eval_obj, mover_color)
+
+
+def _outcome_from_eval(eval_obj: Any, mover_color: chess.Color) -> tuple[Any, int | None]:
+    """Compute the Outcome of a play_move / game_over eval from the mover's POV."""
+    from mcp_server.domain.types import Outcome
+
+    status = getattr(eval_obj, "status", None)
+    mate = getattr(eval_obj, "mate", None)
+    cp = getattr(eval_obj, "cp", None)
+
+    if status == "checkmate":
+        winner = getattr(eval_obj, "winner", None)
+        if winner == "white":
+            return (Outcome.WIN if mover_color == chess.WHITE else Outcome.LOSS), 100000
+        if winner == "black":
+            return (Outcome.WIN if mover_color == chess.BLACK else Outcome.LOSS), 100000
+        return Outcome.ACTIVE, None
+
+    if status in (
+        "stalemate",
+        "insufficient_material",
+        "seventyfive_moves",
+        "fivefold_repetition",
+        "dead_position",
+        "game_over",
+    ):
+        return Outcome.DRAW, 0
+
+    if mate is not None:
+        mover_sign = 1 if mover_color == chess.WHITE else -1
+        m = mover_sign * mate
+        if m > 0:
+            return Outcome.WIN, 100000
+        if m < 0:
+            return Outcome.LOSS, -100000
+
+    if cp is not None:
+        mover_sign = 1 if mover_color == chess.WHITE else -1
+        signed_cp = mover_sign * cp
+        # Decisive threshold: any cp above FORCED_WIN_THRESHOLD_CP from the
+        # mover's POV is winning. Same constant the action policy uses for
+        # "forced win overrides claim_draw" (mcp_server/rules/constants.py).
+        if signed_cp >= 2000:
+            return Outcome.WIN, signed_cp
+        if signed_cp <= -2000:
+            return Outcome.LOSS, signed_cp
+        return Outcome.ACTIVE, signed_cp
+
+    return Outcome.ACTIVE, None
 
 
 def _classification_verified(score: Any, action_type: str) -> bool:

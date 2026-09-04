@@ -300,8 +300,9 @@ def score_cp_to_mate(
         win_loss=0.0,
         best_action=canonical_best_action,
         is_best_action=is_best_engine_move,
-        action_equivalent=is_best_engine_move
-        and canonical_best_action in ("claim_draw", "claim_draw_with_intended_move"),
+        # Bug fix (chessy-mcp-deep-audit §5): action_equivalent requires the
+        # same action_type as canonical_best_action.
+        action_equivalent=is_best_engine_move and canonical_best_action == action_type,
         missed_draw_claim=False,
         conceded_draw_claim=False,
         claim_reason=None,

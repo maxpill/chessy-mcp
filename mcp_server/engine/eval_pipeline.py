@@ -77,6 +77,11 @@ def build_terminal_mcpeval(
         board=board,
         legal_engine_moves=None,
     )
+    terminal_rule_actions = [
+        a
+        for a in terminal_legal_actions
+        if a.get("type") in ("claim_draw", "claim_draw_with_intended_move")
+    ]
     return MCPEval(
         status=rule_status.terminal,
         winner=rule_status.winner,
@@ -98,6 +103,11 @@ def build_terminal_mcpeval(
         best_action_type="game_over",
         best_action_obj=terminal_best_action,
         legal_actions=terminal_legal_actions,
+        legal_rule_actions=terminal_rule_actions,
+        # Bug fix (chessy-mcp-deep-audit §19): terminal positions must
+        # surface the concrete board's canonical FEN, not leave it null.
+        canonical_fen=canonical_fen_str,
+        fen_was_canonicalized=False,
         decision_value={
             "outcome": term_outcome,
             "cp_equivalent": term_cp,

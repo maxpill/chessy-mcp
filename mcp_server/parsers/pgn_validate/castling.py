@@ -65,7 +65,31 @@ def validate_castling_rights(board: chess.Board, rights_token: str, strict: bool
                 f"Rejected."
             )
         return "".join(valid) if valid else "-"
-    return rights_token
+    # Bug fix (chessy-mcp-deep-audit §17): strict mode requires canonical
+    # KQkq ordering and rejects duplicates. Non-strict mode canonicalizes
+    # (dedup + reorder) silently. The four canonical chars in canonical
+    # order are "KQkq" — anything not in that order, or any non-canonical
+    # char (X-FCR / Shredder-FEN), is rejected in strict mode.
+    canonical_order = "KQkq"
+    if strict:
+        non_canonical = [c for c in canonical_chars if c not in canonical_order]
+        if non_canonical:
+            raise ValueError(
+                f"INVALID_CASTLING_RIGHTS: FEN '{fen}' has non-canonical "
+                f"castling char(s) {','.join(non_canonical)!r}; "
+                f"accepted chars are exactly {list(canonical_order)!r}."
+            )
+        expected = "".join(c for c in canonical_order if c in rights_token)
+        if "".join(c for c in rights_token if c in canonical_order) != expected:
+            raise ValueError(
+                f"INVALID_CASTLING_RIGHTS: FEN '{fen}' has non-canonical "
+                f"ordering {rights_token!r}; strict mode requires the order "
+                f"{list(canonical_order)!r}."
+            )
+        return rights_token
+    # Non-strict: canonicalize to KQkq order, dedup.
+    canonicalized = "".join(c for c in canonical_order if c in rights_token)
+    return canonicalized or rights_token
 
 
 # Back-compat shim.

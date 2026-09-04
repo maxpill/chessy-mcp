@@ -56,9 +56,7 @@ class DeterministicPool:
             depth=depth,
         )
 
-    async def top_moves(
-        self, board: chess.Board, *, n: int = 3, depth: int = 14
-    ) -> list[Eval]:
+    async def top_moves(self, board: chess.Board, *, n: int = 3, depth: int = 14) -> list[Eval]:
         self.top_calls += 1
         out: list[Eval] = []
         for i, move in enumerate(list(board.legal_moves)[:n]):
@@ -156,9 +154,7 @@ async def test_top_moves_surfaces_true_fen_canonicalization_state() -> None:
     assert rewritten.fen_was_canonicalized is True
 
     await server_module._cache.clear()
-    canonical = await server_module.top_moves(
-        chess.STARTING_FEN, moves=["e4"], n=1, depth=2
-    )
+    canonical = await server_module.top_moves(chess.STARTING_FEN, moves=["e4"], n=1, depth=2)
     assert canonical.fen_was_canonicalized is False
 
 
@@ -251,8 +247,8 @@ async def test_strict_accepts_canonical_annotated_pgn() -> None:
         '[White "Łukasz"]\n'
         '[Black "Zoë"]\n'
         '[Result "*"]\n\n'
-        '1. e4! {comment [inside]} e5 $1 2. Nf3 Nc6 '
-        '(2... Nf6 3. Nxe5 (3. d4 exd4)) 3. Bb5 a6!? *'
+        "1. e4! {comment [inside]} e5 $1 2. Nf3 Nc6 "
+        "(2... Nf6 3. Nxe5 (3. d4 exd4)) 3. Bb5 a6!? *"
     )
     result = await server_module.analyze_game(pgn, depth=2, strict=True)
     assert result.total_plies == 6
@@ -277,7 +273,10 @@ async def test_singleflight_coalesces_many_identical_concurrent_requests() -> No
     pool = DeterministicPool(delay=0.02)
     server_module._analyzer_pool = pool  # type: ignore[assignment]
     results = await asyncio.gather(
-        *[server_module.evaluate_position("startpos", depth=3, verbosity="compact") for _ in range(64)]
+        *[
+            server_module.evaluate_position("startpos", depth=3, verbosity="compact")
+            for _ in range(64)
+        ]
     )
     assert pool.eval_calls == 1
     assert len({(r.cp, r.best_move, r.canonical_fen) for r in results}) == 1
@@ -288,8 +287,26 @@ async def test_concurrent_different_positions_do_not_leak_state() -> None:
     pool = DeterministicPool()
     server_module._analyzer_pool = pool  # type: ignore[assignment]
     first_moves = [
-        "a3", "a4", "b3", "b4", "c3", "c4", "d3", "d4", "e3", "e4",
-        "f3", "f4", "g3", "g4", "h3", "h4", "Na3", "Nc3", "Nf3", "Nh3",
+        "a3",
+        "a4",
+        "b3",
+        "b4",
+        "c3",
+        "c4",
+        "d3",
+        "d4",
+        "e3",
+        "e4",
+        "f3",
+        "f4",
+        "g3",
+        "g4",
+        "h3",
+        "h4",
+        "Na3",
+        "Nc3",
+        "Nf3",
+        "Nh3",
     ]
     results = await asyncio.gather(
         *[
@@ -316,14 +333,26 @@ async def test_a_b_a_state_isolation() -> None:
 
 @pytest.mark.asyncio
 async def test_engine_failure_does_not_poison_subsequent_request_state() -> None:
+    """A transient engine failure must not poison subsequent calls.
+
+    Bug fix (chessy-mcp-deep-audit §8): the engine-call retry layer now
+    transparently retries a single ConnectionError, so a transient engine
+    failure on the first attempt recovers within the same request — the
+    caller never sees [ENGINE_ERROR] for a single-shot failure.
+
+    A subsequent request on the same pool still works correctly.
+    """
     pool = DeterministicPool(fail_first=True)
     server_module._analyzer_pool = pool  # type: ignore[assignment]
-    with pytest.raises(Exception, match=r"\[ENGINE_ERROR\]"):
-        await server_module.evaluate_position("startpos", depth=2)
 
-    recovered = await server_module.evaluate_position("startpos", moves=["e4"], depth=2)
+    # First call: initial evaluate raises, retry succeeds. No error surfaced.
+    recovered = await server_module.evaluate_position("startpos", depth=2)
     assert recovered.status == "active"
     assert recovered.best_move is not None
+
+    # Subsequent call: pool is still healthy.
+    next_call = await server_module.evaluate_position("startpos", moves=["e4"], depth=2)
+    assert next_call.status == "active"
 
 
 def test_randomized_legal_move_san_and_fen_differential_5000_positions() -> None:

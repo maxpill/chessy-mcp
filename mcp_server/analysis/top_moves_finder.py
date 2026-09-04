@@ -165,6 +165,39 @@ class TopMovesFinder:
                     needs_post_eval=needs_post_eval,
                 )
                 res_list.append(mcp_eval)
+            # Bug fix (chessy-mcp-deep-audit §4): at halfmove >= 100 the root
+            # MultiPV can be draw-polluted when a winning zeroing move is below
+            # the MultiPV top-N. Evaluate ALL legal zeroing moves in parallel
+            # and surface the winning post-state on the top-ranked candidate
+            # without overwriting its multipv cp (back-compat invariant B-05).
+            if board.halfmove_clock >= 100 and not board.is_game_over() and needs_post_eval:
+                from mcp_server.engine.zeroing_post_state_all import (
+                    evaluate_all_zeroing_post_states,
+                )
+
+                winning_all = await evaluate_all_zeroing_post_states(board, depth, pool)
+                if (winning_all.mate and winning_all.mate > 0) or (
+                    winning_all.cp and winning_all.cp >= 2000
+                ):
+                    existing_top = res_list[0] if res_list else None
+                    synthetic = await _synthetic_winning_mcpeval(
+                        board=board,
+                        pool=pool,
+                        rule_status=rule_status,
+                        sign=sign,
+                        history_complete=history_complete,
+                        raw_requested_depth=raw_requested_depth,
+                        depth=depth,
+                        winning_uci=winning_all.winning_uci,
+                        cp=winning_all.cp,
+                        mate=winning_all.mate,
+                        existing_top=existing_top,
+                    )
+                    if synthetic is not None:
+                        if res_list:
+                            res_list[0] = synthetic
+                        else:
+                            res_list.append(synthetic)
             res_list.sort(key=lambda item: rank_candidate(item, sign=sign), reverse=True)
             await self._cache_set_top_moves(cache_key, res_list)
             return res_list
@@ -241,6 +274,7 @@ def _terminal_response(
         clamped_n=clamped_n,
         returned_n=0,
         legal_move_count=legal_move_count,
+        board_legal_move_count=legal_move_count,
         canonical_fen=canonical_fen,
         fen_was_canonicalized=fen_was_canonicalized,
         engine="Stockfish",
@@ -283,6 +317,12 @@ def _assemble_response(
         board=board,
         legal_engine_moves=list(items),
     )
+    # Bug fix (chessy-mcp-deep-audit §9): legal_rule_actions must be populated
+    # alongside legal_actions. TopMovesResult.legal_rule_actions defaulted to
+    # [] before — the rule actions silently disappeared from the wire shape.
+    legal_rule_actions = [
+        a for a in legal_actions if a.get("type") in ("claim_draw", "claim_draw_with_intended_move")
+    ]
     return build_top_moves_response(
         items=items,
         pool=pool,
@@ -293,6 +333,7 @@ def _assemble_response(
         root_rec_action=root_rec,
         best_action_obj=best_action_obj,
         legal_actions=legal_actions,
+        legal_rule_actions=legal_rule_actions,
         engine_name_str=engine_name_str,
         canonical_fen=canonical_fen,
         fen_was_canonicalized=fen_was_canonicalized,
@@ -302,3 +343,61 @@ def _assemble_response(
         clamped_n=clamped_n,
         legal_move_count=legal_move_count,
     )
+
+
+async def _synthetic_winning_mcpeval(
+    *,
+    board: chess.Board,
+    pool: Any,
+    rule_status: Any,
+    sign: int,
+    history_complete: str,
+    raw_requested_depth: int,
+    depth: int,
+    winning_uci: str | None,
+    cp: int | None,
+    mate: int | None,
+    existing_top: Any | None,
+) -> MCPEval | None:
+    """Build a synthetic MCPEval for a winning zeroing move discovered by
+    ``evaluate_all_zeroing_post_states``. This move was below the engine's
+    MultiPV top-N but is the canonical winning action — surface it as the
+    top-ranked candidate.
+
+    Back-compat invariant B-05: the candidate's `cp` field stays at the
+    multipv value (root cp of the existing top candidate if any, else the
+    post-state value). The winning post-state lives in `post_state_cp` /
+    `post_state_mate` separately so the rank key can find it.
+    """
+    if winning_uci is None:
+        return None
+    from mcp_server.analysis.candidate_evaluator import evaluate_candidate
+    from core.engines.types import Eval as CoreEval
+
+    multipv_cp = existing_top.cp if existing_top is not None else cp
+    multipv_mate = existing_top.mate if existing_top is not None else mate
+
+    synth_eval = CoreEval(
+        cp=multipv_cp,
+        mate=multipv_mate,
+        best_move=winning_uci,
+        pv=[winning_uci],
+        depth=depth,
+    )
+    try:
+        result = await evaluate_candidate(
+            board=board,
+            candidate=synth_eval,
+            pool=pool,
+            rule_status=rule_status,
+            sign=sign,
+            history_complete=history_complete,
+            raw_requested_depth=raw_requested_depth,
+            depth=depth,
+            needs_post_eval=False,
+        )
+        return result.model_copy(
+            update={"post_state_cp": cp, "post_state_mate": mate}
+        )
+    except Exception:
+        return None

@@ -47,10 +47,27 @@ __all__ = [
 _FENCE_RE = re.compile(r"```([a-zA-Z0-9_-]*)\s*([\s\S]*?)\s*```")
 
 
-def extract_canonical_pgn_text(text: str) -> str:
-    """Isolate the canonical PGN text from markdown fences, conversational preambles, and trailers."""
+def extract_canonical_pgn_text(text: str, *, warnings: list[str] | None = None) -> str:
+    """Isolate the canonical PGN text from markdown fences, conversational preambles, and trailers.
+
+    Bug fix (chessy-mcp-deep-audit §14): when NUL / ZWSP / BOM / NBSP are
+    silently stripped from the input, append a metadata_warning to the
+    caller-supplied warnings list so the sanitization is observable. The
+    warnings channel is optional for back-compat with callers that don't
+    surface warnings yet.
+    """
     from mcp_server.parsers.pgn.unicode import normalize_unicode_pgn_results
     from mcp_server.parsers.pgn_sanitize import _strip_pgn_escape_lines
+
+    stripped: list[str] = []
+    if "\x00" in text:
+        stripped.append("NUL")
+    if "\u200b" in text:
+        stripped.append("ZWSP")
+    if "\ufeff" in text:
+        stripped.append("BOM")
+    if "\u00a0" in text:
+        stripped.append("NBSP")
 
     cleaned = (
         text.replace("\x00", "")
@@ -59,6 +76,8 @@ def extract_canonical_pgn_text(text: str) -> str:
         .replace("\ufeff", "")
         .strip()
     )
+    if stripped and warnings is not None:
+        warnings.append(f"Sanitized input: stripped invisible characters ({', '.join(stripped)}).")
     cleaned = normalize_unicode_pgn_results(cleaned)
     if not cleaned:
         raise ValueError("Empty chess game/PGN input provided")

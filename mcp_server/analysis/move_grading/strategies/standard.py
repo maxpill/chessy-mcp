@@ -44,6 +44,10 @@ def score_standard_cp(
             if rule_before.claim_reasons
             else (eval_before.claim_reasons[0] if eval_before.claim_reasons else None)
         )
+        # Bug fix (chessy-mcp-deep-audit §5): when the engine's best action is
+        # a claim but the player instead played the engine's best move (which
+        # is also winning), action_equivalent must be FALSE — the outcomes
+        # differ (WIN vs DRAW). action_equivalent requires the same action_type.
         score = PlayedMoveScore(
             move_class=MoveClass.BEST,
             centipawn_loss=0,
@@ -56,7 +60,7 @@ def score_standard_cp(
             win_loss=0.0,
             best_action=canonical_best_action,
             is_best_action=not is_claim_best,
-            action_equivalent=is_claim_best,
+            action_equivalent=False,
             missed_draw_claim=False,
             conceded_draw_claim=False,
             claim_reason=claim_r,
@@ -132,8 +136,11 @@ def score_standard_cp(
         win_loss=win_loss,
         best_action=canonical_best_action,
         is_best_action=is_best_engine_move and canonical_best_action == "play_move",
-        action_equivalent=is_best_engine_move
-        and canonical_best_action in ("claim_draw", "claim_draw_with_intended_move"),
+        # Bug fix (chessy-mcp-deep-audit §5): action_equivalent requires the
+        # same action_type (a play_move is never equivalent to a draw claim
+        # — the outcomes differ). Only set True when both sides recommend
+        # the same kind of action AND the played move is the engine's best.
+        action_equivalent=is_best_engine_move and canonical_best_action == action_type,
         missed_draw_claim=False,
         conceded_draw_claim=False,
         claim_reason=rule_before.claim_reasons[0]

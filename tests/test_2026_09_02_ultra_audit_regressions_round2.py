@@ -339,11 +339,19 @@ async def test_6_unicode_piece_accepted_in_pgn_lenient():
 
 def test_17_duplicate_castling_rights_canonicalized():
     """§17: FEN with duplicate castling rights like `KK` is deduplicated
-    by python-chess (KK → K) without error. Both strict and lenient
-    modes preserve this behavior; the canonical FEN differs from the
-    input and `fen_was_canonicalized` is set on the response."""
-    b = server_module._build_board("4k3/8/8/8/8/8/8/R3K2R w KK - 0 1", strict=True)
+    by python-chess in lenient mode (KK → K). Strict mode rejects the
+    duplicate outright per the audit §17 requirement (canonical order,
+    no duplicates).
+
+    Bug fix (chessy-mcp-deep-audit §17): strict mode now rejects duplicate
+    castling rights instead of silently dedup'ing.
+    """
+    # Lenient: dedup silently to K
+    b = server_module._build_board("4k3/8/8/8/8/8/8/R3K2R w KK - 0 1", strict=False)
     assert b.fen().split()[2] == "K"
+    # Strict: rejects KK.
+    with pytest.raises(ValueError, match="INVALID_CASTLING_RIGHTS"):
+        server_module._build_board("4k3/8/8/8/8/8/8/R3K2R w KK - 0 1", strict=True)
 
 
 # ===========================================================================

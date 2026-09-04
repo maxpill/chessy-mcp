@@ -114,13 +114,23 @@ def _header_lookup(
 def _validate_elo_value(value: str | None) -> str | None:
     """Return ``value`` unchanged if it's a valid PGN Elo, else None.
 
+    Bug fix (chessy-mcp-deep-audit §16): accept only ASCII decimal digits.
+    str.isdigit() accepts Unicode decimal categories (Arabic-Indic, fullwidth,
+    superscripts) which is a silent data mutation. Leading zeros are
+    preserved as-is (the PGN convention).
+
+    Accepted range: 0..4000 (FIDE registration max is ~2900; 4000 leaves
+    headroom for legacy and double-elo formats).
+
     Strict-validation surfaces invalid Elo values as a metadata_warning
     upstream — this helper is the predicate the strict path calls. The
     lenient path uses ``_header_lookup`` directly with no validation.
     """
     if value is None or value == "-":
         return value
-    if value.isdigit() and 0 <= int(value) <= 4000:
+    if not isinstance(value, str):
+        return value
+    if value.isascii() and value.isdigit() and 0 <= int(value) <= 4000:
         return value
     return value
 
@@ -205,14 +215,19 @@ def extract_game_metadata(
             )
 
     if md.white_elo is not None and md.white_elo != "-":
-        if not (md.white_elo.isdigit() and 0 <= int(md.white_elo) <= 4000):
+        # Bug fix (chessy-mcp-deep-audit §16): ASCII-only + range check.
+        if not (
+            md.white_elo.isascii() and md.white_elo.isdigit() and 0 <= int(md.white_elo) <= 4000
+        ):
             md.metadata_warnings.append(
-                f"Invalid WhiteElo header tag '{md.white_elo}'; expected numeric integer rating."
+                f"Invalid WhiteElo header tag '{md.white_elo}'; expected ASCII digits in 0..4000."
             )
     if md.black_elo is not None and md.black_elo != "-":
-        if not (md.black_elo.isdigit() and 0 <= int(md.black_elo) <= 4000):
+        if not (
+            md.black_elo.isascii() and md.black_elo.isdigit() and 0 <= int(md.black_elo) <= 4000
+        ):
             md.metadata_warnings.append(
-                f"Invalid BlackElo header tag '{md.black_elo}'; expected numeric integer rating."
+                f"Invalid BlackElo header tag '{md.black_elo}'; expected ASCII digits in 0..4000."
             )
     if md.time_control is not None and not _is_valid_pgn_time_control(md.time_control):
         md.metadata_warnings.append(f"Invalid TimeControl header tag '{md.time_control}'.")

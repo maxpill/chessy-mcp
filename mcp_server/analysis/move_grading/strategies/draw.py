@@ -116,7 +116,9 @@ def score_claim_draw_action(
         win_loss=0.0,
         best_action=canonical_best_action,
         is_best_action=canonical_best_action == action_type,
-        action_equivalent=canonical_best_action != action_type,
+        # Bug fix (chessy-mcp-deep-audit §5): action_equivalent requires the
+        # same action_type — only same-kind actions can be equivalent.
+        action_equivalent=canonical_best_action == action_type,
         missed_draw_claim=False,
         conceded_draw_claim=False,
         claim_reason=claim_r,

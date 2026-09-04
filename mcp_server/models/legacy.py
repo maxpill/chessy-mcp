@@ -60,6 +60,8 @@ class PlayedMoveScore(BaseModel):
     can_claim_now: bool = False
     can_claim_with_intended_move: bool = False
     claim_moves: list[str] = Field(default_factory=list)
+    played_outcome: str = "active"
+    best_outcome: str = "active"
 
     @computed_field  # type: ignore[misc]
     @property
@@ -69,7 +71,10 @@ class PlayedMoveScore(BaseModel):
     @computed_field  # type: ignore[misc]
     @property
     def same_outcome(self) -> bool:
-        return self.is_best_action
+        # Bug fix (chessy-mcp-deep-audit §5): same_outcome must reflect the
+        # actual outcome (WIN/DRAW/LOSS/ACTIVE), not whether the played
+        # action is the engine's best. WIN is never the same outcome as DRAW.
+        return self.played_outcome == self.best_outcome
 
     @computed_field  # type: ignore[misc]
     @property
@@ -114,6 +119,10 @@ class MCPMoveAnalysis(BaseModel):
     played_action_obj: dict[str, Any] | None = None
     best_action_obj: dict[str, Any] | None = None
     action_policy: ActionPolicyMetadata = Field(default_factory=ActionPolicyMetadata)
+    played_outcome: str = "active"
+    best_outcome: str = "active"
+    played_canonical_value: int | None = None
+    best_canonical_value: int | None = None
     missed_draw_claim: bool = False
     conceded_draw_claim: bool = False
     claim_reason: str | None = None
@@ -131,7 +140,10 @@ class MCPMoveAnalysis(BaseModel):
     @computed_field  # type: ignore[misc]
     @property
     def same_outcome(self) -> bool:
-        return self.is_best_action
+        # Bug fix (chessy-mcp-deep-audit §5): same_outcome must reflect the
+        # actual outcome (WIN/DRAW/LOSS/ACTIVE), not whether the played
+        # action is the engine's best. WIN is never the same outcome as DRAW.
+        return self.played_outcome == self.best_outcome
 
     @computed_field  # type: ignore[misc]
     @property
@@ -370,6 +382,9 @@ class TopMovesResult(BaseModel):
     clamped_n: int | None = None
     returned_n: int | None = None
     legal_move_count: int | None = None
+    # Bug fix (chessy-mcp-deep-audit §12): see MCPEval.board_legal_move_count
+    # — canonical name for board-level legality count.
+    board_legal_move_count: int | None = None
     engine: str = "Stockfish"
     engine_version: str | None = None
     service_version: str = "0.1.0"

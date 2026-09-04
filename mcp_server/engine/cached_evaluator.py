@@ -38,7 +38,9 @@ from mcp_server.engine.pool_lifecycle import (
 )
 from mcp_server.engine.ponder import maybe_ponder_warm
 from mcp_server.engine.eval_pipeline import build_terminal_mcpeval
+from mcp_server.engine.retry import with_engine_retry
 from mcp_server.engine.zeroing_post_state import evaluate_zeroing_post_state
+from mcp_server.engine.zeroing_post_state_all import evaluate_all_zeroing_post_states
 from mcp_server.models import MCPEval
 from mcp_server.rules import evaluate_rule_status
 from mcp_server.tcp_analyzer import TCPAnalyzerPool
@@ -114,8 +116,34 @@ async def evaluate_game_position_cached(
         return cached.model_copy(update={"requested_depth": req_d}), True
 
     async def _compute_pos() -> MCPEval:
-        ev = await eval_via_analyzer_or_pool(analyzer, pool, b, depth=depth, reuse_tt=reuse_tt)
+        # Bug fix (chessy-mcp-deep-audit §8): wrap the engine call with a
+        # single-shot retry so a transient ConnectionError (closed TCP
+        # transport, subprocess kill) doesn't surface as a user-visible 500.
+        # The pool already replaces the dead instance — the retry gets the
+        # fresh one.
+        async def _engine_call() -> Any:
+            return await eval_via_analyzer_or_pool(
+                analyzer, pool, b, depth=depth, reuse_tt=reuse_tt
+            )
+
+        ev = await with_engine_retry(_engine_call)
+        # Bug fix (chessy-mcp-deep-audit §4.1, §4.3, §4.4): at halfmove >= 100
+        # with a winning zeroing move that is NOT the engine's MultiPV top-N,
+        # the root cp is draw-polluted and the policy mis-chooses claim_draw.
+        # Evaluate ALL legal zeroing moves in parallel and pick the best winning
+        # post-state, instead of trusting only the engine's MultiPV best.
         zeroing_best = await _maybe_zeroing_best_override(b, ev, depth, pool)
+        if (
+            b.halfmove_clock >= 100
+            and not b.is_game_over()
+            and not zeroing_best.mate
+            and not (zeroing_best.cp and zeroing_best.cp >= 2000)
+        ):
+            all_zeroing = await evaluate_all_zeroing_post_states(b, depth, pool)
+            if (all_zeroing.mate and all_zeroing.mate > 0) or (
+                all_zeroing.cp and all_zeroing.cp > (zeroing_best.cp or 0)
+            ):
+                zeroing_best = all_zeroing
         _apply_rule_aware_best_move_override(b, ev, depth, pool)
         mcp_eval = MCPEval.from_eval(
             ev,

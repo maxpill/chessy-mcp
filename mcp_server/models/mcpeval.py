@@ -86,6 +86,13 @@ class MCPEval(BaseModel):
     )
     legal_rule_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     legal_move_uci: list[str] = Field(default_factory=list[str])
+    legal_move_count: int | None = None
+    # Bug fix (chessy-mcp-deep-audit §12): terminal positions previously
+    # reported `legal_move_count > 0` (board-level legality) while
+    # `legal_move_uci = []` was empty. `board_legal_move_count` is the
+    # canonical name for "moves legal on the board ignoring terminality";
+    # `legal_move_count` is the back-compat alias.
+    board_legal_move_count: int | None = None
     decision_value: dict[str, Any] | None = None
     engine_eval: dict[str, Any] | None = None
     history_dependent_status: bool = False

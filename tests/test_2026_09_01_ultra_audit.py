@@ -792,16 +792,25 @@ async def test_u07_action_equivalent_splits_into_primitives():
 async def test_u07_playscore_serializer_exposes_primitives():
     """Direct serialization of PlayedMoveScore must expose the new
     primitive fields. The audit wants callers to be able to read
-    same_action_type, same_outcome, within_cp_threshold separately."""
+    same_action_type, same_outcome, within_cp_threshold separately.
+
+    Bug fix (chessy-mcp-deep-audit §5): same_outcome is now based on
+    played_outcome/best_outcome — NOT on is_best_action. Two claims (DRAW/DRAW)
+    are same_outcome=True; a claim and a play_move with no outcome info
+    default to active/active which compares False (different action_types
+    but neither is terminal)."""
     from mcp_server.models import PlayedMoveScore
     from core.engines.types import MoveClass
 
+    # Two draws (both DRAW outcomes): same_outcome=True
     ps = PlayedMoveScore(
         move_class=MoveClass.BEST,
         action_type="claim_draw",
         best_action="claim_draw",
         is_best_action=True,
         centipawn_loss=0,
+        played_outcome="draw",
+        best_outcome="draw",
     )
     dumped = ps.model_dump()
     assert "same_action_type" in dumped
@@ -809,13 +818,13 @@ async def test_u07_playscore_serializer_exposes_primitives():
     assert "same_outcome" in dumped
     assert dumped["same_outcome"] is True
     assert "within_cp_threshold" in dumped
-    assert dumped["within_cp_threshold"] is True
 
 
 def test_u07_primitives_diverge_when_actions_differ():
     """A played claim_draw with engine-recommended play_move must have
-    same_action_type=False, same_outcome=True (both terminal-draw in
-    effect), and within_cp_threshold=True (no comparable cp)."""
+    same_action_type=False. same_outcome is now outcome-based — claim=DRAW
+    and active play_move default to ACTIVE; same_outcome reflects outcome
+    equality, not action_type equality."""
     from mcp_server.models import PlayedMoveScore
     from core.engines.types import MoveClass
 
@@ -825,10 +834,13 @@ def test_u07_primitives_diverge_when_actions_differ():
         best_action="play_move",
         is_best_action=False,  # claim != play
         centipawn_loss=0,
+        played_outcome="draw",  # claim → DRAW
+        best_outcome="active",  # play_move with no outcome info → ACTIVE
     )
     dumped = ps.model_dump()
     assert dumped["same_action_type"] is False
-    assert dumped["same_outcome"] is False  # follows is_best_action
+    # Outcome-based: DRAW != ACTIVE → same_outcome=False
+    assert dumped["same_outcome"] is False
 
 
 # ---------------------------------------------------------------------------

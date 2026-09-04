@@ -594,19 +594,37 @@ async def test_r5_p2p3_time_control_invalid_rejected_strict(bad):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "input_rights,canonical,expect_canonicalized",
-    [("KK", "K", True), ("QQ", "Q", True), ("QK", "KQ", True), ("KQ", "KQ", False)],
+    [("KQ", "KQ", False)],
 )
 async def test_r5_p3_fen_castling_canonicalizes(input_rights, canonical, expect_canonicalized):
-    """Duplicate-letter castling rights normalize to the canonical form.
+    """Strict mode requires canonical KQkq ordering and rejects duplicates.
 
-    For rights already in canonical form (`KQ`), the canonicalization flag
-    must stay False (no change occurred)."""
+    Bug fix (chessy-mcp-deep-audit §17): strict mode now rejects duplicates
+    and non-canonical orderings rather than silently dedup'ing or accepting.
+    Non-strict mode still canonicalizes silently.
+    """
     fen = f"4k3/8/8/8/8/8/8/R3K2R w {input_rights} - 0 1"
     r = await server_module.evaluate_position(fen, depth=10, strict=True)
     assert r.fen_was_canonicalized is expect_canonicalized
     assert r.canonical_fen is not None
     parts = r.canonical_fen.split()
     assert parts[2] == canonical
+
+
+@pytest.mark.parametrize(
+    "input_rights",
+    ["KK", "QQ", "QK"],
+)
+def test_r5_p3_strict_castling_rejects_duplicates_and_noncanonical_order(input_rights):
+    """Bug fix (chessy-mcp-deep-audit §17): strict mode rejects duplicates
+    (KK, QQ) and non-canonical ordering (QK). Lenient mode canonicalizes."""
+    fen = f"4k3/8/8/8/8/8/8/R3K2R w {input_rights} - 0 1"
+    with pytest.raises(ValueError, match="INVALID_CASTLING_RIGHTS"):
+        server_module._build_board(fen, strict=True)
+    # Lenient: succeeds, deduplicates.
+    b = server_module._build_board(fen, strict=False)
+    canonical = "".join(c for c in "KQkq" if c in "".join(dict.fromkeys(input_rights)))
+    assert b.fen().split()[2] == canonical or b.fen().split()[2] == "-"
 
 
 # ===========================================================================
