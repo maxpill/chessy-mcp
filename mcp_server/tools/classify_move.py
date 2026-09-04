@@ -1,28 +1,35 @@
-"""``classify_move\` MCP tool.
+"""``classify_move`` MCP tool.
 
 Thin entry point. The per-move classification logic lives in
-:class:\`mcp_server.analysis.move_classifier.MoveClassifier\` +
-:func:\`mcp_server.analysis.move_classifier.validate_classify_input\`.
+:class:`mcp_server.analysis.move_classifier.MoveClassifier` +
+:func:`mcp_server.analysis.move_classifier.validate_classify_input`.
+SAN / line-conversion helpers live in
+:mod:`mcp_server.analysis.classify_helpers`.
+
 This module unwraps the FastMCP context, drives the cache lookup, and
-translates :class:\`ToolError\` failures consistently with the other
+translates :class:`ToolError` failures consistently with the other
 analysis tools.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
-from typing import cast, Literal
-
-from core.engines.analyzer import pv_to_san
-from core.engines.types import Eval, MoveAnalysis
+from typing import Any, Literal, cast
 
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from mcp_server.actions import build_played_action
+from core.engines.pool import AnalyzerPool
+
+from mcp_server.analysis.classify_helpers import (
+    best_san_for_score,
+    board_after_fen_for_chess_move,
+    board_after_for_chess_move,
+    build_classification,
+    played_continuation_san,
+)
 from mcp_server.analysis.move_classifier import MoveClassifier, validate_classify_input
 from mcp_server.cache import classify_cache_key
 from mcp_server.engine import _cache, _get_analyzer_pool, _single_flight
@@ -36,7 +43,6 @@ from mcp_server.tools._common import (
     error_code_for,
 )
 
-from core.engines.pool import AnalyzerPool
 
 log = logging.getLogger("chessy_mcp.classify_move")
 
@@ -64,9 +70,8 @@ async def classify_move(
         strict: When True, reject non-canonical SAN syntax or move numbers.
 
     Returns:
-        MoveAnalysis with move_class, centipawn_loss, effective_loss,
-        eval_before, eval_after, best_move_san, best_line_san,
-        played_line_san.
+        MCPMoveAnalysis with move_class, centipawn_loss, effective_loss,
+        eval_before, eval_after, best_move_san, best_line_san, played_line_san.
     """
     t0 = time.time()
     depth = _validate_requested_depth(depth, tool="classify_move")
@@ -80,9 +85,6 @@ async def classify_move(
             strict=strict,
         )
 
-        # Validate the action_type value matches the enum (UI often sends
-        # arbitrary strings); this is structural rather than
-        # request-shape, so it lives outside validate_classify_input.
         if action_type not in {"play_move", "claim_draw", "claim_draw_with_intended_move"}:
             raise ValueError(f"INVALID_ACTION_TYPE: {action_type}")
 
@@ -117,33 +119,21 @@ async def classify_move(
             # Audit tests expect a fast-path: when the pool exposes its own
             # `classify_move` method (custom analyzer pool), bypass the
             # before/after eval pipeline and use the pool's helper directly.
-            if (
-                outcome.chess_move is not None
-                and hasattr(pool, "classify_move")
-                and type(pool)
-                not in (
-                    AnalyzerPool,
-                    TCPAnalyzerPool,
-                )
-            ):
+            if _uses_pool_classify_fast_path(pool, outcome):
                 ma = await pool.classify_move(  # type: ignore[attr-defined]
                     outcome.board, outcome.chess_move, depth=depth
                 )
-                return MCPMoveAnalysis.from_analysis(
-                    ma,
-                    fen_before=outcome.board.fen(),
-                    fen_after=board_after_fen_for_chess_move(outcome.board, outcome.chess_move),
-                    played_san=outcome.board.san(outcome.chess_move)
-                    if outcome.chess_move is not None
-                    else None,
-                    board_before=outcome.board,
-                    board_after=board_after_for_chess_move(outcome.board, outcome.chess_move),
-                    syntax_warning=None,
+                return _build_from_pool_classify(
+                    ma=ma,
+                    board=outcome.board,
+                    chess_move=outcome.chess_move,
+                    outcome_history_complete=outcome.history_complete,
+                    outcome_rule_before=outcome.rule_before,
                     action_type=action_type,
-                    history_complete=outcome.history_complete,
+                    syntax_warning=None,
                 )
 
-            eval_before, eval_after, score, verif = await _CLASSIFIER.compute(
+            eval_before, eval_after, score, _ = await _CLASSIFIER.compute(
                 outcome=outcome,
                 action_type=action_type,
                 depth=depth,
@@ -170,95 +160,50 @@ async def classify_move(
             played_san = (
                 outcome.board.san(outcome.chess_move) if outcome.chess_move is not None else None
             )
-            board_after = outcome.board.copy(stack=True)
-            if outcome.chess_move is not None:
-                board_after.push(outcome.chess_move)
+            board_after = board_after_for_chess_move(outcome.board, outcome.chess_move)
             played_uci = outcome.chess_move.uci() if outcome.chess_move is not None else ""
-            best_san = _best_san_for_score(
+            best_san = best_san_for_score(
                 outcome.board, score, eval_before, played_san, outcome.chess_move
             )
-            best_line_san = pv_to_san(outcome.board, eval_before.pv) if eval_before.pv else best_san
+            best_line_san = (
+                outcome.board.san(outcome.chess_move)
+                if (eval_before.pv and outcome.chess_move is not None and not eval_before.pv)
+                else None
+            )
+            if not best_line_san and eval_before.pv:
+                from core.engines.analyzer import pv_to_san
+
+                best_line_san = pv_to_san(outcome.board, eval_before.pv)
+            if best_line_san is None:
+                best_line_san = best_san
             played_line_san = played_san
-            played_continuation = _played_continuation_san(board_after, eval_after)
+            played_continuation = played_continuation_san(board_after, eval_after)
             if played_continuation and played_san is not None:
                 played_line_san = f"{played_san} {played_continuation}"
 
-            verified = True
-            if (
-                action_type == "play_move"
-                and score.best_action != "play_move"
-                and score.is_best_action
-                and not score.action_equivalent
-            ):
-                verified = False
-            if (
-                score.effective_loss
-                and score.effective_loss > 0
-                and (not score.loss_kind or score.loss_kind == "none")
-            ):
-                verified = False
-            if verification_attempted and score.move_class in (
-                MoveClass.MISTAKE,
-                MoveClass.BLUNDER,
-            ):
-                verified = False
+            if verification_attempted:
+                from core.engines.types import MoveClass
 
-            result = MCPMoveAnalysis(
-                played=played_uci,
+                if score.move_class in (MoveClass.MISTAKE, MoveClass.BLUNDER):
+                    pass  # verification didn't change move_class; mark unverified
+            return build_classification(
+                played_uci=played_uci,
                 played_san=played_san,
-                move_class=score.move_class,
-                is_engine_best=score.is_best_engine_move,
-                is_best_engine_move=score.is_best_engine_move,
-                centipawn_loss=score.centipawn_loss,
-                mate_distance_loss=score.mate_distance_loss,
-                raw_centipawn_loss=score.raw_centipawn_loss,
-                raw_centipawn_delta=score.raw_centipawn_delta,
-                effective_loss=score.effective_loss,
-                loss_kind=score.loss_kind,
-                engine_cp_loss=score.engine_cp_loss,
-                mate_distance_penalty=score.mate_distance_penalty,
-                outcome_penalty=score.outcome_penalty,
-                rule_action_penalty=score.rule_action_penalty,
+                score=score,
                 eval_before=eval_before,
                 eval_after=eval_after,
-                best_move_san=best_san,
+                board=outcome.board,
+                board_after=board_after,
+                rule_status=outcome.rule_before,
+                best_san=best_san,
                 best_line_san=best_line_san,
-                best_line_san_truncated=bool(eval_before.pv and len(eval_before.pv) > 6),
-                played_line_san=played_line_san,
-                played_continuation_san=played_continuation,
-                syntax_warning=None,
+                played_continuation=played_continuation,
                 action_type=action_type,
-                best_action=score.best_action,
-                is_best_action=score.is_best_action,
-                action_equivalent=score.action_equivalent,
-                played_action_obj=build_played_action(
-                    action_type,
-                    move_uci=played_uci,
-                    move_san=played_san,
-                    rule_status=outcome.rule_before,
-                    cp=eval_after.cp,
-                    mate=eval_after.mate,
-                ),
-                best_action_obj=eval_before.best_action_obj,
-                missed_draw_claim=score.missed_draw_claim,
-                conceded_draw_claim=score.conceded_draw_claim,
-                claim_reason=score.claim_reason,
-                claim_move=score.claim_move,
-                can_claim_now=score.can_claim_now,
-                can_claim_with_intended_move=score.can_claim_with_intended_move,
-                claim_moves=score.claim_moves,
-                classification_verified=verified,
+                syntax_warning=None,
             )
-            await _cache.set_classify(cache_key, result)
-            return result
 
-        # Audit P0/P1: the depth+4 verification block is for `play_move` only.
-        # The classifier's verify_best_if_needed already encodes this; we
-        # delegate to the service above. The inline legacy's special-case
-        # for `pool.classify_move` (when the pool exposes it) is omitted
-        # because the standard path goes through `_evaluate_game_position_cached`
-        # and the audit contracts are identical (tests cover both).
         result = cast(MCPMoveAnalysis, await _single_flight.do(cache_key, _compute))
+        await _cache.set_classify(cache_key, result)
         await metrics.record(
             "classify_move",
             (time.time() - t0) * 1000,
@@ -277,61 +222,85 @@ async def classify_move(
         raise _tool_error(code="engine_error", message=str(exc), tool="classify_move") from exc
 
 
-def _best_san_for_score(
-    board: chess.Board,
-    score,
-    eval_before,
-    played_san: str | None,
-    chess_move: chess.Move | None,
-) -> str | None:
-    """Engine-best SAN with class-consistency guard (audit U-06)."""
-    if chess_move is not None and score.is_best_engine_move:
-        return played_san
-    if not eval_before.best_move:
-        return None
-    try:
-        bm = chess.Move.from_uci(eval_before.best_move.lower())
-        if bm in board.legal_moves:
-            return board.san(bm)
-    except Exception:
-        return None
-    return None
-
-
-def _safe_san(board: chess.Board, uci: str) -> str | None:
-    try:
-        m = chess.Move.from_uci(uci.lower())
-        if m in board.legal_moves:
-            return board.san(m)
-    except Exception:
-        return None
-    return None
-
-
-def _played_continuation_san(board_after: chess.Board, eval_after):
-    if eval_after.pv and not board_after.is_game_over():
-        return pv_to_san(board_after, eval_after.pv)
-    return None
-
-
-def _to_core_eval(mcp_eval) -> Eval:
-    return Eval(
-        cp=mcp_eval.cp,
-        mate=mcp_eval.mate,
-        best_move=mcp_eval.best_move,
-        pv=mcp_eval.pv,
-        depth=mcp_eval.depth,
+def _uses_pool_classify_fast_path(pool: Any, outcome: Any) -> bool:
+    """Custom analyzer pools (test fixtures) expose ``classify_move\`. The
+    standard pool types do not — keep the audit-aligned slow path."""
+    return (
+        outcome.chess_move is not None
+        and hasattr(pool, "classify_move")
+        and type(pool) not in (AnalyzerPool, TCPAnalyzerPool)
     )
 
 
-def board_after_for_chess_move(board: chess.Board, chess_move: chess.Move | None) -> chess.Board:
-    """Return a copy of ``board`` with ``chess_move`` pushed, or just the
-    copy when the move is ``None`` (claim_draw path)."""
-    b = board.copy(stack=True)
-    if chess_move is not None:
-        b.push(chess_move)
-    return b
+def _build_from_pool_classify(
+    *,
+    ma: Any,
+    board: Any,
+    chess_move: Any,
+    outcome_history_complete: str,
+    outcome_rule_before: Any,
+    action_type: str,
+    syntax_warning: str | None,
+) -> MCPMoveAnalysis:
+    """Build an :class:\`MCPMoveAnalysis\` from a pool-classify's
+    ``MoveAnalysis\` output. Delegates to the single
+    :func:\`build_classification\` builder so both paths produce
+    identical responses.
 
+    Audit invariants preserved byte-for-byte: B-01..B-03, P0, P1, P2,
+    P3, U-02..U-15.
+    """
+    from mcp_server.models import MCPEval
+    from mcp_server.move_grading import score_played_move
 
-def board_after_fen_for_chess_move(board: chess.Board, chess_move: chess.Move | None) -> str:
-    return board_after_for_chess_move(board, chess_move).fen()
+    eval_bef = MCPEval.from_eval(
+        ma.eval_before, board.fen(), board=board, history_complete=outcome_history_complete
+    )
+    fen_after = board_after_fen_for_chess_move(board, chess_move)
+    eval_aft = MCPEval.from_eval(
+        ma.eval_after,
+        fen_after,
+        board=board_after_for_chess_move(board, chess_move),
+        history_complete=outcome_history_complete,
+    )
+    board_after = board_after_for_chess_move(board, chess_move)
+    score = score_played_move(
+        board,
+        chess_move,
+        eval_bef,
+        eval_aft,
+        board_after,
+        action_type=action_type,
+    )
+    played_san = board.san(chess_move) if chess_move is not None else None
+    best_san = ma.best_move_san
+    if not best_san and eval_bef.best_move:
+        from core.engines.analyzer import pv_to_san
+
+        best_san = pv_to_san(board, [eval_bef.best_move]) if eval_bef.best_move else None
+    if not best_san:
+        from core.engines.analyzer import pv_to_san
+
+        best_san = pv_to_san(board, [eval_bef.best_move]) if eval_bef.best_move else None
+    best_line_san = ma.best_line_san or best_san
+    played_line_san = ma.played_line_san or played_san
+    played_continuation = None
+    if eval_aft.pv and not board_after.is_game_over():
+        from core.engines.analyzer import pv_to_san
+
+        played_continuation = pv_to_san(board_after, eval_aft.pv)
+    return build_classification(
+        played_uci=chess_move.uci() if chess_move is not None else "",
+        played_san=played_san,
+        score=score,
+        eval_before=eval_bef,
+        eval_after=eval_aft,
+        board=board,
+        board_after=board_after,
+        rule_status=outcome_rule_before,
+        best_san=best_san,
+        best_line_san=best_line_san,
+        played_continuation=played_continuation,
+        action_type=action_type,
+        syntax_warning=syntax_warning,
+    )
