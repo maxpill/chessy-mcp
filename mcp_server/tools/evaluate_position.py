@@ -18,7 +18,7 @@ from mcp_server.engine import _evaluate_game_position_cached, _get_analyzer_pool
 from mcp_server.metrics import metrics
 from mcp_server.models import MCPEval
 from mcp_server.parsers import _build_board_with_metadata, _history_provenance_for_input
-from mcp_server.server import mcp
+from mcp_server._mcp import mcp
 from mcp_server.tools._common import (
     VERBOSITY_COMPACT,
     _compact_mcpeval,

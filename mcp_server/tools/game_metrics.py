@@ -12,8 +12,8 @@ import math
 import chess
 
 from mcp_server.models import MCPEval, PlyAnalysisItem
+from mcp_server.move_grading import score_played_move
 from mcp_server.rules import evaluate_rule_status
-from mcp_server.server import score_played_move
 
 
 def _compute_game_metrics(
@@ -233,4 +233,3 @@ def _compute_game_metrics(
         (black_blunders, black_mistakes, black_inaccuracies),
         top_turning_points,
     )
-

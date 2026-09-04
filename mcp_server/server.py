@@ -4,8 +4,6 @@ import asyncio
 import logging
 from typing import Any
 
-from mcp.server.mcpserver import MCPServer
-
 from core.engines.pool import AnalyzerPool
 from mcp_server.cache import (
     CACHE_VERSION as CACHE_VERSION,
@@ -136,14 +134,12 @@ _evaluate_semaphore: asyncio.Semaphore | None = None
 _evaluate_semaphore_lock = asyncio.Lock()
 
 
-# MCP server instance. Defined BEFORE the tool imports so that
-# ``from mcp_server.server import mcp`` (used by tool modules) resolves
-# without a circular-import error.
-mcp = MCPServer(
-    "chess-analysis",
-    description="Streamable Stockfish chess analysis and move grading MCP server",
-    lifespan=_mcp_lifespan,
-)
+# MCP server instance. Defined BEFORE the tool imports so the tool
+# modules' ``from mcp_server.server import mcp`` resolves without a
+# circular-import error. The instance lives in a dedicated leaf module
+# (:mod:`mcp_server._mcp`) so the tools can import it without
+# re-entering ``mcp_server.server`` during boot.
+from mcp_server._mcp import mcp  # noqa: E402,F401
 
 
 # MCP tools — implementations live in mcp_server.tools. Importing

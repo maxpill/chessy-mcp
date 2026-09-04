@@ -18,7 +18,7 @@ from mcp.types import ToolAnnotations
 from mcp_server.analysis.top_moves_finder import TopMovesFinder
 from mcp_server.metrics import metrics
 from mcp_server.models import TopMovesResult
-from mcp_server.server import mcp
+from mcp_server._mcp import mcp
 from mcp_server.tools._common import (
     _resolve_verbosity,
     _tool_error,

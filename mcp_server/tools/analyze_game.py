@@ -18,7 +18,7 @@ from mcp.types import ToolAnnotations
 from mcp_server.analysis.game_analyzer import GameAnalyzer
 from mcp_server.metrics import metrics
 from mcp_server.models import GameAnalysisResult
-from mcp_server.server import mcp
+from mcp_server._mcp import mcp
 from mcp_server.tools._common import (
     _tool_error,
     _validate_requested_depth,

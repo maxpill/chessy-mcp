@@ -35,7 +35,7 @@ from mcp_server.cache import classify_cache_key
 from mcp_server.engine import _cache, _get_analyzer_pool, _single_flight
 from mcp_server.metrics import metrics
 from mcp_server.models import MCPMoveAnalysis
-from mcp_server.server import mcp
+from mcp_server._mcp import mcp
 from mcp_server.tcp_analyzer import TCPAnalyzerPool
 from mcp_server.tools._common import (
     _tool_error,
