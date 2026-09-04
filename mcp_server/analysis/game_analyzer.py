@@ -29,7 +29,6 @@ without booting an engine.
 
 from __future__ import annotations
 
-import re
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
@@ -47,7 +46,9 @@ if TYPE_CHECKING:
     from core.engines.pool import AnalyzerPool
 
 from mcp_server.analysis.game_validation import GameMetadata, extract_game_metadata
+from mcp_server.analysis.mainline_parser import parse_mainline
 from mcp_server.analysis.result_reconciliation import reconcile_result
+from mcp_server.analysis.trailing_ply_reconciliation import reconcile_trailing_plies
 from mcp_server.engine import (
     _build_identity,
     _gather_evaluate_positions_bounded,
@@ -55,24 +56,14 @@ from mcp_server.engine import (
 )
 from mcp_server.models import GameAnalysisResult, MCPEval
 from mcp_server.parsers import (
-    TAG_PAIR_REGEX,
     _check_multiple_games,
     _extract_canonical_pgn_text,
     _extract_game_inner,
     _find_movetext_result,
-    _normalize_movetext_figurines,
     _sanitize_malformed_pgn_header_lines,
-    _strip_pgn_escape_lines,
-    _strip_promotion_eq,
-    _truncate_movetext_at_result,
     _validate_strict_header_syntax,
     _validate_strict_mainline_surface,
 )
-from mcp_server.rules import (
-    evaluate_rule_status,
-    format_fen_status_errors,
-)
-from mcp_server.tools.game_metrics import _compute_game_metrics
 
 EnginePool = "AnalyzerPool | TCPAnalyzerPool"
 
@@ -172,14 +163,14 @@ class GameAnalyzer:
             syntax_warnings,
             _ignored_from_parse,
             cleaned_movetext,
-        ) = _parse_mainline(canonical_pgn, game, strict=strict)
+        ) = parse_mainline(canonical_pgn, game, strict=strict)
 
         result_movetext = _find_movetext_result(canonical_pgn)
         is_comment_only_input = bool(getattr(game, "comment_only_input", False))
 
         # Reconcile trailing-ply count BEFORE header validation warnings
         # so the "N plies ignored" line lands in metadata_warnings once.
-        ignored_trailing_plies = _reconcile_trailing_plies(
+        ignored_trailing_plies = reconcile_trailing_plies(
             canonical_pgn=canonical_pgn,
             cleaned_movetext=cleaned_movetext,
             moves=moves,
@@ -389,7 +380,15 @@ def _wrap_compute_game_metrics(
     """Translate the legacy tuple-return shape of
     :func:`mcp_server.tools.game_metrics._compute_game_metrics` into a
     typed :class:`GameMetrics` for the analyzer's response builder.
+
+    Lazy-imports ``_compute_game_metrics`` to break the existing
+    ``analysis -> tools.game_metrics -> server -> tools.analyze_game ->
+    analysis`` circular-import dance — the tool is loaded from
+    ``server.py`` after GameAnalyzer is fully initialized, so a
+    top-level import here would deadlock in some import orders.
     """
+    from mcp_server.tools.game_metrics import _compute_game_metrics as _impl
+
     (
         white_acc,
         black_acc,
@@ -402,7 +401,7 @@ def _wrap_compute_game_metrics(
         (white_blunders, white_mistakes, white_inaccuracies),
         (black_blunders, black_mistakes, black_inaccuracies),
         turning_points,
-    ) = _compute_game_metrics(positions, moves, evals)
+    ) = _impl(positions, moves, evals)
     return GameMetrics(
         white_accuracy=white_acc,
         black_accuracy=black_acc,
@@ -464,233 +463,3 @@ def _detect_opening(
         )
 
     return final_opening, final_eco, opening_disagreement, eco_disagreement
-
-
-def _parse_mainline(
-    canonical_pgn: str,
-    game: chess.pgn.Game,
-    *,
-    strict: bool,
-) -> tuple[list[chess.Board], list[chess.Move], list[str], int, str]:
-    """Walk the game mainline, validating tokens and surfacing strict/non-
-    strict normalization warnings. Returns ``(positions, moves, syntax_warnings,
-    ignored_trailing_plies, cleaned_movetext)``.
-
-    The implementation preserves every audit-invariant (U-15, R4-§C, B-01,
-    P3) — the only changes vs. the inline version are extraction into a
-    function and routing warnings through the return tuple instead of
-    enclosing-scope mutation.
-    """
-    positions: list[chess.Board] = []
-    moves: list[chess.Move] = []
-    syntax_warnings: list[str] = []
-    ignored_trailing_plies = 0
-
-    curr_board = game.board()
-    if not curr_board.is_valid() or curr_board.status() != chess.STATUS_VALID:
-        raise ValueError(
-            f"INVALID_FEN: Initial position '{curr_board.fen()}' in PGN is not a valid chess position ({format_fen_status_errors(curr_board.status())})."
-        )
-
-    positions.append(curr_board.copy(stack=True))
-    auto_termination: str | None = None
-    reached_terminal = False
-
-    initial_rule = evaluate_rule_status(curr_board, history_complete="complete")
-    if initial_rule.terminal is not None:
-        auto_termination = initial_rule.terminal
-        reached_terminal = True
-        if strict:
-            raise ValueError(
-                f"STRICT_PGN_ERROR: Initial FEN '{curr_board.fen()}' is already "
-                f"terminal ({initial_rule.terminal}); cannot execute movetext."
-            )
-        syntax_warnings.append(
-            f"Initial FEN is terminal ({initial_rule.terminal}); "
-            f"all movetext moves will be ignored."
-        )
-
-    for nag_match in re.finditer(r"\$([0-9]+)", canonical_pgn):
-        nag_val = int(nag_match.group(1))
-        if nag_val > 255:
-            syntax_warnings.append(f"NAG value ${nag_val} outside the PGN-supported range 0..255.")
-
-    header_end = 0
-    first_header = TAG_PAIR_REGEX.search(canonical_pgn)
-    first_mv = re.search(r"\b1\s*[\.\:]\s*[A-Za-z]", canonical_pgn)
-    if first_header and (not first_mv or first_header.start() < first_mv.start()):
-        header_end = first_header.end()
-        for m in TAG_PAIR_REGEX.finditer(canonical_pgn):
-            if m.start() < header_end:
-                continue
-            if canonical_pgn[header_end : m.start()].strip() == "":
-                header_end = m.end()
-            else:
-                break
-
-    movetext_section = canonical_pgn[header_end:]
-
-    movetext_section = re.sub(
-        r"(\b[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[\+#\?!]*)(\$\d+)",
-        r"\1 \2",
-        movetext_section,
-    )
-    movetext_section = re.sub(r"\b(O-O-O|O-O)([\+#\?!]*)(\$\d+)", r"\1\2 \3", movetext_section)
-    cleaned_movetext = _normalize_movetext_figurines(movetext_section)
-    if re.search(
-        r"(?:^|\s)\(?e\.?p\.?\)?(?=\s|$)",
-        cleaned_movetext,
-        flags=re.IGNORECASE,
-    ):
-        syntax_warnings.append("En-passant marker 'e.p.' normalized to canonical SAN.")
-    while "{" in cleaned_movetext and "}" in cleaned_movetext:
-        prev = cleaned_movetext
-        cleaned_movetext = re.sub(r"\{[^{}]*\}", " ", cleaned_movetext, flags=re.DOTALL)
-        if cleaned_movetext == prev:
-            break
-    cleaned_movetext = re.sub(r";[^\r\n]*", " ", cleaned_movetext)
-    while "(" in cleaned_movetext and ")" in cleaned_movetext:
-        prev = cleaned_movetext
-        cleaned_movetext = re.sub(r"\([^()]*\)", " ", cleaned_movetext, flags=re.DOTALL)
-        if cleaned_movetext == prev:
-            break
-    cleaned_movetext = re.sub(
-        r"(?<!\S)(\d+)\s+(\.+)(?=\s|$)",
-        lambda m: f" {m.group(1)}{m.group(2)} ",
-        cleaned_movetext,
-    )
-
-    movetext_tokens = cleaned_movetext.split()
-    tok_idx = 0
-    expected_fullmove = curr_board.fullmove_number
-
-    for i, tok in enumerate(movetext_tokens):
-        clean_tok = tok.strip(".,;:!?")
-        num_m = re.match(r"^(\d+)[\.\:]*$", clean_tok)
-        if num_m:
-            tok_idx = i
-            break
-        try:
-            curr_board.parse_san(clean_tok)
-            tok_idx = i
-            break
-        except Exception:
-            continue
-
-    for node in game.mainline():
-        if reached_terminal:
-            ignored_trailing_plies += 1
-            continue
-
-        move = node.move
-        if move not in curr_board.legal_moves:
-            ignored_trailing_plies += 1
-            reached_terminal = True
-            continue
-
-        canonical_san = curr_board.san(move)
-
-        while tok_idx < len(movetext_tokens):
-            raw_tok = movetext_tokens[tok_idx]
-            num_m = re.match(r"^(\d+)(\.+)$", raw_tok)
-            if num_m:
-                move_num = int(num_m.group(1))
-                if move_num != expected_fullmove:
-                    syntax_warnings.append(
-                        f"Move number mismatch: found '{movetext_tokens[tok_idx]}' but expected move {expected_fullmove}."
-                    )
-                expected_dots = "..." if curr_board.turn == chess.BLACK else "."
-                actual_dots = num_m.group(2) or ""
-                if actual_dots != expected_dots:
-                    syntax_warnings.append(
-                        f"Wrong side marker: found '{movetext_tokens[tok_idx]}' "
-                        f"but expected '{expected_dots}' for the side to move."
-                    )
-                tok_idx += 1
-                continue
-            if raw_tok in ("1-0", "0-1", "1/2-1/2", "*") or re.match(r"^\$[0-9]+$", raw_tok):
-                tok_idx += 1
-                continue
-            break
-
-        if tok_idx < len(movetext_tokens):
-            raw_tok = movetext_tokens[tok_idx].strip(".,;:!?")
-            raw_tok_san = raw_tok.rstrip("!?")
-            raw_tok_promotionless = _strip_promotion_eq(raw_tok_san)
-            canonical_promotionless = _strip_promotion_eq(canonical_san)
-            if raw_tok_promotionless != canonical_promotionless and not re.fullmatch(
-                r"[a-h][1-8][a-h][1-8][qrbn]?", raw_tok_san.lower()
-            ):
-                syntax_warnings.append(
-                    f"Input SAN '{movetext_tokens[tok_idx]}' normalized to '{canonical_san}'"
-                )
-            tok_idx += 1
-
-        moves.append(move)
-        curr_board.push(move)
-        positions.append(curr_board.copy(stack=True))
-        if curr_board.turn == chess.WHITE:
-            expected_fullmove += 1
-
-        if curr_board.is_repetition(5):
-            reached_terminal = True
-            auto_termination = "fivefold_repetition"
-        else:
-            rule_after = evaluate_rule_status(curr_board, history_complete="complete")
-            if rule_after.terminal is not None:
-                reached_terminal = True
-                auto_termination = rule_after.terminal
-
-    return positions, moves, syntax_warnings, ignored_trailing_plies, cleaned_movetext
-
-
-def _reconcile_trailing_plies(
-    *,
-    canonical_pgn: str,
-    cleaned_movetext: str,
-    moves: list[chess.Move],
-    game: chess.pgn.Game,
-) -> int:
-    """Reconcile ignored trailing plies (audit P2): count tokens after the
-    board-trace ends so callers see the actual number of unused ply tokens
-    rather than ``len(game.errors)`` (which underreports — usually 1 even
-    when several trailing tokens were ignored)."""
-    ignored_trailing = 0
-
-    # Branch 1: python-chess flagged parse errors — count tokens after the
-    # last successfully executed ply.
-    if game.errors:
-        consumed_plies = len(moves)
-        san_pattern = (
-            r"\b(?:[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[\+#\?!]*"
-            r"|O-O-O[\+#\?!]*|O-O[\+#\?!]*)\b"
-        )
-        total_ply_tokens = len(re.findall(san_pattern, cleaned_movetext))
-        trailing_from_errors = max(0, total_ply_tokens - consumed_plies)
-        if trailing_from_errors > 0:
-            ignored_trailing += trailing_from_errors
-        else:
-            # Fallback when no recoverable tokens exist after the error —
-            # surface at least ``len(game.errors)`` so the count is never
-            # below the parser's own signal.
-            ignored_trailing = max(ignored_trailing, len(game.errors))
-
-    # Branch 2: tokens that survive AFTER the result token in the raw PGN
-    # (e.g. trailing junk after ``1-0`` / ``*`` that python-chess silently
-    # accepted). Audit U-15 ensures side markers are caught upstream; this
-    # branch catches ply tokens themselves.
-    raw_pgn_clean = _strip_pgn_escape_lines(canonical_pgn)
-    raw_truncated = _truncate_movetext_at_result(raw_pgn_clean)
-    if len(raw_truncated) < len(raw_pgn_clean):
-        after_part = raw_pgn_clean[len(raw_truncated) :]
-        after_clean = re.sub(r"\{[^{}]*\}", " ", after_part)
-        after_clean = re.sub(r";[^\r\n]*", " ", after_clean)
-        tokens_after = re.findall(
-            r"\b(?:[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[\+#\?!]*"
-            r"|O-O-O[\+#\?!]*|O-O[\+#\?!]*)\b",
-            after_clean,
-        )
-        if tokens_after:
-            ignored_trailing += len(tokens_after)
-
-    return ignored_trailing
