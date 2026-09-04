@@ -87,7 +87,17 @@ async def mcp_lifespan(server: MCPServer) -> AsyncGenerator[dict[str, Any]]:
         )
 
     try:
-        yield {"pool": pool, "settings": cfg, "pool_size": pool_size}
+        # Phase 31: also yield a ToolContext so tools can fetch dependencies
+        # via ``ctx.request_context.lifespan_context["ctx"]`` instead of
+        # reaching back into module globals. Built once here, frozen for
+        # the lifetime of the process.
+        from mcp_server.core.context import ToolContext
+
+        ctx = ToolContext.from_engine_layer(
+            engine=pool,
+            settings=cfg,
+        )
+        yield {"pool": pool, "settings": cfg, "pool_size": pool_size, "ctx": ctx}
     finally:
         if stats_task is not None:
             stats_task.cancel()
