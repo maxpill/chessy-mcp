@@ -13,6 +13,7 @@ from collections.abc import Iterable
 
 import chess
 
+from mcp_server.analysis.forensic_extensions import apply_move_forensic_extensions
 from mcp_server.analysis.forensics import build_position_fingerprint
 from mcp_server.analysis.position_integrity import (
     build_rich_position_delta,
@@ -262,7 +263,12 @@ def upgrade_move_forensics(
         reference_uci=reference_uci,
     )
 
-    return result.model_copy(update={"forensics": evidence.model_copy(update=updates)})
+    upgraded = result.model_copy(update={"forensics": evidence.model_copy(update=updates)})
+    return apply_move_forensic_extensions(
+        upgraded,
+        board_before,
+        played_move=played_move,
+    )
 
 
 def upgrade_top_moves_forensics(
