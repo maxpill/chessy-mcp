@@ -139,7 +139,7 @@ _evaluate_semaphore_lock = asyncio.Lock()
 # circular-import error. The instance lives in a dedicated leaf module
 # (:mod:`mcp_server._mcp`) so the tools can import it without
 # re-entering ``mcp_server.server`` during boot.
-from mcp_server._mcp import mcp  # noqa: E402,F401
+from mcp_server._mcp import mcp  # noqa: E402
 
 
 # MCP tools — implementations live in mcp_server.tools. Importing
