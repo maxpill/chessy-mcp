@@ -209,6 +209,14 @@ class CandidatePositionDifference(BaseModel):
     only_candidate_opened_files: list[str] = Field(default_factory=list)
     only_reference_pawn_structure_changes: list[str] = Field(default_factory=list)
     only_candidate_pawn_structure_changes: list[str] = Field(default_factory=list)
+    only_reference_piece_safety_changes: list[str] = Field(default_factory=list)
+    only_candidate_piece_safety_changes: list[str] = Field(default_factory=list)
+    only_reference_piece_mobility_changes: list[str] = Field(default_factory=list)
+    only_candidate_piece_mobility_changes: list[str] = Field(default_factory=list)
+    only_reference_strategic_square_control_changes: list[str] = Field(default_factory=list)
+    only_candidate_strategic_square_control_changes: list[str] = Field(default_factory=list)
+    only_reference_mechanism_candidates: list[str] = Field(default_factory=list)
+    only_candidate_mechanism_candidates: list[str] = Field(default_factory=list)
     king_ring_attack_delta_difference_white: int = 0
     king_ring_attack_delta_difference_black: int = 0
     proof_scope: str = (
