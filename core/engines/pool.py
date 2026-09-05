@@ -156,7 +156,7 @@ class _EnginePool:
                 self._target_size,
             )
             self._start_self_heal()
-            raise first_exc
+            raise first_exc from None
 
         try:
             result = await fn(fresh)
