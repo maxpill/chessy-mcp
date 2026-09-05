@@ -1,9 +1,9 @@
 """Opt-in forensic enrichment for ``top_moves``.
 
 The normal top-moves path remains the cheap engine ranking API. Rich modes
-reuse the already parsed position and add explicit resulting-position evidence
-for requested candidates plus a bounded tactical defense proof. The proof
-surface never calls a sampled line exhaustive.
+reuse the parsed position and add explicit resulting-position evidence for
+requested candidates plus a bounded tactical defense proof. The proof surface
+never calls a sampled line exhaustive.
 """
 
 from __future__ import annotations
@@ -14,10 +14,10 @@ from typing import Any, Literal
 import chess
 
 from mcp_server.analysis.forensics import (
+    _candidate_evidence,
     _captured_piece,
     _piece_label,
     _principal_line,
-    _candidate_evidence,
     build_position_fingerprint,
     build_tactical_snapshot,
     parse_candidate_move,
@@ -25,6 +25,7 @@ from mcp_server.analysis.forensics import (
 from mcp_server.models.forensics import (
     CandidateEvidence,
     DefenseEvidence,
+    ForensicTopMovesResult,
     TacticalProofEvidence,
     TopMovesForensicEvidence,
 )
@@ -111,10 +112,8 @@ def _rank_exhaustive_defenses(
     def score(item: DefenseEvidence) -> int:
         if item.eval_mate is not None:
             mate = item.eval_mate
-            value = (MATE_VALUE - min(abs(mate), MATE_VALUE - 1)) * (1 if mate > 0 else -1)
-        else:
-            value = item.eval_cp or 0
-        return value
+            return (MATE_VALUE - min(abs(mate), MATE_VALUE - 1)) * (1 if mate > 0 else -1)
+        return item.eval_cp or 0
 
     ordered = sorted(defenses, key=score, reverse=defender == chess.WHITE)
     return [item.model_copy(update={"rank": idx}) for idx, item in enumerate(ordered, start=1)]
@@ -128,6 +127,7 @@ async def build_tactical_proof(
     depth: int,
     proof_defenses: int,
 ) -> TacticalProofEvidence | None:
+    """Evaluate the best move's reply tree with an explicit completeness label."""
     root_move = _root_move(result, board)
     if root_move is None:
         return None
@@ -205,7 +205,8 @@ async def enrich_top_moves_result(
     include_moves: list[str] | None,
     proof_mode: Literal["none", "tactical"],
     proof_defenses: int,
-) -> TopMovesResult:
+) -> ForensicTopMovesResult:
+    """Attach position evidence, explicit candidates, and optional proof data."""
     requested: list[str] = []
     if detail == "forensic":
         for item in result.result:
@@ -236,11 +237,11 @@ async def enrich_top_moves_result(
             proof_defenses=proof_defenses,
         )
 
-    payload = TopMovesForensicEvidence(
+    forensic = TopMovesForensicEvidence(
         detail=detail,
         position=build_position_fingerprint(board),
         tactical_snapshot=build_tactical_snapshot(board),
         candidate_comparisons=comparisons,
         proof=proof,
     )
-    return result.model_copy(update={"forensics": payload.model_dump()})
+    return ForensicTopMovesResult(**result.model_dump(), forensics=forensic)
