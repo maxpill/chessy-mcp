@@ -30,7 +30,22 @@ def estimate_mcp_request_cost(body: bytes) -> float:
             n = max(1, min(int(args.get("n", 3)), 20))
             return 1.0 + (depth * n) / 14.0
         if tool_name == "classify_move":
-            return 2.0 + depth / 10.0
+            base = 2.0 + depth / 10.0
+            detail = str(args.get("detail", "standard"))
+            compare_any = args.get("compare_moves")
+            compare_moves = compare_any if isinstance(compare_any, list) else []
+            if detail == "coach" and not compare_moves:
+                return base + 0.5
+            if detail == "forensic" or compare_moves:
+                # Forensic mode may perform one verification search after the
+                # strongest reply plus one post-position search for the played
+                # move, engine-best move and each explicit comparison.  Charge
+                # the admission limiter proportionally so rich coaching calls
+                # cannot bypass the same CPU fairness as MultiPV requests.
+                explicit = min(len(compare_moves), 8)
+                candidate_searches = min(2 + explicit, 8)
+                return base + (depth * (1 + candidate_searches)) / 14.0
+            return base
         if tool_name == "analyze_game":
             pgn = str(args.get("pgn", ""))
             estimated_plies = max(1.0, min(200.0, len(pgn) / 24.0))
