@@ -1,37 +1,4 @@
-"""ActionEvaluation — the canonical value-object for chess action values.
-
-Bug doc §3.2, §4.6, §22 — the codebase had four endpoints computing
-their own notion of "what's this action worth?" using three different
-signals (root cp, post-state cp, post-state mate). Each endpoint reached
-its own conclusion and they disagreed.
-
-This module fixes that by introducing a single immutable value object:
-
-    ActionEvaluation(
-        action: LegalAction,
-        outcome: Outcome,            # WIN / LOSS / DRAW / ACTIVE_UNKNOWN
-        canonical_value: int | None,  # signed-mover-POV cp; MATE_CP for mate
-        mate_distance: int | None,    # positive=WIN, negative=LOSS, None=non-mate
-        source: ActionSource,         # ROOT_MULTIPV / POST_POSITION / RULE_DEFAULT
-        rule_value: Outcome | None,   # the rule-mandated outcome (claim/game-over)
-    )
-
-Every tool that emits a "best_action_obj" / "played_action_obj" / "value"
-goes through this contract. Same LegalAction → one canonical value,
-guaranteed.
-
-    evaluate_action(board, action, *, pool, depth) -> ActionEvaluation
-        Pure-ish: applies the action, computes terminal outcome, optionally
-        calls the engine for an active post-state evaluation.
-
-    choose_recommended_action(board, evaluations: list[ActionEvaluation]) -> LegalAction
-        Pure: given a list of evaluations, picks the one LegalAction.
-        Rule: any WIN play_move beats any DRAW claim beats any active play_move.
-
-This is the only allowed entry-point for action-value reasoning. The
-pre-existing helpers in rules/action_choice.py are kept as a thin
-back-compat shim that delegates here.
-"""
+"""ActionEvaluation: canonical value object for chess action values."""
 
 from __future__ import annotations
 
@@ -47,7 +14,6 @@ from mcp_server.domain.types import Outcome
 if TYPE_CHECKING:
     from mcp_server.engine.protocol import EnginePoolLike
 
-
 __all__ = [
     "MATE_CP",
     "ActionEvaluation",
@@ -57,13 +23,10 @@ __all__ = [
     "terminal_outcome_from_status",
 ]
 
-
 MATE_CP = 100_000
 
 
 class ActionSource(StrEnum):
-    """Where the value signal came from."""
-
     ROOT_MULTIPV = "root_multipv"
     POST_POSITION = "post_position"
     RULE_DEFAULT = "rule_default"
@@ -72,12 +35,6 @@ class ActionSource(StrEnum):
 
 @dataclass(frozen=True)
 class ActionEvaluation:
-    """Canonical value of one LegalAction from this position.
-
-    Frozen — once evaluated, an action has exactly one value. Equality
-    compares action + outcome + canonical_value + mate_distance.
-    """
-
     action: GameAction
     outcome: Outcome
     canonical_value: int | None
@@ -99,7 +56,6 @@ class ActionEvaluation:
 
 
 def terminal_outcome_from_status(rule_status: Any) -> Outcome:
-    """Map a RuleStatus.terminal string to an Outcome (mover-POV)."""
     if rule_status is None or getattr(rule_status, "terminal", None) is None:
         return Outcome.ACTIVE
     term = rule_status.terminal
@@ -114,11 +70,6 @@ def terminal_outcome_from_status(rule_status: Any) -> Outcome:
 
 
 def _mover_is(rule_status: Any, color: chess.Color) -> bool:
-    """Heuristic: we don't know the board from the rule_status, but the
-    status knows the side that just moved (the loser of checkmate). For
-    the WIN determination we need the mover's color — which is the side
-    NOT in check. Use the stalemate/checkmate convention: the winner.
-    """
     winner = getattr(rule_status, "winner", None)
     if winner == "white":
         return color == chess.WHITE
@@ -135,13 +86,6 @@ async def evaluate_action(
     depth: int = 8,
     rule_status: Any | None = None,
 ) -> ActionEvaluation:
-    """Compute the canonical ActionEvaluation for one LegalAction.
-
-    For play_move: apply, look up post-state terminal status, optionally
-    call engine on post-state for active positions.
-    For claim_draw / claim_draw_with_intended_move: rule_default → DRAW.
-    For game_over: rule_status → WIN/LOSS/DRAW.
-    """
     from mcp_server.domain.action import (
         ClaimDrawAction,
         ClaimDrawWithIntendedMoveAction,
@@ -150,13 +94,14 @@ async def evaluate_action(
     )
 
     if isinstance(action, GameOverAction):
+        outcome = _outcome_from_game_over(action)
         return ActionEvaluation(
             action=action,
-            outcome=_outcome_from_game_over(action),
+            outcome=outcome,
             canonical_value=None,
             mate_distance=None,
             source=ActionSource.RULE_DEFAULT,
-            rule_value=_outcome_from_game_over(action),
+            rule_value=outcome,
         )
 
     if isinstance(action, (ClaimDrawAction, ClaimDrawWithIntendedMoveAction)):
@@ -218,9 +163,9 @@ async def _evaluate_play_move(
         post_rule_status = _quick_post_rule_status(post)
 
     outcome = _post_outcome(post, post_rule_status, mover_color=board.turn)
-    if outcome.is_terminal:
+    if outcome in (Outcome.WIN, Outcome.LOSS, Outcome.DRAW):
         mate_distance = _post_mate_distance(post, mover_color=board.turn)
-        cp: int | None = None
+        cp: int | None
         if outcome == Outcome.WIN:
             cp = MATE_CP
         elif outcome == Outcome.LOSS:
@@ -249,9 +194,6 @@ async def _evaluate_play_move(
 
 
 def _quick_post_rule_status(post: chess.Board) -> Any:
-    """Cheap post-state rule status: only the predicates that don't need
-    move-stack history (terminal-in-board + 50-move)."""
-
     @dataclass
     class _Stub:
         terminal: str | None = None
@@ -272,7 +214,6 @@ def _quick_post_rule_status(post: chess.Board) -> Any:
 
 
 def _post_outcome(post: chess.Board, rule_status: Any, *, mover_color: chess.Color) -> Outcome:
-    """Determine outcome of the post-state from the mover's POV."""
     term = getattr(rule_status, "terminal", None)
     if term is None:
         return Outcome.ACTIVE
@@ -287,8 +228,6 @@ def _post_outcome(post: chess.Board, rule_status: Any, *, mover_color: chess.Col
 
 
 def _post_mate_distance(post: chess.Board, *, mover_color: chess.Color) -> int | None:
-    """Mate distance in plies. 1 = mate-in-1 for mover. Negative = mover
-    is mated. Returns None if not checkmate."""
     if not post.is_checkmate():
         return None
     return 1
@@ -301,8 +240,6 @@ async def _post_state_engine_eval(
     pool: EnginePoolLike | None,
     depth: int,
 ) -> tuple[int | None, int | None]:
-    """Run a short engine call on the post-state, return (canonical_cp, mate_distance)
-    from mover-POV. Returns (None, None) when pool is unavailable or the call fails."""
     if pool is None:
         return None, None
     try:
@@ -330,14 +267,6 @@ def choose_recommended_action(
     can_claim_now: bool = False,
     can_claim_with_intended_move: bool = False,
 ) -> ActionEvaluation:
-    """Pure: pick the canonical ActionEvaluation.
-
-    Rule (in order):
-      1. Any play_move with Outcome.WIN wins (mate-distance ascending).
-      2. Otherwise any active play_move with the highest canonical_value.
-      3. Otherwise the DRAW claim (if legal).
-      4. Otherwise the best active play_move (lowest canonical_value / longest mate loss).
-    """
     winning = [
         e
         for e in evaluations
