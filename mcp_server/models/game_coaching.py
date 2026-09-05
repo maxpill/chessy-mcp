@@ -169,6 +169,9 @@ class GameCoachingEvidence(BaseModel):
     root_cause_links: list[RootCauseLink] = Field(default_factory=list)
     final_position: FinalPositionAssessment
     termination: GameTerminationAssessment | None = None
+    critical_evidence_signature_counts: dict[str, int] = Field(default_factory=dict)
+    critical_reason_counts: dict[str, int] = Field(default_factory=dict)
+    self_reported_critical_plies: list[int] = Field(default_factory=list)
     scan_depth: int
     verification_depth: int | None = None
     adaptive_escalation_depth: int | None = None
