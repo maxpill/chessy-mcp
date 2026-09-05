@@ -13,6 +13,7 @@ import chess
 
 from mcp_server.analysis.forensics import (
     PIECE_NAMES,
+    PIECE_VALUES,
     build_position_delta,
     build_position_fingerprint,
     build_tactical_snapshot,
@@ -21,14 +22,29 @@ from mcp_server.models.forensics import (
     DefenderLoadEvidence,
     ForensicEval,
     ForcingMoveEvidence,
+    MechanismCandidateEvidence,
     PieceEvidence,
+    PieceMobilityDelta,
     PieceSafetyDelta,
     PositionDelta,
     PositionForensicEvidence,
+    SquareControlDelta,
     TacticalHangingEvidence,
     TacticalSnapshot,
 )
 from mcp_server.models.mcpeval import MCPEval
+
+MAX_MECHANISM_CANDIDATES = 32
+STRATEGIC_CENTER = {
+    chess.C4,
+    chess.D4,
+    chess.E4,
+    chess.F4,
+    chess.C5,
+    chess.D5,
+    chess.E5,
+    chess.F5,
+}
 
 
 def _color_name(color: chess.Color) -> Literal["white", "black"]:
@@ -139,6 +155,153 @@ def _defender_sort_key(item: DefenderLoadEvidence) -> tuple[str, str, str]:
     return item.color, item.square, item.piece
 
 
+def _mechanism_sort_key(item: MechanismCandidateEvidence) -> tuple[str, str, str]:
+    return item.mechanism, item.trigger_san or "", item.actor or ""
+
+
+def _fork_targets(post: chess.Board, move: chess.Move) -> list[str]:
+    actor = post.piece_at(move.to_square)
+    if actor is None:
+        return []
+    actor_value = PIECE_VALUES[actor.piece_type]
+    targets: list[str] = []
+    for square in post.attacks(move.to_square):
+        target = post.piece_at(square)
+        if target is None or target.color == actor.color:
+            continue
+        if target.piece_type == chess.KING:
+            targets.append(_piece_label(target, square))
+            continue
+        if target.piece_type == chess.PAWN:
+            continue
+        if PIECE_VALUES[target.piece_type] >= actor_value:
+            targets.append(_piece_label(target, square))
+    return sorted(targets)
+
+
+def _mechanism_candidates(
+    board: chess.Board,
+    *,
+    pinned: list[PieceEvidence],
+    overloaded: list[DefenderLoadEvidence],
+) -> list[MechanismCandidateEvidence]:
+    candidates: list[MechanismCandidateEvidence] = []
+
+    for piece in pinned:
+        candidates.append(
+            MechanismCandidateEvidence(
+                mechanism="absolute_pin",
+                actor=f"{piece.color}_{piece.piece}@{piece.square}",
+                targets=[f"{piece.color}_{piece.piece}@{piece.square}"],
+                evidence={"python_chess_is_pinned": True},
+                proof_scope=(
+                    "Deterministic king-line pin in the current position. This does not by "
+                    "itself prove a material win."
+                ),
+            )
+        )
+
+    for load in overloaded:
+        candidates.append(
+            MechanismCandidateEvidence(
+                mechanism="overloaded_defender_candidate",
+                actor=f"{load.color}_{load.piece}@{load.square}",
+                targets=list(load.attacked_targets),
+                evidence={
+                    "attacked_targets": list(load.attacked_targets),
+                    "sole_defense_targets": list(load.sole_defense_targets),
+                },
+                proof_scope=(
+                    "The piece geometrically defends at least two currently attacked targets. "
+                    "This is an overload candidate, not proof that a forcing sequence wins."
+                ),
+            )
+        )
+
+    for move in list(board.legal_moves):
+        san = board.san(move)
+        actor_before = board.piece_at(move.from_square)
+        if actor_before is None:
+            continue
+
+        if board.gives_check(move) and board.is_capture(move):
+            captured = _captured_piece(board, move)
+            candidates.append(
+                MechanismCandidateEvidence(
+                    mechanism="check_capture",
+                    trigger_uci=move.uci(),
+                    trigger_san=san,
+                    actor=_piece_label(actor_before, move.from_square),
+                    targets=(
+                        [_piece_label(captured, move.to_square)] if captured is not None else []
+                    ),
+                    evidence={"is_check": True, "is_capture": True},
+                    proof_scope="Deterministic legal move that is simultaneously check and capture.",
+                )
+            )
+
+        if move.promotion is not None:
+            candidates.append(
+                MechanismCandidateEvidence(
+                    mechanism="promotion_tactic",
+                    trigger_uci=move.uci(),
+                    trigger_san=san,
+                    actor=_piece_label(actor_before, move.from_square),
+                    evidence={"promotion": PIECE_NAMES[move.promotion]},
+                    proof_scope="Deterministic legal promotion move in the current position.",
+                )
+            )
+
+        if board.is_capture(move) and not board.is_en_passant(move):
+            defender = board.piece_at(move.to_square)
+            if defender is not None and defender.piece_type != chess.KING:
+                load = _defender_load(board, move.to_square, defender)
+                if load.sole_defense_targets:
+                    candidates.append(
+                        MechanismCandidateEvidence(
+                            mechanism="removal_of_defender_candidate",
+                            trigger_uci=move.uci(),
+                            trigger_san=san,
+                            actor=_piece_label(actor_before, move.from_square),
+                            targets=list(load.sole_defense_targets),
+                            evidence={
+                                "defender": _piece_label(defender, move.to_square),
+                                "dependent_targets": list(load.sole_defense_targets),
+                            },
+                            proof_scope=(
+                                "The captured piece is the sole geometric defender of at least "
+                                "one currently attacked target. Continuations are not proven."
+                            ),
+                        )
+                    )
+
+        post = board.copy(stack=True)
+        post.push(move)
+        fork_targets = _fork_targets(post, move)
+        if len(fork_targets) >= 2:
+            actor_after = post.piece_at(move.to_square)
+            candidates.append(
+                MechanismCandidateEvidence(
+                    mechanism="fork_candidate",
+                    trigger_uci=move.uci(),
+                    trigger_san=san,
+                    actor=(
+                        _piece_label(actor_after, move.to_square) if actor_after is not None else None
+                    ),
+                    targets=fork_targets,
+                    evidence={"attacked_valuable_targets": fork_targets},
+                    proof_scope=(
+                        "After the legal move, one piece geometrically attacks at least two "
+                        "non-pawn enemy targets whose value is at least the attacker's value, "
+                        "or the king. This does not prove a net material win."
+                    ),
+                )
+            )
+
+    ordered = sorted(candidates, key=_mechanism_sort_key)
+    return ordered[:MAX_MECHANISM_CANDIDATES]
+
+
 def build_rich_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
     base = build_tactical_snapshot(board)
     attacked_defenders: list[DefenderLoadEvidence] = []
@@ -152,11 +315,17 @@ def build_rich_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
         if len(load.attacked_targets) >= 2:
             overloaded.append(load)
 
+    overloaded = sorted(overloaded, key=_defender_sort_key)
     return base.model_copy(
         update={
             "tactically_hanging_candidates": _tactical_hanging_candidates(board),
             "attacked_defenders": sorted(attacked_defenders, key=_defender_sort_key),
-            "overloaded_defender_candidates": sorted(overloaded, key=_defender_sort_key),
+            "overloaded_defender_candidates": overloaded,
+            "mechanism_candidates": _mechanism_candidates(
+                board,
+                pinned=base.pinned_pieces,
+                overloaded=overloaded,
+            ),
         }
     )
 
@@ -182,12 +351,15 @@ def _pawn_squares(board: chess.Board, color: chess.Color) -> set[str]:
     return {chess.square_name(square) for square in board.pieces(chess.PAWN, color)}
 
 
-def _king_ring_attacks(board: chess.Board, color: chess.Color) -> int:
+def _king_ring(board: chess.Board, color: chess.Color) -> set[chess.Square]:
     king = board.king(color)
     if king is None:
-        return 0
-    ring = set(board.attacks(king)) | {king}
-    return sum(1 for square in ring if board.attackers(not color, square))
+        return set()
+    return set(board.attacks(king)) | {king}
+
+
+def _king_ring_attacks(board: chess.Board, color: chess.Color) -> int:
+    return sum(1 for square in _king_ring(board, color) if board.attackers(not color, square))
 
 
 def _piece_safety_changes(before: chess.Board, after: chess.Board) -> list[PieceSafetyDelta]:
@@ -212,6 +384,59 @@ def _piece_safety_changes(before: chess.Board, after: chess.Board) -> list[Piece
             )
         )
     return sorted(changes, key=lambda item: item.target)
+
+
+def _piece_mobility_changes(before: chess.Board, after: chess.Board) -> list[PieceMobilityDelta]:
+    changes: list[PieceMobilityDelta] = []
+    sliders = {chess.BISHOP, chess.ROOK, chess.QUEEN}
+    for square, before_piece in before.piece_map().items():
+        if before_piece.piece_type not in sliders or after.piece_at(square) != before_piece:
+            continue
+        before_attacks = set(before.attacks(square))
+        after_attacks = set(after.attacks(square))
+        if before_attacks == after_attacks:
+            continue
+        changes.append(
+            PieceMobilityDelta(
+                target=_piece_label(before_piece, square),
+                mobility_before=len(before_attacks),
+                mobility_after=len(after_attacks),
+                gained_squares=sorted(chess.square_name(sq) for sq in after_attacks - before_attacks),
+                lost_squares=sorted(chess.square_name(sq) for sq in before_attacks - after_attacks),
+            )
+        )
+    return sorted(changes, key=lambda item: item.target)
+
+
+def _strategic_squares(before: chess.Board, after: chess.Board) -> set[chess.Square]:
+    squares = set(STRATEGIC_CENTER)
+    for color in (chess.WHITE, chess.BLACK):
+        squares.update(_king_ring(before, color))
+        squares.update(_king_ring(after, color))
+    return squares
+
+
+def _square_control_changes(before: chess.Board, after: chess.Board) -> list[SquareControlDelta]:
+    changes: list[SquareControlDelta] = []
+    for square in sorted(_strategic_squares(before, after)):
+        values = (
+            len(before.attackers(chess.WHITE, square)),
+            len(after.attackers(chess.WHITE, square)),
+            len(before.attackers(chess.BLACK, square)),
+            len(after.attackers(chess.BLACK, square)),
+        )
+        if values[0] == values[1] and values[2] == values[3]:
+            continue
+        changes.append(
+            SquareControlDelta(
+                square=chess.square_name(square),
+                white_attackers_before=values[0],
+                white_attackers_after=values[1],
+                black_attackers_before=values[2],
+                black_attackers_after=values[3],
+            )
+        )
+    return changes
 
 
 def build_rich_position_delta(
@@ -250,6 +475,8 @@ def build_rich_position_delta(
             "resolved_en_prise_pieces": sorted(before_en_prise - after_en_prise),
             "removed_pins": sorted(before_pins - after_pins),
             "piece_safety_changes": _piece_safety_changes(before, after),
+            "piece_mobility_changes": _piece_mobility_changes(before, after),
+            "strategic_square_control_changes": _square_control_changes(before, after),
             "opened_files": sorted(after_open - before_open),
             "closed_files": sorted(before_open - after_open),
             "pawn_structure_changes": pawn_changes,
