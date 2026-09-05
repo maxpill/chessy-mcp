@@ -19,9 +19,9 @@ from mcp_server.analysis.forensics import (
     _piece_label,
     _principal_line,
     build_position_fingerprint,
-    build_tactical_snapshot,
     parse_candidate_move,
 )
+from mcp_server.analysis.position_integrity import build_rich_tactical_snapshot
 from mcp_server.models.forensics import (
     CandidateEvidence,
     DefenseEvidence,
@@ -240,7 +240,7 @@ async def enrich_top_moves_result(
     forensic = TopMovesForensicEvidence(
         detail=detail,
         position=build_position_fingerprint(board),
-        tactical_snapshot=build_tactical_snapshot(board),
+        tactical_snapshot=build_rich_tactical_snapshot(board),
         candidate_comparisons=comparisons,
         proof=proof,
     )
