@@ -80,6 +80,34 @@ Four Streamable-HTTP MCP tools at `/mcp`:
 The 4-tool surface is intentional — the chessy app's coach runtime is the
 primary consumer, and this server is sized for that workload.
 
+### Coaching forensics
+
+`classify_move` keeps its default low-cost classification path, but coaching
+clients can opt into structured evidence without adding another MCP tool:
+
+```text
+classify_move(..., detail="coach")
+classify_move(..., detail="forensic", compare_moves=["g4", "gxh4"])
+```
+
+`detail="coach"` attaches deterministic position fingerprints, CCT-style
+forcing-move snapshots, strongest-reply metadata, position deltas, mechanism
+evidence and the principal continuation. `detail="forensic"` additionally
+verifies the strongest reply one step deeper and evaluates the resulting
+positions after the played move, engine-best move and explicitly requested
+comparison moves.
+
+The evidence layer intentionally does **not** claim what the player thought.
+It emits machine-readable signatures such as `FORCING_CAPTURE_REPLY` and
+`MISSED_FORCING_REPLY_CANDIDATE`; the coach/LLM combines those board facts
+with the player's self-report before assigning process labels such as
+"incomplete CCT" or "calculation stopped too early".
+
+The response also echoes a canonical piece map, material, side to move,
+castling/en-passant state and a deterministic position hash. That gives
+screen-based clients a position-verification handshake before they explain a
+puzzle or game position.
+
 ## Performance
 
 - **Stockfish pool size** defaults to `min(cpu_count, 8)` — sized to the
