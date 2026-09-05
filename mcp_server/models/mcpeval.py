@@ -209,6 +209,19 @@ class MCPEval(BaseModel):
     def move(self) -> str | None:
         return self.best_move
 
+    @classmethod
+    def from_eval(cls, ev: Any, fen: str, **kwargs: Any) -> MCPEval:
+        """Typed entry point for the legacy evaluation factory.
+
+        Historically this method was attached dynamically from
+        ``mcpeval_factory.attach_factory``. Declaring it on the model keeps
+        the runtime contract unchanged while making the public construction
+        API visible to static type checkers.
+        """
+        from mcp_server.models.mcpeval_factory import build_mcpeval_from_eval
+
+        return build_mcpeval_from_eval(cls, ev, fen, **kwargs)
+
     # ---------------- Typed block views (Phase 18 atomization) ----------------
     @computed_field  # type: ignore[misc]
     @property
