@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any
 
 import chess
 import chess.pgn
@@ -39,10 +39,9 @@ from mcp_server.parsers import (
     _validate_strict_mainline_surface,
 )
 
-# The service deliberately accepts both local and TCP pools plus test doubles.
-# Their common runtime contract is structural, so Any is the correct injected
-# boundary here rather than an invalid string-valued pseudo type alias.
-EnginePool: TypeAlias = Any
+# The service deliberately accepts local/TCP pools plus test doubles. Their
+# runtime contract is structural at this injection boundary.
+type EnginePool = Any
 
 
 @dataclass
