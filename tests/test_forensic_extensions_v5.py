@@ -7,6 +7,8 @@ from mcp_server.analysis.forensic_extensions import (
     strongest_reply_followup_evidence,
     strongest_reply_geometry_evidence,
 )
+from mcp_server.analysis.position_integrity import build_rich_tactical_snapshot
+from mcp_server.analysis.tactical_snapshot_extensions import extend_tactical_snapshot
 
 
 def test_adaptive_forcing_resolution_stops_after_immediate_material_punishment() -> None:
@@ -65,3 +67,29 @@ def test_skewer_reply_geometry_reports_front_and_rear_targets_without_claiming_w
     assert skewer["front_target"] == "black_queen@d7"
     assert skewer["rear_target"] == "black_rook@e8"
     assert "does not prove" in skewer["proof_scope"]
+
+
+def test_extended_snapshot_exposes_discovered_check_candidate() -> None:
+    board = chess.Board("4k3/8/8/8/8/8/4B3/4R1K1 w - - 0 1")
+    snapshot = extend_tactical_snapshot(board, build_rich_tactical_snapshot(board))
+
+    candidate = next(
+        item
+        for item in snapshot.mechanism_candidates
+        if item.mechanism == "discovered_check" and item.trigger_uci == "e2f3"
+    )
+    assert candidate.targets == ["black_king@e8"]
+    assert candidate.evidence["discovered_checker_squares"] == ["e1"]
+
+
+def test_extended_snapshot_exposes_skewer_candidate() -> None:
+    board = chess.Board("4r1k1/3q4/8/8/8/8/4B3/6K1 w - - 0 1")
+    snapshot = extend_tactical_snapshot(board, build_rich_tactical_snapshot(board))
+
+    candidate = next(
+        item
+        for item in snapshot.mechanism_candidates
+        if item.mechanism == "skewer_candidate" and item.trigger_uci == "e2b5"
+    )
+    assert candidate.targets == ["black_queen@d7", "black_rook@e8"]
+    assert candidate.evidence["rear_value_cp"] == 500
