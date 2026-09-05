@@ -1,12 +1,4 @@
-"""Termination resolution for :func:`reconcile_result`.
-
-Extracted from :mod:`mcp_server.analysis.result_reconciliation`. Owns
-:func:`resolve_termination` — cross-checking the PGN ``Termination``
-header against the board state and the auto-derived termination. Also
-:func:`is_concurrent_board_match`, the truth table that decides when
-the header and board-trace are concurrent (e.g. ``stalemate` +
-``is_stalemate()`).
-"""
+"""Termination resolution for :func:`reconcile_result`."""
 
 from __future__ import annotations
 
@@ -24,12 +16,7 @@ def resolve_termination(
     result_movetext: str | None,
     warnings: list[str],
 ) -> tuple[str | None, list[str]]:
-    """Cross-check the Termination header against the auto-derived termination.
-
-    Mutates ``warnings`` with disagreement findings (preserving the
-    audit-equivalent ordering vs. the inline version) and returns the
-    surface termination value.
-    """
+    """Cross-check the Termination header against the auto-derived termination."""
     if auto_termination is not None:
         termination_val = auto_termination
         if termination_header:
@@ -85,9 +72,8 @@ def resolve_termination(
     return norm_term_hdr, warnings
 
 
-def is_concurrent_board_match(norm_term: str, board: chess.Board) -> bool:
-    """True iff ``board`` independently exhibits ``norm_term`` (so header
-    and board-trace are concurrent, not contradictory)."""
+def is_concurrent_board_match(norm_term: str | None, board: chess.Board) -> bool:
+    """True iff ``board`` independently exhibits ``norm_term``."""
     if norm_term == "stalemate":
         return board.is_stalemate()
     if norm_term == "seventyfive_moves":
@@ -105,6 +91,5 @@ def is_concurrent_board_match(norm_term: str, board: chess.Board) -> bool:
     return False
 
 
-# Back-compat shims.
 _resolve_termination = resolve_termination
 _is_concurrent_board_match = is_concurrent_board_match
