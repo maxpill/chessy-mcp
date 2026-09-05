@@ -32,6 +32,20 @@ def test_adaptive_forcing_resolution_stops_after_immediate_material_punishment()
     assert step["cumulative_material_change_for_mover_cp"] <= -900
 
 
+def test_adaptive_forcing_resolution_does_not_stop_before_quiet_check_evasion() -> None:
+    board = chess.Board("6k1/8/8/8/8/8/8/R5K1 w - - 0 1")
+
+    evidence = build_adaptive_forcing_resolution(
+        board,
+        ["a1a8", "g8h7", "a8a7"],
+        mover=chess.WHITE,
+    )
+
+    assert evidence["moves"][0]["san"] == "Ra8+"
+    assert evidence["moves"][1]["uci"] == "g8h7"
+    assert evidence["plies_consumed"] >= 2
+
+
 def test_strongest_reply_null_move_probe_surfaces_new_forcing_followup() -> None:
     board = chess.Board("3q2k1/8/8/8/8/8/7P/6K1 b - - 0 1")
 
