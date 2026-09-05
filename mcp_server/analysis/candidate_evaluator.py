@@ -167,9 +167,12 @@ async def _walk_candidate_post_state(
     Raises on any decode / parse error so the caller can swallow it and
     fall back to a no-op candidate row.
     """
-    bm_obj = chess.Move.from_uci(candidate.best_move.lower())
+    best_move = candidate.best_move
+    if best_move is None:
+        raise ValueError("candidate has no best_move")
+    bm_obj = chess.Move.from_uci(best_move.lower())
     if bm_obj not in board.legal_moves:
-        raise ValueError(f"best_move {candidate.best_move} not legal on board")
+        raise ValueError(f"best_move {best_move} not legal on board")
     cand_san_val = board.san(bm_obj)
     is_zeroing = board.is_capture(bm_obj) or (board.piece_type_at(bm_obj.from_square) == chess.PAWN)
     b_cand.push(bm_obj)
