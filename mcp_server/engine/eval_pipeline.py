@@ -1,27 +1,6 @@
-"""Single-position eval pipeline helpers.
-
-Extracted from :mod:`mcp_server.engine.pool_factory` so the eval logic is
-broken into named, individually testable pieces. Two helpers live here now:
-
-    - :func:`build_terminal_mcpeval` — short-circuit when the position is
-      already terminal (checkmate / stalemate / 75-move / fivefold / dead).
-      Returns the ``MCPEval`` with a populated ``game_over`` typed action.
-    - :func:`evaluate_zeroing_post_state` — audit B-04/B-05 re-evaluation:
-      at halfmove>=100, the engine's root cp can be polluted by the draw on
-      the table; re-evaluate the post-state of the engine's best zeroing
-      capture so the action policy can distinguish "draw is available" from
-      "post-state is a forced win".
-
-The rule-aware best-move override (audit P0) is intentionally NOT extracted —
-it's tightly coupled to the inline ``pool.evaluate(board, root_moves=...)``
-loop in the orchestrator and has many small branches; pulling it out buys
-less readability than it costs. See ``pool_factory._evaluate_game_position_cached``
-for the live implementation.
-"""
+"""Single-position eval pipeline helpers."""
 
 from __future__ import annotations
-
-from typing import TYPE_CHECKING
 
 import chess
 
@@ -31,10 +10,6 @@ from mcp_server.engine.identity import build_identity
 from mcp_server.engine.protocol import EnginePoolLike
 from mcp_server.models import MCPEval
 from mcp_server.urls import lichess_urls
-
-if TYPE_CHECKING:
-    pass  # EnginePoolLike re-exported below — TYPE_CHECKING guards not needed
-
 
 __all__ = ["build_terminal_mcpeval", "evaluate_zeroing_post_state"]
 
@@ -46,14 +21,12 @@ def build_terminal_mcpeval(
     requested_depth: int,
     pool: EnginePoolLike,
 ) -> MCPEval:
-    """Build the ``MCPEval`` for an already-terminal position.
+    """Build MCPEval for an already-terminal position without an engine call."""
+    terminal_status = rule_status.terminal
+    if terminal_status is None:
+        raise ValueError("build_terminal_mcpeval requires a terminal rule status")
 
-    No engine call — terminal positions are deterministic, so the response
-    carries the game-over typed action, an empty PV, and the rule-status
-    metadata that callers surface in ``best_action_obj`` /
-    ``legal_actions``.
-    """
-    if rule_status.terminal == "checkmate":
+    if terminal_status == "checkmate":
         term_outcome = "win" if rule_status.winner == "white" else "loss"
         term_cp: int | None = None
         term_mate: int | None = 0
@@ -83,7 +56,7 @@ def build_terminal_mcpeval(
         if a.get("type") in ("claim_draw", "claim_draw_with_intended_move")
     ]
     return MCPEval(
-        status=rule_status.terminal,
+        status=terminal_status,
         winner=rule_status.winner,
         cp=term_cp,
         mate=term_mate,
@@ -104,8 +77,6 @@ def build_terminal_mcpeval(
         best_action_obj=terminal_best_action,
         legal_actions=terminal_legal_actions,
         legal_rule_actions=terminal_rule_actions,
-        # Bug fix (chessy-mcp-deep-audit §19): terminal positions must
-        # surface the concrete board's canonical FEN, not leave it null.
         canonical_fen=canonical_fen_str,
         fen_was_canonicalized=False,
         decision_value={
@@ -140,18 +111,7 @@ async def evaluate_zeroing_post_state(
     depth: int,
     pool: EnginePoolLike,
 ) -> tuple[int | None, int | None]:
-    """Audit B-04/B-05: re-evaluate the post-state of a winning zeroing move.
-
-    At halfmove>=100, Stockfish's root multipv can be polluted by the draw
-    being on the table — a winning Kxe2 in K+R vs R can report a tiny cp.
-    Re-running on the post-state of the zeroing capture surfaces the true
-    mover-POV advantage.
-
-    Returns ``(zeroing_cp, zeroing_mate)`` — one or the other is non-None
-    only when the post-state is materially winning for the mover.
-    Returns ``(None, None)`` when no re-eval was performed (not eligible,
-    not a zeroing move, post-state is terminal, or engine error).
-    """
+    """Re-evaluate a zeroing move's post-state when 50-move draw pollution is possible."""
     if not best_move_uci or board.halfmove_clock < 100 or board.is_game_over():
         return None, None
     try:
