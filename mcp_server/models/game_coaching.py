@@ -19,10 +19,27 @@ class GameSegment(BaseModel):
     start_ply: int
     end_ply: int
     perspective: Literal["white", "black"]
-    state: str
+    state: Literal[
+        "decisively_better",
+        "better",
+        "slightly_better",
+        "approximately_equal",
+        "slightly_worse",
+        "worse",
+        "decisively_worse",
+    ]
     eval_start_effective_cp: int
     eval_end_effective_cp: int
+    eval_peak_effective_cp: int | None = None
+    eval_trough_effective_cp: int | None = None
     transition_cause_ply: int | None = None
+    transition_confirmed_ply: int | None = None
+    stability: Literal["high", "medium", "low"] = "high"
+    raw_state_change_count: int = 0
+    inference_boundary: str = (
+        "Segment states use a small persistence filter so one-ply threshold noise does not "
+        "automatically become a new game phase. Large/decisive state jumps remain immediate."
+    )
 
 
 class AdvantageEvent(BaseModel):
@@ -67,7 +84,16 @@ class CriticalMoment(BaseModel):
     strongest_reply_san: str | None = None
     strongest_reply_is_check: bool | None = None
     strongest_reply_is_capture: bool | None = None
+    played_piece: str | None = None
+    only_move_missed_candidate: bool | None = None
+    newly_en_prise_user_pieces: list[str] = Field(default_factory=list)
+    newly_tactically_hanging_user_targets: list[str] = Field(default_factory=list)
     evidence_signatures: list[str] = Field(default_factory=list)
+    inference_boundary: str = (
+        "Signatures describe engine/board evidence. Terms such as ONLY_MOVE_MISSED_CANDIDATE "
+        "or PAWN_MOVE_FORCING_PUNISHMENT are coaching evidence, not proof of the player's "
+        "actual calculation process."
+    )
 
 
 class PositiveMoment(BaseModel):
