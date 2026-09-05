@@ -10,12 +10,9 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
 
 
-class AsyncLRUCache(Generic[T]):
+class AsyncLRUCache[T]:
     """Thread-safe / async in-memory LRU cache."""
 
     def __init__(self, maxsize: int = 50_000) -> None:
