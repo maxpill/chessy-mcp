@@ -1,10 +1,8 @@
 """Evidence-first forensic helpers for coaching-oriented move analysis.
 
-The functions in this module are intentionally deterministic where possible.
-They report board facts, forcing moves and engine continuations, but avoid
-claiming why a human chose a move.  That separation lets the coaching layer
-map evidence such as a missed forcing reply to a process hypothesis only when
-it has enough context (for example, a player's own post-game comment).
+This module reports board facts and engine continuations. It deliberately does
+not claim why a human chose a move; the coaching layer can map evidence to a
+process hypothesis when it also has player context.
 """
 
 from __future__ import annotations
@@ -27,7 +25,6 @@ from mcp_server.models.forensics import (
     TacticalSnapshot,
 )
 from mcp_server.models.legacy import MCPMoveAnalysis
-
 
 PIECE_VALUES = {
     chess.PAWN: 100,
@@ -66,14 +63,13 @@ def _captured_piece(board: chess.Board, move: chess.Move) -> chess.Piece | None:
 
 def _move_evidence(board: chess.Board, move: chess.Move) -> ForcingMoveEvidence:
     captured = _captured_piece(board, move)
-    promotion = PIECE_NAMES.get(move.promotion) if move.promotion else None
     return ForcingMoveEvidence(
         uci=move.uci(),
         san=board.san(move),
         is_check=board.gives_check(move),
         is_capture=board.is_capture(move),
         captured_piece=_piece_label(captured),
-        promotion=promotion,
+        promotion=PIECE_NAMES.get(move.promotion) if move.promotion else None,
     )
 
 
@@ -102,20 +98,26 @@ def build_position_fingerprint(board: chess.Board) -> PositionFingerprint:
         en_passant=ep,
         in_check=board.is_check(),
         legal_move_count=board.legal_moves.count(),
-        position_hash=hashlib.sha256(canonical_fen.encode("utf-8")).hexdigest()[:16],
+        position_hash=hashlib.sha256(canonical_fen.encode()).hexdigest()[:16],
     )
 
 
-def _piece_evidence(board: chess.Board, square: chess.Square, piece: chess.Piece) -> PieceEvidence:
-    attackers = len(board.attackers(not piece.color, square))
-    defenders = len(board.attackers(piece.color, square))
+def _piece_evidence(
+    board: chess.Board,
+    square: chess.Square,
+    piece: chess.Piece,
+) -> PieceEvidence:
     return PieceEvidence(
         color=_color_name(piece.color),
         piece=PIECE_NAMES[piece.piece_type],
         square=chess.square_name(square),
-        attackers=attackers,
-        defenders=defenders,
+        attackers=len(board.attackers(not piece.color, square)),
+        defenders=len(board.attackers(piece.color, square)),
     )
+
+
+def _piece_sort_key(item: PieceEvidence) -> tuple[str, str, str]:
+    return item.color, item.square, item.piece
 
 
 def build_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
@@ -144,14 +146,13 @@ def build_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
         if board.is_pinned(piece.color, square):
             pinned.append(evidence)
 
-    key = lambda item: (item.color, item.square, item.piece)
     return TacticalSnapshot(
         side_to_move=_color_name(board.turn),
         checks=sorted(checks, key=lambda item: item.san),
         captures=sorted(captures, key=lambda item: item.san),
-        loose_pieces=sorted(loose, key=key),
-        en_prise_pieces=sorted(en_prise, key=key),
-        pinned_pieces=sorted(pinned, key=key),
+        loose_pieces=sorted(loose, key=_piece_sort_key),
+        en_prise_pieces=sorted(en_prise, key=_piece_sort_key),
+        pinned_pieces=sorted(pinned, key=_piece_sort_key),
     )
 
 
@@ -220,11 +221,12 @@ def _reply_from_eval(
         return None
     if move not in board.legal_moves:
         return None
+
     captured = _captured_piece(board, move)
+    reply_board = board.copy(stack=True)
     san = board.san(move)
     is_check = board.gives_check(move)
     is_capture = board.is_capture(move)
-    reply_board = board.copy(stack=True)
     reply_board.push(move)
     return StrongestReplyEvidence(
         uci=move.uci(),
@@ -257,7 +259,7 @@ async def _strongest_reply(
         reply_board.push(move)
         if reply_board.is_game_over(claim_draw=False):
             return base
-        post_eval = await pool.evaluate(reply_board, depth=min(max(depth, 1) + 2, 24))
+        post_eval = await pool.evaluate(reply_board, depth=min(depth + 2, 24))
     except Exception:
         return base
     return _reply_from_eval(board, eval_obj, eval_after_reply=post_eval)
@@ -266,10 +268,10 @@ async def _strongest_reply(
 def _principal_line(board: chess.Board, pv: list[str] | None) -> ForcedLineEvidence:
     if not pv:
         return ForcedLineEvidence()
-    b = board.copy(stack=True)
+    work = board.copy(stack=True)
     uci: list[str] = []
     san: list[str] = []
-    for raw in list(pv)[:12]:
+    for raw in pv[:12]:
         try:
             move = chess.Move.from_uci(str(raw).lower())
         except (ValueError, chess.InvalidMoveError):
@@ -277,32 +279,29 @@ def _principal_line(board: chess.Board, pv: list[str] | None) -> ForcedLineEvide
                 uci=uci,
                 san=san,
                 termination_reason="invalid_pv_move",
-                tactical_sequence_resolved=False,
             )
-        if move not in b.legal_moves:
+        if move not in work.legal_moves:
             return ForcedLineEvidence(
                 uci=uci,
                 san=san,
                 termination_reason="invalid_pv_move",
-                tactical_sequence_resolved=False,
             )
         uci.append(move.uci())
-        san.append(b.san(move))
-        b.push(move)
-        if b.is_game_over(claim_draw=False):
+        san.append(work.san(move))
+        work.push(move)
+        if work.is_game_over(claim_draw=False):
             return ForcedLineEvidence(
                 uci=uci,
                 san=san,
                 termination_reason="terminal_position",
                 tactical_sequence_resolved=True,
             )
-    final_snapshot = build_tactical_snapshot(b)
-    resolved = not final_snapshot.checks and not final_snapshot.captures
+    final_snapshot = build_tactical_snapshot(work)
     return ForcedLineEvidence(
         uci=uci,
         san=san,
         termination_reason="pv_exhausted",
-        tactical_sequence_resolved=resolved,
+        tactical_sequence_resolved=not final_snapshot.checks and not final_snapshot.captures,
     )
 
 
@@ -318,10 +317,9 @@ async def _candidate_evidence(
     post = board.copy(stack=True)
     post.push(move)
     snapshot = build_tactical_snapshot(post)
-    ev = None
+    ev: Any | None = None
     if not post.is_game_over(claim_draw=False):
         ev = await pool.evaluate(post, depth=depth)
-    reply = _reply_from_eval(post, ev) if ev is not None else None
     return CandidateEvidence(
         requested=requested,
         uci=move.uci(),
@@ -330,7 +328,7 @@ async def _candidate_evidence(
         eval_cp=getattr(ev, "cp", None),
         eval_mate=getattr(ev, "mate", None),
         searched_depth=getattr(ev, "depth", None),
-        opponent_best_reply=reply,
+        opponent_best_reply=_reply_from_eval(post, ev) if ev is not None else None,
         tactical_snapshot_after=snapshot,
     )
 
@@ -342,7 +340,7 @@ def _mechanism_evidence(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     evidence: list[dict[str, Any]] = []
     signatures: list[str] = []
-    move_class = result.move_class.value if hasattr(result.move_class, "value") else str(result.move_class)
+    move_class = result.move_class.value
 
     if reply is not None and reply.is_forcing:
         evidence.append(
@@ -362,14 +360,13 @@ def _mechanism_evidence(
             signatures.append("FORCING_CAPTURE_REPLY")
 
     if reply is not None and reply.is_capture and reply.captured_piece:
-        victim_square = None
         try:
             victim_square = chess.Move.from_uci(reply.uci).to_square
         except (ValueError, chess.InvalidMoveError):
-            pass
+            victim_square = None
         if victim_square is not None:
-            sq_name = chess.square_name(victim_square)
-            matching = [p for p in tactical_after.loose_pieces if p.square == sq_name]
+            square_name = chess.square_name(victim_square)
+            matching = [p for p in tactical_after.loose_pieces if p.square == square_name]
             if matching:
                 piece = matching[0]
                 evidence.append(
@@ -386,10 +383,12 @@ def _mechanism_evidence(
         evidence.append(
             {
                 "mechanism": "pin_present_after_played_move",
-                "pieces": [f"{p.color}_{p.piece}@{p.square}" for p in tactical_after.pinned_pieces],
+                "pieces": [
+                    f"{piece.color}_{piece.piece}@{piece.square}"
+                    for piece in tactical_after.pinned_pieces
+                ],
             }
         )
-
     return evidence, sorted(set(signatures))
 
 
@@ -425,7 +424,6 @@ async def enrich_move_analysis(
         deep=detail == "forensic",
     )
     mechanisms, signatures = _mechanism_evidence(result, reply, tactical_after)
-    forced_line = _principal_line(board_after, result.eval_after.pv)
 
     requested_candidates: list[str] = []
     if detail == "forensic":
@@ -436,8 +434,7 @@ async def enrich_move_analysis(
     for requested in compare_moves or []:
         if requested not in requested_candidates:
             requested_candidates.append(requested)
-    if len(requested_candidates) > 8:
-        requested_candidates = requested_candidates[:8]
+    requested_candidates = requested_candidates[:8]
 
     comparisons: list[CandidateEvidence] = []
     for requested in requested_candidates:
@@ -445,7 +442,7 @@ async def enrich_move_analysis(
             await _candidate_evidence(board_before, requested, pool=pool, depth=depth)
         )
 
-    evidence = ForensicEvidence(
+    forensic = ForensicEvidence(
         detail=detail,
         position_before=fp_before,
         position_after_played=fp_after,
@@ -455,7 +452,7 @@ async def enrich_move_analysis(
         position_delta=delta,
         mechanism_evidence=mechanisms,
         evidence_signatures=signatures,
-        forced_line=forced_line,
+        forced_line=_principal_line(board_after, result.eval_after.pv),
         candidate_comparisons=comparisons,
         stability={
             "classification_verified": result.classification_verified,
@@ -469,4 +466,4 @@ async def enrich_move_analysis(
     payload = result.model_dump(
         exclude={"same_action_type", "same_outcome", "within_cp_threshold"}
     )
-    return ForensicMoveAnalysis(**payload, forensics=evidence)
+    return ForensicMoveAnalysis(**payload, forensics=forensic)
