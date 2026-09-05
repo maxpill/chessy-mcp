@@ -44,18 +44,20 @@ def test_candidate_difference_reports_piece_activity_and_center_control() -> Non
     assert any("white_bishop@c1" in item for item in diff.only_candidate_piece_mobility_changes)
 
 
-def test_candidate_difference_serializes_piece_safety_as_explicit_attacker_defender_counts() -> None:
-    board = chess.Board("4k3/8/8/8/4p3/8/3P4/3Q2K1 w - - 0 1")
-    d4 = enrich_candidate_geometry(board, _candidate(board, "d2d4"))
-    d3 = enrich_candidate_geometry(board, _candidate(board, "d2d3"))
+def test_candidate_difference_serializes_defender_loss_explicitly() -> None:
+    board = chess.Board("6k1/6b1/8/8/3P4/4P3/8/6K1 w - - 0 1")
+    e4 = enrich_candidate_geometry(board, _candidate(board, "e3e4"))
+    kg2 = enrich_candidate_geometry(board, _candidate(board, "g1g2"))
 
     differences = build_candidate_differences(
         board,
-        [d4, d3],
-        reference_uci="d2d4",
+        [e4, kg2],
+        reference_uci="e3e4",
     )
 
     assert len(differences) == 1
     diff = differences[0]
-    combined = diff.only_reference_piece_safety_changes + diff.only_candidate_piece_safety_changes
-    assert all("attackers=" in item and "defenders=" in item for item in combined)
+    assert any(
+        "white_pawn@d4:attackers=1->1:defenders=1->0" in item
+        for item in diff.only_reference_piece_safety_changes
+    )
