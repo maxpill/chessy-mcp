@@ -19,10 +19,27 @@ class GameSegment(BaseModel):
     start_ply: int
     end_ply: int
     perspective: Literal["white", "black"]
-    state: str
+    state: Literal[
+        "decisively_better",
+        "better",
+        "slightly_better",
+        "approximately_equal",
+        "slightly_worse",
+        "worse",
+        "decisively_worse",
+    ]
     eval_start_effective_cp: int
     eval_end_effective_cp: int
+    eval_peak_effective_cp: int | None = None
+    eval_trough_effective_cp: int | None = None
     transition_cause_ply: int | None = None
+    transition_confirmed_ply: int | None = None
+    stability: Literal["high", "medium", "low"] = "high"
+    raw_state_change_count: int = 0
+    inference_boundary: str = (
+        "Segment states use a small persistence filter so one-ply threshold noise does not "
+        "automatically become a new game phase. Large/decisive state jumps remain immediate."
+    )
 
 
 class AdvantageEvent(BaseModel):
@@ -67,7 +84,16 @@ class CriticalMoment(BaseModel):
     strongest_reply_san: str | None = None
     strongest_reply_is_check: bool | None = None
     strongest_reply_is_capture: bool | None = None
+    played_piece: str | None = None
+    only_move_missed_candidate: bool | None = None
+    newly_en_prise_user_pieces: list[str] = Field(default_factory=list)
+    newly_tactically_hanging_user_targets: list[str] = Field(default_factory=list)
     evidence_signatures: list[str] = Field(default_factory=list)
+    inference_boundary: str = (
+        "Signatures describe engine/board evidence. Terms such as ONLY_MOVE_MISSED_CANDIDATE "
+        "or PAWN_MOVE_FORCING_PUNISHMENT are coaching evidence, not proof of the player's "
+        "actual calculation process."
+    )
 
 
 class PositiveMoment(BaseModel):
@@ -118,6 +144,47 @@ class FinalPositionAssessment(BaseModel):
     verification_depth: int | None = None
 
 
+class GameTerminationAssessment(BaseModel):
+    """Evidence-bounded interpretation of how a recorded game ended.
+
+    A decisive PGN result with a non-terminal final board is deliberately only
+    a resignation *candidate*: without a Termination header it could also be a
+    timeout, adjudication, or another external ending. The MCP never turns a
+    large negative centipawn score into "resignation was forced".
+    """
+
+    pgn_result: str
+    termination_header: str | None = None
+    decisive_result: bool = False
+    winner_side: Literal["white", "black"] | None = None
+    loser_side: Literal["white", "black"] | None = None
+    status: Literal[
+        "explicit_resignation",
+        "candidate_nonterminal_decisive_result",
+        "board_checkmate",
+        "other_terminal_result",
+        "ongoing_or_unknown",
+    ] = "ongoing_or_unknown"
+    confidence: Literal["high", "medium", "low"] = "low"
+    final_board_terminal: bool = False
+    final_board_checkmate: bool = False
+    continued_play_was_legal: bool = False
+    forced_mate_against_loser: bool | None = None
+    objectively_forced: bool | None = None
+    mate_distance_white_pov: int | None = None
+    eval_for_loser_effective_cp: int | None = None
+    best_defensive_move_uci: str | None = None
+    best_defensive_move_san: str | None = None
+    legal_resource_count: int = 0
+    reasonable_resource_count: int | None = None
+    defensive_resources_exist: bool = False
+    inference_boundary: str = (
+        "Only an explicit resignation-style Termination header is treated as confirmed "
+        "resignation. A decisive result on a non-terminal board is merely a candidate. "
+        "objectively_forced refers to forced mate/rules termination, never to a cp threshold."
+    )
+
+
 class GameCoachingEvidence(BaseModel):
     detail: Literal["coach", "forensic"]
     perspective: Literal["white", "black"]
@@ -127,6 +194,10 @@ class GameCoachingEvidence(BaseModel):
     positive_moments: list[PositiveMoment] = Field(default_factory=list)
     root_cause_links: list[RootCauseLink] = Field(default_factory=list)
     final_position: FinalPositionAssessment
+    termination: GameTerminationAssessment | None = None
+    critical_evidence_signature_counts: dict[str, int] = Field(default_factory=dict)
+    critical_reason_counts: dict[str, int] = Field(default_factory=dict)
+    self_reported_critical_plies: list[int] = Field(default_factory=list)
     scan_depth: int
     verification_depth: int | None = None
     adaptive_escalation_depth: int | None = None

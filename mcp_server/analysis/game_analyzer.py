@@ -7,6 +7,7 @@ stay thin and tests can supply engine/cache stubs without booting Stockfish.
 from __future__ import annotations
 
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
     from mcp.server.mcpserver import Context
 
 from mcp_server.analysis.game_coaching import build_game_coaching_evidence
+from mcp_server.analysis.game_termination import build_game_termination_assessment
 from mcp_server.analysis.game_validation import GameMetadata, extract_game_metadata
 from mcp_server.analysis.mainline_parser import parse_mainline
 from mcp_server.analysis.result_reconciliation import reconcile_result
@@ -30,7 +32,10 @@ from mcp_server.engine import (
     _get_analyzer_pool,
 )
 from mcp_server.models import MCPEval
-from mcp_server.models.game_coaching import ForensicGameAnalysisResult
+from mcp_server.models.game_coaching import (
+    ForensicGameAnalysisResult,
+    GameCoachingEvidence,
+)
 from mcp_server.parsers import (
     _check_multiple_games,
     _extract_canonical_pgn_text,
@@ -65,6 +70,45 @@ class GameMetrics:
     black_mistakes: int
     black_inaccuracies: int
     turning_points: list[Any]
+
+
+def _finalize_coaching_evidence(
+    pgn: str,
+    coaching: GameCoachingEvidence,
+) -> GameCoachingEvidence:
+    """Attach post-mortem metadata at the analyzer boundary.
+
+    Keeping this here makes ``GameAnalyzer`` and the MCP tool return the same
+    rich evidence. The public tool remains a transport/error-translation layer
+    instead of acquiring a second, subtly different coaching pipeline.
+    """
+    termination = build_game_termination_assessment(
+        pgn,
+        final_position=coaching.final_position,
+    )
+    signature_counts = Counter(
+        signature
+        for moment in coaching.critical_moments
+        for signature in moment.evidence_signatures
+    )
+    reason_counts = Counter(
+        reason
+        for moment in coaching.critical_moments
+        for reason in moment.reasons
+    )
+    self_reported = sorted(
+        moment.ply
+        for moment in coaching.critical_moments
+        if moment.user_comment_raw
+    )
+    return coaching.model_copy(
+        update={
+            "termination": termination,
+            "critical_evidence_signature_counts": dict(sorted(signature_counts.items())),
+            "critical_reason_counts": dict(sorted(reason_counts.items())),
+            "self_reported_critical_plies": self_reported,
+        }
+    )
 
 
 class GameAnalyzer:
@@ -289,6 +333,7 @@ class GameAnalyzer:
                 pool=pool,
                 evaluate_positions=self._evaluate_positions,
             )
+            coaching = _finalize_coaching_evidence(pgn, coaching)
 
         if metrics is not None:
             await metrics.record(

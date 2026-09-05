@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from itertools import pairwise
+from typing import Any, Literal, cast
 
 import chess
 import chess.pgn
 
+from mcp_server.analysis.position_integrity import build_rich_tactical_snapshot
 from mcp_server.models import MCPEval
 from mcp_server.models.game_coaching import (
     AdvantageEvent,
@@ -29,6 +31,15 @@ from mcp_server.models.game_coaching import (
 from mcp_server.move_grading import score_played_move
 
 Perspective = Literal["white", "black"]
+PositionState = Literal[
+    "decisively_better",
+    "better",
+    "slightly_better",
+    "approximately_equal",
+    "slightly_worse",
+    "worse",
+    "decisively_worse",
+]
 
 MATE_VALUE = 100_000
 PIECE_VALUES = {
@@ -38,6 +49,23 @@ PIECE_VALUES = {
     chess.ROOK: 500,
     chess.QUEEN: 900,
     chess.KING: 0,
+}
+PIECE_NAMES = {
+    chess.PAWN: "pawn",
+    chess.KNIGHT: "knight",
+    chess.BISHOP: "bishop",
+    chess.ROOK: "rook",
+    chess.QUEEN: "queen",
+    chess.KING: "king",
+}
+STATE_ORDER: dict[PositionState, int] = {
+    "decisively_worse": 0,
+    "worse": 1,
+    "slightly_worse": 2,
+    "approximately_equal": 3,
+    "slightly_better": 4,
+    "better": 5,
+    "decisively_better": 6,
 }
 
 
@@ -81,7 +109,7 @@ def _perspective_raw_value(cp: int | None, mate: int | None, perspective: Perspe
     return value if perspective == "white" else -value
 
 
-def _position_state(value: int) -> str:
+def _position_state(value: int) -> PositionState:
     if value >= 350:
         return "decisively_better"
     if value >= 150:
@@ -95,6 +123,84 @@ def _position_state(value: int) -> str:
     if value > -350:
         return "worse"
     return "decisively_worse"
+
+
+def _confirm_segment_states(
+    raw_states: list[PositionState],
+) -> tuple[list[PositionState], dict[int, int]]:
+    """Suppress one-ply threshold flicker without hiding large state jumps.
+
+    A one-band transition needs two consecutive plies before it becomes a new
+    game phase. A jump of at least two bands, or any jump directly into a
+    decisive state, is accepted immediately. Confirmed transitions are applied
+    retroactively to the first ply on which the new state appeared.
+    """
+    if not raw_states:
+        return [], {}
+
+    current = raw_states[0]
+    confirmed: list[PositionState] = [current]
+    transition_confirmed_ply: dict[int, int] = {}
+    pending_state: PositionState | None = None
+    pending_start_ply: int | None = None
+    pending_count = 0
+
+    for idx, observed in enumerate(raw_states[1:], start=1):
+        ply = idx + 1
+        if observed == current:
+            pending_state = None
+            pending_start_ply = None
+            pending_count = 0
+            confirmed.append(current)
+            continue
+
+        jump = abs(STATE_ORDER[observed] - STATE_ORDER[current])
+        immediate = jump >= 2 or observed in {"decisively_better", "decisively_worse"}
+        if immediate:
+            current = observed
+            transition_confirmed_ply[ply] = ply
+            pending_state = None
+            pending_start_ply = None
+            pending_count = 0
+            confirmed.append(current)
+            continue
+
+        if pending_state == observed:
+            pending_count += 1
+        else:
+            pending_state = observed
+            pending_start_ply = ply
+            pending_count = 1
+
+        confirmed.append(current)
+        if pending_count < 2 or pending_start_ply is None:
+            continue
+
+        current = observed
+        start_index = pending_start_ply - 1
+        for rewrite in range(start_index, len(confirmed)):
+            confirmed[rewrite] = current
+        transition_confirmed_ply[pending_start_ply] = ply
+        pending_state = None
+        pending_start_ply = None
+        pending_count = 0
+
+    return confirmed, transition_confirmed_ply
+
+
+def _segment_stability(
+    raw_states: list[PositionState],
+    confirmed_state: PositionState,
+) -> tuple[Literal["high", "medium", "low"], int]:
+    if not raw_states:
+        return "high", 0
+    raw_changes = sum(left != right for left, right in pairwise(raw_states))
+    matching = sum(state == confirmed_state for state in raw_states) / len(raw_states)
+    if matching >= 0.8 and raw_changes <= 1:
+        return "high", raw_changes
+    if matching >= 0.6:
+        return "medium", raw_changes
+    return "low", raw_changes
 
 
 def _mainline_comments(game: chess.pgn.Game) -> dict[int, str]:
@@ -158,8 +264,15 @@ def _build_records(
 def _build_segments(evals: list[MCPEval], *, perspective: Perspective) -> list[GameSegment]:
     if len(evals) <= 1:
         return []
+
     values = [_perspective_cp(ev, perspective) for ev in evals]
-    states = [_position_state(value) for value in values[1:]]
+    raw_states: list[PositionState] = [
+        cast(PositionState, _position_state(value)) for value in values[1:]
+    ]
+    states, transition_confirmed = _confirm_segment_states(raw_states)
+    if not states:
+        return []
+
     segments: list[GameSegment] = []
     start = 1
     current = states[0]
@@ -167,28 +280,49 @@ def _build_segments(evals: list[MCPEval], *, perspective: Perspective) -> list[G
         state = states[ply - 1]
         if state == current:
             continue
+        end = ply - 1
+        raw_slice = raw_states[start - 1 : end]
+        stability, raw_changes = _segment_stability(raw_slice, current)
+        segment_values = values[start : end + 1]
         segments.append(
             GameSegment(
                 start_ply=start,
-                end_ply=ply - 1,
+                end_ply=end,
                 perspective=perspective,
                 state=current,
                 eval_start_effective_cp=values[start],
-                eval_end_effective_cp=values[ply - 1],
+                eval_end_effective_cp=values[end],
+                eval_peak_effective_cp=max(segment_values),
+                eval_trough_effective_cp=min(segment_values),
                 transition_cause_ply=start if start > 1 else None,
+                transition_confirmed_ply=(
+                    transition_confirmed.get(start) if start > 1 else None
+                ),
+                stability=stability,
+                raw_state_change_count=raw_changes,
             )
         )
         start = ply
         current = state
+
+    end = len(evals) - 1
+    raw_slice = raw_states[start - 1 : end]
+    stability, raw_changes = _segment_stability(raw_slice, current)
+    segment_values = values[start : end + 1]
     segments.append(
         GameSegment(
             start_ply=start,
-            end_ply=len(evals) - 1,
+            end_ply=end,
             perspective=perspective,
             state=current,
             eval_start_effective_cp=values[start],
-            eval_end_effective_cp=values[-1],
+            eval_end_effective_cp=values[end],
+            eval_peak_effective_cp=max(segment_values),
+            eval_trough_effective_cp=min(segment_values),
             transition_cause_ply=start if start > 1 else None,
+            transition_confirmed_ply=transition_confirmed.get(start) if start > 1 else None,
+            stability=stability,
+            raw_state_change_count=raw_changes,
         )
     )
     return segments
@@ -216,8 +350,6 @@ def _build_advantage_events(
         if before <= -150 and after > -75:
             kinds.append("recovered")
 
-        # Opponent gave the focus side a real recovery window on the previous
-        # ply, then the focus side immediately returned to a clearly worse state.
         if idx >= 1 and record.side == perspective:
             two_plies_before = _perspective_cp(evals[record.ply - 2], perspective)
             if two_plies_before <= -150 and before >= -75 and after <= -150:
@@ -434,6 +566,14 @@ def _strongest_reply_fact(board: chess.Board, ev: MCPEval) -> tuple[str, str, bo
     return move.uci(), board.san(move), board.gives_check(move), board.is_capture(move)
 
 
+def _piece_evidence_label(item: Any) -> str:
+    return f"{item.color}_{item.piece}@{item.square}"
+
+
+def _hanging_target_label(item: Any) -> str:
+    return _piece_evidence_label(item.target)
+
+
 async def _verify_critical_moments(
     critical: list[CriticalMoment],
     records: list[_PlyRecord],
@@ -505,7 +645,46 @@ async def _verify_critical_moments(
         except Exception:
             gap = None
 
+        before_snapshot = build_rich_tactical_snapshot(record.board_before)
+        after_snapshot = build_rich_tactical_snapshot(record.board_after)
+        before_en_prise = {
+            _piece_evidence_label(item)
+            for item in before_snapshot.en_prise_pieces
+            if item.color == perspective
+        }
+        after_en_prise = {
+            _piece_evidence_label(item)
+            for item in after_snapshot.en_prise_pieces
+            if item.color == perspective
+        }
+        newly_en_prise = sorted(after_en_prise - before_en_prise)
+
+        before_hanging = {
+            _hanging_target_label(item)
+            for item in before_snapshot.tactically_hanging_candidates
+            if item.target.color == perspective
+        }
+        after_hanging = {
+            _hanging_target_label(item)
+            for item in after_snapshot.tactically_hanging_candidates
+            if item.target.color == perspective
+        }
+        newly_hanging = sorted(after_hanging - before_hanging)
+
+        played_piece_obj = record.board_before.piece_at(record.move.from_square)
+        played_piece = PIECE_NAMES.get(played_piece_obj.piece_type) if played_piece_obj else None
+        only_move_missed = bool(
+            gap is not None and gap >= 150 and not score.is_best_engine_move
+        )
+
         signatures = list(moment.evidence_signatures)
+        if newly_en_prise:
+            signatures.append("NEW_EN_PRISE_PIECE_AFTER_MOVE")
+        if newly_hanging:
+            signatures.append("NEW_TACTICALLY_HANGING_CANDIDATE_AFTER_MOVE")
+        if only_move_missed:
+            signatures.append("ONLY_MOVE_MISSED_CANDIDATE")
+
         reply = _strongest_reply_fact(record.board_after, after_ev)
         update: dict[str, Any] = {
             "verification_depth": depth_used,
@@ -514,6 +693,10 @@ async def _verify_critical_moments(
             "classification_stable": stable,
             "candidate_gap_effective_cp": gap,
             "resource_uniqueness": _uniqueness(gap),
+            "played_piece": played_piece,
+            "only_move_missed_candidate": only_move_missed,
+            "newly_en_prise_user_pieces": newly_en_prise,
+            "newly_tactically_hanging_user_targets": newly_hanging,
         }
         if reply is not None:
             uci, san, is_check, is_capture = reply
@@ -529,8 +712,18 @@ async def _verify_critical_moments(
                 signatures.append("FORCING_CHECK_REPLY")
             if is_capture:
                 signatures.append("FORCING_CAPTURE_REPLY")
+            if is_check and is_capture:
+                signatures.append("CHECK_CAPTURE_REPLY")
             if (effective_loss or 0) >= 100 and (is_check or is_capture):
                 signatures.append("MISSED_FORCING_REPLY_CANDIDATE")
+            if (
+                played_piece == "pawn"
+                and (effective_loss or 0) >= 100
+                and (is_check or is_capture)
+            ):
+                signatures.append("PAWN_MOVE_FORCING_PUNISHMENT")
+            if moment.user_comment_raw and (is_check or is_capture):
+                signatures.append("PLAYER_SELF_REPORT_WITH_FORCING_REPLY")
         if moment.user_comment_raw:
             signatures.append("PLAYER_SELF_REPORT_PRESENT")
         update["evidence_signatures"] = sorted(set(signatures))

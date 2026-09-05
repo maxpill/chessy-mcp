@@ -30,6 +30,7 @@ from mcp_server.analysis.classify_helpers import (
     build_classification,
     played_continuation_san,
 )
+from mcp_server.analysis.forensic_integration import upgrade_move_forensics
 from mcp_server.analysis.forensics import enrich_move_analysis
 from mcp_server.analysis.move_classifier import MoveClassifier, validate_classify_input
 from mcp_server.cache import classify_cache_key
@@ -175,12 +176,8 @@ async def classify_move(
             best_san = best_san_for_score(
                 outcome.board, score, eval_before, played_san, outcome.chess_move
             )
-            best_line_san = (
-                outcome.board.san(outcome.chess_move)
-                if (eval_before.pv and outcome.chess_move is not None and not eval_before.pv)
-                else None
-            )
-            if not best_line_san and eval_before.pv:
+            best_line_san = None
+            if eval_before.pv:
                 from core.engines.analyzer import pv_to_san
 
                 best_line_san = pv_to_san(outcome.board, eval_before.pv)
@@ -250,7 +247,7 @@ async def _finish_result(
     evidence_detail: Literal["coach", "forensic"] = (
         "forensic" if detail == "forensic" else "coach"
     )
-    return await enrich_move_analysis(
+    enriched = await enrich_move_analysis(
         result,
         board_before=outcome.board,
         played_move=outcome.chess_move,
@@ -258,6 +255,11 @@ async def _finish_result(
         depth=depth,
         detail=evidence_detail,
         compare_moves=compare_moves,
+    )
+    return upgrade_move_forensics(
+        enriched,
+        outcome.board,
+        played_move=outcome.chess_move,
     )
 
 
