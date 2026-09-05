@@ -14,6 +14,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from mcp_server.models.legacy import MCPMoveAnalysis, TopMovesResult
+from mcp_server.models.mcpeval import MCPEval
 
 
 class PositionFingerprint(BaseModel):
@@ -45,6 +46,30 @@ class PieceEvidence(BaseModel):
     defenders: int = 0
 
 
+class DefenderLoadEvidence(BaseModel):
+    color: Literal["white", "black"]
+    piece: str
+    square: str
+    attacked_by: int = 0
+    defended_targets: list[str] = Field(default_factory=list)
+    attacked_targets: list[str] = Field(default_factory=list)
+    sole_defense_targets: list[str] = Field(default_factory=list)
+
+
+class TacticalHangingEvidence(BaseModel):
+    target: PieceEvidence
+    capture: ForcingMoveEvidence
+    nominal_defenders: int
+    legal_immediate_recaptures: list[str] = Field(default_factory=list)
+    reason: Literal["defended_but_no_legal_immediate_recapture"] = (
+        "defended_but_no_legal_immediate_recapture"
+    )
+    proof_scope: str = (
+        "Immediate recapture legality only. This is a tactical-hanging candidate, "
+        "not a full exchange-sequence or SEE proof."
+    )
+
+
 class TacticalSnapshot(BaseModel):
     side_to_move: Literal["white", "black"]
     checks: list[ForcingMoveEvidence] = Field(default_factory=list)
@@ -52,6 +77,9 @@ class TacticalSnapshot(BaseModel):
     loose_pieces: list[PieceEvidence] = Field(default_factory=list)
     en_prise_pieces: list[PieceEvidence] = Field(default_factory=list)
     pinned_pieces: list[PieceEvidence] = Field(default_factory=list)
+    tactically_hanging_candidates: list[TacticalHangingEvidence] = Field(default_factory=list)
+    attacked_defenders: list[DefenderLoadEvidence] = Field(default_factory=list)
+    overloaded_defender_candidates: list[DefenderLoadEvidence] = Field(default_factory=list)
 
 
 class StrongestReplyEvidence(BaseModel):
@@ -67,13 +95,30 @@ class StrongestReplyEvidence(BaseModel):
     searched_depth: int | None = None
 
 
+class PieceSafetyDelta(BaseModel):
+    target: str
+    attackers_before: int
+    attackers_after: int
+    defenders_before: int
+    defenders_after: int
+
+
 class PositionDelta(BaseModel):
     material_delta_white: int = 0
     material_delta_black: int = 0
     removed_pieces: list[str] = Field(default_factory=list)
     added_pieces: list[str] = Field(default_factory=list)
     newly_loose_pieces: list[str] = Field(default_factory=list)
+    newly_en_prise_pieces: list[str] = Field(default_factory=list)
+    resolved_en_prise_pieces: list[str] = Field(default_factory=list)
     newly_pinned_pieces: list[str] = Field(default_factory=list)
+    removed_pins: list[str] = Field(default_factory=list)
+    piece_safety_changes: list[PieceSafetyDelta] = Field(default_factory=list)
+    opened_files: list[str] = Field(default_factory=list)
+    closed_files: list[str] = Field(default_factory=list)
+    pawn_structure_changes: list[str] = Field(default_factory=list)
+    king_ring_attack_delta_white: int = 0
+    king_ring_attack_delta_black: int = 0
     check_state_changed: bool = False
 
 
@@ -133,8 +178,29 @@ class TacticalProofEvidence(BaseModel):
     defenses: list[DefenseEvidence] = Field(default_factory=list)
     inference_boundary: str = (
         "A sampled proof covers only the returned engine-ranked defenses. "
-        "Only proof_status=exhaustive means every legal reply was evaluated."
+        "Only proof_status=exhaustive means every legal immediate reply was evaluated."
     )
+
+
+class PositionForensicEvidence(BaseModel):
+    detail: Literal["coach", "forensic"]
+    position: PositionFingerprint
+    tactical_snapshot: TacticalSnapshot
+    best_move_uci: str | None = None
+    best_move_san: str | None = None
+    position_after_best: PositionFingerprint | None = None
+    tactical_after_best: TacticalSnapshot | None = None
+    best_move_delta: PositionDelta | None = None
+    inference_boundary: str = (
+        "Static board evidence is deterministic. Tactical-hanging and overloaded-defender "
+        "fields are explicitly candidates with bounded proof scopes, not human-process claims."
+    )
+
+
+class ForensicEval(MCPEval):
+    """Backward-compatible ``evaluate_position`` result with opt-in evidence."""
+
+    forensics: PositionForensicEvidence | None = None
 
 
 class TopMovesForensicEvidence(BaseModel):
@@ -158,6 +224,9 @@ class ForensicEvidence(BaseModel):
     tactical_before: TacticalSnapshot
     tactical_after_played: TacticalSnapshot
     strongest_reply: StrongestReplyEvidence | None = None
+    position_after_reply: PositionFingerprint | None = None
+    tactical_after_reply: TacticalSnapshot | None = None
+    reply_delta: PositionDelta | None = None
     position_delta: PositionDelta
     mechanism_evidence: list[dict[str, Any]] = Field(default_factory=list)
     evidence_signatures: list[str] = Field(default_factory=list)
