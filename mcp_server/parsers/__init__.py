@@ -101,7 +101,7 @@ from mcp_server.parsers.pgn_validate import (
     validate_variant,
 )
 
-__all__ = [
+__all__ = [  # noqa: RUF022 - grouped by parser stage for navigability
     # board_builder
     "build_board",
     "build_board_with_metadata",
