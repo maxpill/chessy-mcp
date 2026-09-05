@@ -33,7 +33,9 @@ from mcp_server.models.legacy import TopMovesResult
 
 
 MATE_VALUE = 100_000
-MAX_COMPARE_MOVES = 8
+MAX_AUTO_COMPARE_MOVES = 8
+MAX_EXPLICIT_COMPARE_MOVES = 8
+MAX_TOTAL_COMPARE_MOVES = MAX_EXPLICIT_COMPARE_MOVES + 1
 MAX_EXHAUSTIVE_DEFENSES = 8
 MAX_SAMPLED_DEFENSES = 8
 
@@ -68,6 +70,63 @@ def _root_move(result: TopMovesResult, board: chess.Board) -> chess.Move | None:
     except (ValueError, chess.InvalidMoveError):
         return None
     return move if move in board.legal_moves else None
+
+
+def _canonical_candidate_san(board: chess.Board, text: str) -> str:
+    move = parse_candidate_move(board, text)
+    return board.san(move)
+
+
+def _engine_candidate_sans(result: TopMovesResult, board: chess.Board) -> list[str]:
+    sans: list[str] = []
+    for item in result.result:
+        if not item.best_move:
+            continue
+        try:
+            san = _canonical_candidate_san(board, item.best_move)
+        except ValueError:
+            continue
+        if san not in sans:
+            sans.append(san)
+    return sans
+
+
+def _comparison_requests(
+    result: TopMovesResult,
+    board: chess.Board,
+    *,
+    detail: Literal["coach", "forensic"],
+    include_moves: list[str] | None,
+) -> list[str]:
+    """Keep engine reference plus every explicit alternative whenever possible.
+
+    Explicit alternatives are never silently displaced by a long top-N list.
+    Up to eight caller-supplied moves are preserved, with one extra slot reserved
+    for the engine-best reference move. Without explicit alternatives, forensic
+    mode keeps up to eight automatic engine candidates as before.
+    """
+    engine_sans = _engine_candidate_sans(result, board)
+    explicit = [_canonical_candidate_san(board, text) for text in include_moves or []]
+    explicit = list(dict.fromkeys(explicit))[:MAX_EXPLICIT_COMPARE_MOVES]
+
+    if explicit:
+        requested: list[str] = []
+        if engine_sans:
+            requested.append(engine_sans[0])
+        for san in explicit:
+            if san not in requested:
+                requested.append(san)
+        if detail == "forensic":
+            for san in engine_sans[1:]:
+                if len(requested) >= MAX_TOTAL_COMPARE_MOVES:
+                    break
+                if san not in requested:
+                    requested.append(san)
+        return requested[:MAX_TOTAL_COMPARE_MOVES]
+
+    if detail == "forensic":
+        return engine_sans[:MAX_AUTO_COMPARE_MOVES]
+    return []
 
 
 async def _evaluate_defense(
@@ -207,21 +266,12 @@ async def enrich_top_moves_result(
     proof_defenses: int,
 ) -> ForensicTopMovesResult:
     """Attach position evidence, explicit candidates, and optional proof data."""
-    requested: list[str] = []
-    if detail == "forensic":
-        for item in result.result:
-            if item.best_move:
-                try:
-                    move = parse_candidate_move(board, item.best_move)
-                    san = board.san(move)
-                except ValueError:
-                    continue
-                if san not in requested:
-                    requested.append(san)
-    for text in include_moves or []:
-        if text not in requested:
-            requested.append(text)
-    requested = requested[:MAX_COMPARE_MOVES]
+    requested = _comparison_requests(
+        result,
+        board,
+        detail=detail,
+        include_moves=include_moves,
+    )
 
     comparisons: list[CandidateEvidence] = []
     for text in requested:
