@@ -9,7 +9,7 @@ already returned strongest replies.
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import chess
 
