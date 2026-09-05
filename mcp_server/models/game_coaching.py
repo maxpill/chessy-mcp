@@ -19,15 +19,7 @@ class GameSegment(BaseModel):
     start_ply: int
     end_ply: int
     perspective: Literal["white", "black"]
-    state: Literal[
-        "decisively_better",
-        "better",
-        "slightly_better",
-        "approximately_equal",
-        "slightly_worse",
-        "worse",
-        "decisively_worse",
-    ]
+    state: str
     eval_start_effective_cp: int
     eval_end_effective_cp: int
     transition_cause_ply: int | None = None
