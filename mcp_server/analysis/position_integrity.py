@@ -135,6 +135,10 @@ def _tactical_hanging_candidates(board: chess.Board) -> list[TacticalHangingEvid
     return sorted(out, key=lambda item: (item.target.square, item.capture.san))
 
 
+def _defender_sort_key(item: DefenderLoadEvidence) -> tuple[str, str, str]:
+    return item.color, item.square, item.piece
+
+
 def build_rich_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
     base = build_tactical_snapshot(board)
     attacked_defenders: list[DefenderLoadEvidence] = []
@@ -148,12 +152,11 @@ def build_rich_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
         if len(load.attacked_targets) >= 2:
             overloaded.append(load)
 
-    sort_key = lambda item: (item.color, item.square, item.piece)
     return base.model_copy(
         update={
             "tactically_hanging_candidates": _tactical_hanging_candidates(board),
-            "attacked_defenders": sorted(attacked_defenders, key=sort_key),
-            "overloaded_defender_candidates": sorted(overloaded, key=sort_key),
+            "attacked_defenders": sorted(attacked_defenders, key=_defender_sort_key),
+            "overloaded_defender_candidates": sorted(overloaded, key=_defender_sort_key),
         }
     )
 
