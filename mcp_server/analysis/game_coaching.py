@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any, Literal
 
 import chess
@@ -193,7 +194,7 @@ def _segment_stability(
 ) -> tuple[Literal["high", "medium", "low"], int]:
     if not raw_states:
         return "high", 0
-    raw_changes = sum(left != right for left, right in zip(raw_states, raw_states[1:]))
+    raw_changes = sum(left != right for left, right in pairwise(raw_states))
     matching = sum(state == confirmed_state for state in raw_states) / len(raw_states)
     if matching >= 0.8 and raw_changes <= 1:
         return "high", raw_changes
