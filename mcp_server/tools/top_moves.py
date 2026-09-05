@@ -17,6 +17,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from mcp_server._mcp import mcp
+from mcp_server.analysis.forensic_integration import upgrade_top_moves_forensics
 from mcp_server.analysis.top_moves_finder import TopMovesFinder
 from mcp_server.analysis.top_moves_forensics import enrich_top_moves_result
 from mcp_server.engine import _get_analyzer_pool
@@ -60,7 +61,8 @@ async def top_moves(
       resulting positions.
     - ``include_moves`` evaluates up to eight explicit SAN/UCI alternatives even
       when they are outside the engine's top-N, enabling questions such as
-      "why g4 instead of gxh4?".
+      "why g4 instead of gxh4?". Rich output also compares each alternative's
+      resulting board with the engine-reference resulting board.
     - ``proof_mode="tactical"`` evaluates the engine-best move's reply tree. If
       the opponent has at most eight legal replies every reply is checked and the
       proof is labelled ``exhaustive``. Otherwise only engine-ranked defenses are
@@ -113,6 +115,7 @@ async def top_moves(
                 proof_mode=proof_mode,
                 proof_defenses=max(1, min(int(proof_defenses), 8)),
             )
+            result = upgrade_top_moves_forensics(result, board)
 
         await metrics.record(
             "top_moves",
