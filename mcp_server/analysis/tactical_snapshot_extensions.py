@@ -14,7 +14,11 @@ from mcp_server.analysis.forensic_extensions import (
     _discovered_check_evidence,
     _skewer_evidence,
 )
-from mcp_server.models.forensics import MechanismCandidateEvidence, TacticalSnapshot
+from mcp_server.models.forensics import (
+    ForensicEval,
+    MechanismCandidateEvidence,
+    TacticalSnapshot,
+)
 
 MAX_EXTENDED_MECHANISM_CANDIDATES = 32
 
@@ -100,3 +104,28 @@ def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> 
         )
     )
     return snapshot.model_copy(update={"mechanism_candidates": candidates})
+
+
+def extend_position_eval(result: ForensicEval, board: chess.Board) -> ForensicEval:
+    """Propagate extended motif geometry through evaluate_position rich evidence."""
+    evidence = result.forensics
+    if evidence is None:
+        return result
+
+    updates: dict[str, object] = {
+        "tactical_snapshot": extend_tactical_snapshot(board, evidence.tactical_snapshot),
+    }
+    if evidence.best_move_uci and evidence.tactical_after_best is not None:
+        try:
+            move = chess.Move.from_uci(evidence.best_move_uci.lower())
+        except (ValueError, chess.InvalidMoveError):
+            move = None
+        if move is not None and move in board.legal_moves:
+            post = board.copy(stack=True)
+            post.push(move)
+            updates["tactical_after_best"] = extend_tactical_snapshot(
+                post,
+                evidence.tactical_after_best,
+            )
+
+    return result.model_copy(update={"forensics": evidence.model_copy(update=updates)})
