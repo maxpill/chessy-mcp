@@ -16,12 +16,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
 
 
-class SingleFlight(Generic[T]):
+class SingleFlight[T]:
     """Request coalescer (SingleFlight pattern)."""
 
     def __init__(self) -> None:

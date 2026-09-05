@@ -20,6 +20,12 @@ log = logging.getLogger("chessy.enginepool")
 
 DEFAULT_ACQUIRE_TIMEOUT = 15.0
 T = TypeVar("T")
+_TRANSPORT_ERRORS = (
+    chess.engine.EngineError,
+    chess.engine.EngineTerminatedError,
+    ConnectionError,
+    OSError,
+)
 
 
 class PoolBusy(Exception):
@@ -63,6 +69,22 @@ class _EnginePool:
         except Exception:
             pass
 
+    async def _accept_fresh(self, fresh: object) -> bool:
+        """Return a healthy replacement to the pool without exceeding target size."""
+        accepted = False
+        async with self._cardinality_lock:
+            if not self._closed and self._alive_count < self._target_size:
+                try:
+                    self._q.put_nowait(fresh)
+                except asyncio.QueueFull:
+                    accepted = False
+                else:
+                    self._alive_count += 1
+                    accepted = True
+        if not accepted:
+            await self._discard(fresh)
+        return accepted
+
     async def _self_heal_loop(self) -> None:
         """Refill lost slots without ever exceeding the original target size."""
         while not self._closed:
@@ -97,19 +119,7 @@ class _EnginePool:
                 )
                 continue
 
-            accepted = False
-            async with self._cardinality_lock:
-                if not self._closed and self._alive_count < self._target_size:
-                    try:
-                        self._q.put_nowait(fresh)
-                    except asyncio.QueueFull:
-                        accepted = False
-                    else:
-                        self._alive_count += 1
-                        accepted = True
-
-            if not accepted:
-                await self._discard(fresh)
+            if not await self._accept_fresh(fresh):
                 continue
 
             self._self_heal_attempts = 0
@@ -119,6 +129,47 @@ class _EnginePool:
                 self._alive_count,
                 self._target_size,
             )
+
+    async def _replace_and_retry(
+        self,
+        dead: object,
+        fn: Callable[[object], Awaitable[T]],
+        first_exc: BaseException,
+    ) -> T:
+        """Replace a dead handler and retry the same operation once on the fresh one.
+
+        Retrying on the newly spawned handler, instead of returning it to the queue first,
+        is important when every queued TCP handler went stale at the same time. In that
+        state a caller-level single retry can simply pick a second dead handler and still
+        surface ``TCPTransport closed=True`` even though replacement is working.
+        """
+        async with self._cardinality_lock:
+            self._alive_count = max(0, self._alive_count - 1)
+        await self._discard(dead)
+
+        try:
+            fresh = await self._factory()
+        except Exception:
+            log.exception(
+                "engine respawn failed; alive=%d target=%d",
+                self._alive_count,
+                self._target_size,
+            )
+            self._start_self_heal()
+            raise first_exc from None
+
+        try:
+            result = await fn(fresh)
+        except _TRANSPORT_ERRORS:
+            await self._discard(fresh)
+            self._start_self_heal()
+            raise
+        except BaseException:
+            await self._accept_fresh(fresh)
+            raise
+
+        await self._accept_fresh(fresh)
+        return result
 
     async def run(self, fn: Callable[[object], Awaitable[T]]) -> T:
         usage.count("stockfish")
@@ -130,46 +181,16 @@ class _EnginePool:
         except TimeoutError as exc:
             raise PoolBusy(f"no engine free within {self._acquire_timeout}s") from exc
 
-        replace = False
         try:
-            return await fn(inst)
-        except (
-            chess.engine.EngineError,
-            chess.engine.EngineTerminatedError,
-            ConnectionError,
-            OSError,
-        ):
-            replace = True
+            result = await fn(inst)
+        except _TRANSPORT_ERRORS as exc:
+            return await self._replace_and_retry(inst, fn, exc)
+        except BaseException:
+            self._q.put_nowait(inst)
             raise
-        finally:
-            if not replace:
-                self._q.put_nowait(inst)
-            else:
-                async with self._cardinality_lock:
-                    self._alive_count = max(0, self._alive_count - 1)
-                await self._discard(inst)
-                try:
-                    fresh = await self._factory()
-                except Exception:
-                    log.exception(
-                        "engine respawn failed; alive=%d target=%d",
-                        self._alive_count,
-                        self._target_size,
-                    )
-                    self._start_self_heal()
-                else:
-                    accepted = False
-                    async with self._cardinality_lock:
-                        if not self._closed and self._alive_count < self._target_size:
-                            try:
-                                self._q.put_nowait(fresh)
-                            except asyncio.QueueFull:
-                                accepted = False
-                            else:
-                                self._alive_count += 1
-                                accepted = True
-                    if not accepted:
-                        await self._discard(fresh)
+        else:
+            self._q.put_nowait(inst)
+            return result
 
     async def close(self) -> None:
         self._closed = True

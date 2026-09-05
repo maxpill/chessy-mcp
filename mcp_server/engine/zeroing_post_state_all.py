@@ -19,10 +19,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import chess
 
-if False:  # type-checker-only
+if TYPE_CHECKING:
     from core.engines.pool import AnalyzerPool
 
     from mcp_server.tcp_analyzer import TCPAnalyzerPool
@@ -82,7 +83,7 @@ async def _eval_one_post_state(
     *,
     mover_color: chess.Color,
     depth: int,
-    pool: "AnalyzerPool | TCPAnalyzerPool",
+    pool: AnalyzerPool | TCPAnalyzerPool,
 ) -> tuple[int | None, int | None]:
     """Single post-state eval, returning mover-POV (cp, mate) or (None, None)."""
     try:
@@ -95,7 +96,7 @@ async def _eval_one_post_state(
 async def evaluate_all_zeroing_post_states(
     b: chess.Board,
     depth: int,
-    pool: "AnalyzerPool | TCPAnalyzerPool",
+    pool: AnalyzerPool | TCPAnalyzerPool,
 ) -> ZeroingOverrideResult:
     """Re-evaluate the post-state of every legal zeroing move and return
     the best winning cp/mate.
@@ -142,7 +143,7 @@ async def evaluate_all_zeroing_post_states(
     best_mate: int | None = None
     best_uci: str | None = None
 
-    for (uci, _), res in zip(work, results):
+    for (uci, _), res in zip(work, results, strict=True):
         if isinstance(res, BaseException) or not isinstance(res, tuple):
             continue
         cp, mate = res

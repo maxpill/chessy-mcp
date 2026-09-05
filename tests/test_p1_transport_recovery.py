@@ -133,11 +133,13 @@ class _DeadFirstAliveSecondPool:
 
 
 @pytest.mark.asyncio
-async def test_pool_replaces_dead_instance_on_engine_error():
-    """Pool must discard an instance whose call raises EngineError and try again.
+async def test_pool_replaces_dead_instance_and_retries_fresh_handler_in_same_call():
+    """A stale queued handler must not escape as ENGINE_ERROR.
 
-    Without the fix the dead instance is returned to the queue untouched and
-    every subsequent call hits the same closed transport.
+    This specifically covers the production failure where all TCP handlers had
+    gone stale together. Retrying by taking another queued item is insufficient
+    in that state because the next item is stale too. The pool must respawn one
+    handler and retry the operation directly on that fresh handler.
     """
     pool_size = 2
     spawn_index = 0
@@ -145,22 +147,22 @@ async def test_pool_replaces_dead_instance_on_engine_error():
     async def make():
         nonlocal spawn_index
         spawn_index += 1
-        return _DeadFirstAliveSecondPool(die_on_next=(spawn_index == 1))
+        # Both handlers present at startup are stale. Replacements are healthy.
+        return _DeadFirstAliveSecondPool(die_on_next=(spawn_index <= pool_size))
 
     pool = _EnginePool([await make() for _ in range(pool_size)], make, acquire_timeout=5.0)
     assert pool._alive_count == pool_size
 
     board = chess.Board()
-    with pytest.raises(chess.engine.EngineError):
-        await pool.run(lambda a: a.evaluate(board, depth=12))
-    assert spawn_index == pool_size + 1, (
-        f"factory spawn count={spawn_index}, expected {pool_size + 1} after dead-instance discard"
-    )
-    assert pool._alive_count == pool_size, (
-        f"pool did not self-heal: alive={pool._alive_count}/{pool_size}"
-    )
+    first = await pool.run(lambda a: a.evaluate(board, depth=12))
+    assert first.cp == 42
+    assert spawn_index == pool_size + 1
+    assert pool._alive_count == pool_size
 
-    good_call = await pool.run(lambda a: a.evaluate(board, depth=12))
-    assert good_call.cp == 42
+    # The second stale startup handler is still queued. It must recover the same way.
+    second = await pool.run(lambda a: a.evaluate(board, depth=12))
+    assert second.cp == 42
+    assert spawn_index == pool_size + 2
+    assert pool._alive_count == pool_size
 
     await pool.close()
