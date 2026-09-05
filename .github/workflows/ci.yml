@@ -44,6 +44,9 @@ jobs:
       - name: Pyright
         run: uv run pyright mcp_server core
 
+      - name: Engine transport regression
+        run: uv run pytest -q tests/test_p1_transport_recovery.py
+
       - name: Validate production edge config
         env:
           CHESS_MCP_AUTH_TOKEN: ci-edge-token
