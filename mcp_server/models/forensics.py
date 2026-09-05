@@ -175,6 +175,44 @@ class CandidateEvidence(BaseModel):
     searched_depth: int | None = None
     opponent_best_reply: StrongestReplyEvidence | None = None
     tactical_snapshot_after: TacticalSnapshot
+    position_after: PositionFingerprint | None = None
+    position_delta: PositionDelta | None = None
+    position_after_reply: PositionFingerprint | None = None
+    tactical_after_reply: TacticalSnapshot | None = None
+    reply_delta: PositionDelta | None = None
+
+
+class CandidatePositionDifference(BaseModel):
+    """Compare a candidate's resulting position with the engine reference move.
+
+    Positive ``eval_gap_candidate_minus_reference_for_mover_cp`` means the
+    candidate is better than the reference from the root mover's perspective;
+    negative means worse. Feature-only lists describe differences between the
+    two resulting positions, not causal proof of why the evaluation differs.
+    """
+
+    reference_uci: str
+    reference_san: str
+    candidate_uci: str
+    candidate_san: str
+    eval_gap_candidate_minus_reference_for_mover_cp: int | None = None
+    material_effect_difference_for_mover_cp: int = 0
+    reference_reply_is_forcing: bool | None = None
+    candidate_reply_is_forcing: bool | None = None
+    only_reference_newly_en_prise: list[str] = Field(default_factory=list)
+    only_candidate_newly_en_prise: list[str] = Field(default_factory=list)
+    only_reference_newly_pinned: list[str] = Field(default_factory=list)
+    only_candidate_newly_pinned: list[str] = Field(default_factory=list)
+    only_reference_opened_files: list[str] = Field(default_factory=list)
+    only_candidate_opened_files: list[str] = Field(default_factory=list)
+    only_reference_pawn_structure_changes: list[str] = Field(default_factory=list)
+    only_candidate_pawn_structure_changes: list[str] = Field(default_factory=list)
+    king_ring_attack_delta_difference_white: int = 0
+    king_ring_attack_delta_difference_black: int = 0
+    proof_scope: str = (
+        "Resulting-position comparison only. Feature differences are deterministic; "
+        "they do not by themselves prove which feature caused the engine-evaluation gap."
+    )
 
 
 class ForcedLineEvidence(BaseModel):
@@ -252,6 +290,7 @@ class TopMovesForensicEvidence(BaseModel):
     position: PositionFingerprint
     tactical_snapshot: TacticalSnapshot
     candidate_comparisons: list[CandidateEvidence] = Field(default_factory=list)
+    candidate_differences: list[CandidatePositionDifference] = Field(default_factory=list)
     proof: TacticalProofEvidence | None = None
 
 
@@ -276,6 +315,7 @@ class ForensicEvidence(BaseModel):
     evidence_signatures: list[str] = Field(default_factory=list)
     forced_line: ForcedLineEvidence
     candidate_comparisons: list[CandidateEvidence] = Field(default_factory=list)
+    candidate_differences: list[CandidatePositionDifference] = Field(default_factory=list)
     stability: dict[str, Any] = Field(default_factory=dict)
     inference_boundary: str = (
         "Evidence signatures describe board/engine facts. Human thought-process labels "
