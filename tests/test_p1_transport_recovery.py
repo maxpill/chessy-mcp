@@ -14,6 +14,7 @@ import pytest
 from core.engines.pool import _EnginePool
 from core.engines.types import Eval
 from mcp_server import server as server_module
+from mcp_server.tcp_client import UCIError
 
 
 @pytest.fixture(autouse=True)
@@ -165,4 +166,53 @@ async def test_pool_replaces_dead_instance_and_retries_fresh_handler_in_same_cal
     assert spawn_index == pool_size + 2
     assert pool._alive_count == pool_size
 
+    await pool.close()
+
+
+class _UCIErrorThenHealthy:
+    """Real TCP client failures are raised as UCIError, not raw socket errors."""
+
+    def __init__(self, *, fail: bool) -> None:
+        self.fail = fail
+        self.closed = False
+
+    async def evaluate(self, board, *, depth=14, root_moves=None):
+        if self.fail:
+            raise UCIError("Engine stockfish disconnected during analysis")
+        move = next(iter(board.legal_moves), None)
+        return Eval(
+            cp=17,
+            best_move=move.uci() if move else None,
+            pv=[move.uci()] if move else [],
+            depth=depth,
+        )
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_pool_recovers_from_real_ucierror_without_surfacing_engine_error():
+    """UCIError must enter the same replace-and-retry path as ConnectionError.
+
+    Before the regression fix UCIError inherited directly from Exception, so
+    disconnects/timeouts created by TCPUCIClient bypassed _TRANSPORT_ERRORS and
+    surfaced as intermittent MCP engine_error responses despite the pool having
+    a working crash-recovery mechanism.
+    """
+    stale = _UCIErrorThenHealthy(fail=True)
+    spawned: list[_UCIErrorThenHealthy] = []
+
+    async def make():
+        fresh = _UCIErrorThenHealthy(fail=False)
+        spawned.append(fresh)
+        return fresh
+
+    pool = _EnginePool([stale], make, acquire_timeout=5.0)
+    result = await pool.run(lambda a: a.evaluate(chess.Board(), depth=10))
+
+    assert result.cp == 17
+    assert stale.closed is True
+    assert len(spawned) == 1
+    assert pool._alive_count == 1
     await pool.close()
