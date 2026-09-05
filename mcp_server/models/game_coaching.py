@@ -71,6 +71,10 @@ class CriticalMoment(BaseModel):
     classification_stable: bool | None = None
     candidate_gap_effective_cp: int | None = None
     resource_uniqueness: Literal["unknown", "low", "medium", "high"] = "unknown"
+    strongest_reply_uci: str | None = None
+    strongest_reply_san: str | None = None
+    strongest_reply_is_check: bool | None = None
+    strongest_reply_is_capture: bool | None = None
     evidence_signatures: list[str] = Field(default_factory=list)
 
 
