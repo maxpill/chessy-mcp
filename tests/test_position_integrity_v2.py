@@ -48,6 +48,49 @@ def test_overloaded_defender_candidate_reports_two_attacked_targets():
     assert "white_pawn@h4" in knight[0].attacked_targets
 
 
+def test_mechanism_candidates_expose_pin_check_capture_and_removal_of_defender():
+    board = chess.Board("4k3/4n3/8/5b2/8/8/2Q5/4R1K1 w - - 0 1")
+
+    snapshot = build_rich_tactical_snapshot(board)
+    mechanisms = snapshot.mechanism_candidates
+
+    pin = [item for item in mechanisms if item.mechanism == "absolute_pin"]
+    assert pin
+    assert pin[0].actor == "black_knight@e7"
+
+    check_capture = [
+        item
+        for item in mechanisms
+        if item.mechanism == "check_capture" and item.trigger_uci == "e1e7"
+    ]
+    assert check_capture
+
+    removal = [
+        item
+        for item in mechanisms
+        if item.mechanism == "removal_of_defender_candidate" and item.trigger_uci == "e1e7"
+    ]
+    assert removal
+    assert removal[0].evidence["defender"] == "black_knight@e7"
+    assert "black_bishop@f5" in removal[0].targets
+
+
+def test_mechanism_candidates_find_geometric_fork_without_claiming_forced_win():
+    board = chess.Board("r3k3/8/8/1N6/8/8/8/6K1 w - - 0 1")
+
+    snapshot = build_rich_tactical_snapshot(board)
+    fork = [
+        item
+        for item in snapshot.mechanism_candidates
+        if item.mechanism == "fork_candidate" and item.trigger_uci == "b5c7"
+    ]
+
+    assert fork
+    assert "black_king@e8" in fork[0].targets
+    assert "black_rook@a8" in fork[0].targets
+    assert "does not prove a net material win" in fork[0].proof_scope
+
+
 def test_position_delta_surfaces_defender_loss_on_piece_that_stays_put():
     before = chess.Board("1b4k1/8/8/4P3/8/5N2/8/6K1 w - - 0 1")
     move = chess.Move.from_uci("f3g5")
@@ -63,6 +106,26 @@ def test_position_delta_surfaces_defender_loss_on_piece_that_stays_put():
     assert pawn[0].attackers_after == 1
     assert pawn[0].defenders_before == 1
     assert pawn[0].defenders_after == 0
+
+
+def test_position_delta_reports_slider_activity_and_strategic_square_control():
+    before = chess.Board("6k1/8/8/8/8/8/3P4/2B3K1 w - - 0 1")
+    move = chess.Move.from_uci("d2d3")
+    assert move in before.legal_moves
+    after = before.copy(stack=True)
+    after.push(move)
+
+    delta = build_rich_position_delta(before, after)
+    bishop = [item for item in delta.piece_mobility_changes if item.target == "white_bishop@c1"]
+
+    assert bishop
+    assert bishop[0].mobility_after > bishop[0].mobility_before
+    assert "f4" in bishop[0].gained_squares
+
+    f4 = [item for item in delta.strategic_square_control_changes if item.square == "f4"]
+    assert f4
+    assert f4[0].white_attackers_before == 0
+    assert f4[0].white_attackers_after == 1
 
 
 def test_forensic_eval_echoes_board_and_best_move_resulting_position():
