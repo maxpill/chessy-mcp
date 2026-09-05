@@ -64,7 +64,23 @@ def estimate_mcp_request_cost(body: bytes) -> float:
         if tool_name == "analyze_game":
             pgn = str(args.get("pgn", ""))
             estimated_plies = max(1.0, min(200.0, len(pgn) / 24.0))
-            return 5.0 + (depth * estimated_plies) / 28.0
+            base = 5.0 + (depth * estimated_plies) / 28.0
+            detail = str(args.get("detail", "standard"))
+            if detail == "coach":
+                # Coach mode derives the game story from evals already paid for.
+                return base + 1.0
+            if detail == "forensic":
+                critical = max(1, min(int(args.get("max_critical_moments", 6)), 7))
+                verification_depth = (
+                    22 if depth <= 18 else 24 if depth <= 20 else min(depth + 2, 26)
+                )
+                # Two deep evals around every selected ply, a top-2 candidate
+                # search per ply, up to three positive-resource searches and a
+                # final-position resource search. Unstable moments can escalate
+                # to d26; the multiplier deliberately reserves headroom for that.
+                extra_searches = critical * 3 + 4
+                return base + (verification_depth * extra_searches) / 12.0
+            return base
     except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
         pass
     return 1.0
