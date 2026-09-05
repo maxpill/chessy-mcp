@@ -1,9 +1,9 @@
 """Structured, evidence-first chess coaching models.
 
 These models deliberately contain chess facts rather than natural-language
-coaching conclusions.  The MCP server establishes what is on the board,
+coaching conclusions. The MCP server establishes what is on the board,
 which forcing moves exist, what the engine's strongest reply is, and how
-candidate positions differ.  A coach/LLM can then infer the human process
+candidate positions differ. A coach/LLM can then infer the human process
 error without the engine service pretending to read the player's mind.
 """
 
@@ -100,6 +100,49 @@ class ForcedLineEvidence(BaseModel):
     ] = "no_pv"
     tactical_sequence_resolved: bool = False
     proof_status: Literal["principal_variation_only"] = "principal_variation_only"
+
+
+class DefenseEvidence(BaseModel):
+    rank: int
+    uci: str
+    san: str
+    is_check: bool = False
+    is_capture: bool = False
+    captured_piece: str | None = None
+    resulting_fen: str
+    eval_cp: int | None = None
+    eval_mate: int | None = None
+    searched_depth: int | None = None
+    continuation: ForcedLineEvidence
+
+
+class TacticalProofEvidence(BaseModel):
+    mode: Literal["tactical"] = "tactical"
+    root_move_uci: str
+    root_move_san: str
+    root_resulting_fen: str
+    root_margin_effective_cp: int | None = None
+    proof_status: Literal[
+        "exhaustive",
+        "sampled_top_defenses",
+        "terminal_after_root",
+        "principal_variation_only",
+    ]
+    legal_defense_count: int
+    analyzed_defense_count: int
+    defenses: list[DefenseEvidence] = Field(default_factory=list)
+    inference_boundary: str = (
+        "A sampled proof covers only the returned engine-ranked defenses. "
+        "Only proof_status=exhaustive means every legal reply was evaluated."
+    )
+
+
+class TopMovesForensicEvidence(BaseModel):
+    detail: Literal["coach", "forensic"]
+    position: PositionFingerprint
+    tactical_snapshot: TacticalSnapshot
+    candidate_comparisons: list[CandidateEvidence] = Field(default_factory=list)
+    proof: TacticalProofEvidence | None = None
 
 
 class ForensicEvidence(BaseModel):
