@@ -75,6 +75,12 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     immediate, and the response records both transition cause and confirmation
     plies plus segment peak/trough/stability evidence.
 
+    Forensic critical moments also expose board-grounded process evidence such
+    as the moved piece type, newly en-prise/tactically-hanging user pieces,
+    check-capture punishment, large best-vs-second candidate gaps and explicit
+    self-report-plus-forcing-reply signatures. These are evidence candidates,
+    not claims about what the player actually thought.
+
     ``perspective`` controls whose practical story is selected. The legacy
     engine metrics still cover both sides. ``max_critical_moments`` is clamped
     to 1-7 so full-game output stays coach-like instead of becoming an engine
