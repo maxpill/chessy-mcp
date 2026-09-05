@@ -19,6 +19,7 @@ from mcp_server.analysis.position_integrity import (
     build_rich_position_delta,
     build_rich_tactical_snapshot,
 )
+from mcp_server.analysis.tactical_snapshot_extensions import extend_tactical_snapshot
 from mcp_server.models.forensics import (
     CandidateEvidence,
     CandidatePositionDifference,
@@ -67,10 +68,10 @@ def enrich_candidate_geometry(board: chess.Board, candidate: CandidateEvidence) 
     if move is None:
         return candidate
 
-    root_snapshot = build_rich_tactical_snapshot(board)
+    root_snapshot = extend_tactical_snapshot(board, build_rich_tactical_snapshot(board))
     post = board.copy(stack=True)
     post.push(move)
-    post_snapshot = build_rich_tactical_snapshot(post)
+    post_snapshot = extend_tactical_snapshot(post, build_rich_tactical_snapshot(post))
     updates: dict[str, object] = {
         "resulting_fen": post.fen(),
         "position_after": build_position_fingerprint(post),
@@ -89,7 +90,10 @@ def enrich_candidate_geometry(board: chess.Board, candidate: CandidateEvidence) 
         if reply_move is not None:
             post_reply = post.copy(stack=True)
             post_reply.push(reply_move)
-            reply_snapshot = build_rich_tactical_snapshot(post_reply)
+            reply_snapshot = extend_tactical_snapshot(
+                post_reply,
+                build_rich_tactical_snapshot(post_reply),
+            )
             updates.update(
                 {
                     "position_after_reply": build_position_fingerprint(post_reply),
@@ -220,8 +224,14 @@ def upgrade_move_forensics(
     if played_move is not None and played_move in board_before.legal_moves:
         board_after.push(played_move)
 
-    tactical_before = build_rich_tactical_snapshot(board_before)
-    tactical_after = build_rich_tactical_snapshot(board_after)
+    tactical_before = extend_tactical_snapshot(
+        board_before,
+        build_rich_tactical_snapshot(board_before),
+    )
+    tactical_after = extend_tactical_snapshot(
+        board_after,
+        build_rich_tactical_snapshot(board_after),
+    )
     updates: dict[str, object] = {
         "tactical_before": tactical_before,
         "tactical_after_played": tactical_after,
@@ -239,7 +249,10 @@ def upgrade_move_forensics(
         if reply_move is not None:
             after_reply = board_after.copy(stack=True)
             after_reply.push(reply_move)
-            tactical_reply = build_rich_tactical_snapshot(after_reply)
+            tactical_reply = extend_tactical_snapshot(
+                after_reply,
+                build_rich_tactical_snapshot(after_reply),
+            )
             updates.update(
                 {
                     "position_after_reply": build_position_fingerprint(after_reply),
@@ -284,6 +297,7 @@ def upgrade_top_moves_forensics(
     reference_uci = candidates[0].uci if candidates else None
     upgraded = evidence.model_copy(
         update={
+            "tactical_snapshot": extend_tactical_snapshot(board, evidence.tactical_snapshot),
             "candidate_comparisons": candidates,
             "candidate_differences": build_candidate_differences(
                 board,
