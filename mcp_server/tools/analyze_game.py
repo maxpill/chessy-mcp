@@ -10,6 +10,7 @@ tools.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from typing import Literal
 
 from mcp.server.mcpserver import Context
@@ -66,6 +67,11 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     ``objectively_forced`` is true only for rules termination/forced mate, never
     merely because the engine evaluation is strongly negative.
 
+    Critical evidence signatures/reasons are additionally aggregated into stable
+    per-game count maps. They are intended for an external cross-game failure
+    corpus without making this otherwise stateless MCP server persist player
+    profiles or infer psychological causes from one game.
+
     ``perspective`` controls whose practical story is selected. The legacy
     engine metrics still cover both sides. ``max_critical_moments`` is clamped
     to 1-7 so full-game output stays coach-like instead of becoming an engine
@@ -107,17 +113,35 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             metrics=metrics,
         )
         if result.coaching is not None:
+            coaching = result.coaching
             termination = build_game_termination_assessment(
                 pgn,
-                final_position=result.coaching.final_position,
+                final_position=coaching.final_position,
             )
-            result = result.model_copy(
+            signature_counts = Counter(
+                signature
+                for moment in coaching.critical_moments
+                for signature in moment.evidence_signatures
+            )
+            reason_counts = Counter(
+                reason
+                for moment in coaching.critical_moments
+                for reason in moment.reasons
+            )
+            self_reported = sorted(
+                moment.ply
+                for moment in coaching.critical_moments
+                if moment.user_comment_raw
+            )
+            coaching = coaching.model_copy(
                 update={
-                    "coaching": result.coaching.model_copy(
-                        update={"termination": termination}
-                    )
+                    "termination": termination,
+                    "critical_evidence_signature_counts": dict(sorted(signature_counts.items())),
+                    "critical_reason_counts": dict(sorted(reason_counts.items())),
+                    "self_reported_critical_plies": self_reported,
                 }
             )
+            result = result.model_copy(update={"coaching": coaching})
         return result
     except ToolError:
         await metrics.record("analyze_game", 0.0, is_error=True)
