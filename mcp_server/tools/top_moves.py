@@ -21,7 +21,7 @@ from mcp_server.analysis.top_moves_finder import TopMovesFinder
 from mcp_server.analysis.top_moves_forensics import enrich_top_moves_result
 from mcp_server.engine import _get_analyzer_pool
 from mcp_server.metrics import metrics
-from mcp_server.models import TopMovesResult
+from mcp_server.models.forensics import ForensicTopMovesResult
 from mcp_server.parsers import _build_board_with_metadata
 from mcp_server.tools._common import (
     _resolve_verbosity,
@@ -48,10 +48,11 @@ async def top_moves(
     proof_mode: Literal["none", "tactical"] = "none",
     proof_defenses: int = 3,
     ctx: Context | None = None,
-) -> TopMovesResult:
+) -> ForensicTopMovesResult:
     """Get top candidates, with optional explicit comparisons and tactical proof.
 
-    The default ``detail="standard"`` path is unchanged. Rich modes are opt-in:
+    The default ``detail="standard"`` path keeps the previous ranking/caching
+    behavior and adds only ``forensics=null`` to the response schema. Rich modes:
 
     - ``detail="coach"`` adds a deterministic board fingerprint and CCT-style
       tactical snapshot.
@@ -89,7 +90,7 @@ async def top_moves(
             verbosity_mode=verbosity_mode,
             ctx=ctx,
         )
-        result: TopMovesResult = out.result
+        result = ForensicTopMovesResult(**out.result.model_dump())
 
         rich_requested = detail != "standard" or bool(include_moves) or proof_mode != "none"
         if rich_requested and result.status == "active":
