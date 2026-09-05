@@ -124,4 +124,4 @@ class ForensicEvidence(BaseModel):
 class ForensicMoveAnalysis(MCPMoveAnalysis):
     """Backward-compatible ``classify_move`` result with opt-in evidence."""
 
-    forensics: ForensicEvidence
+    forensics: ForensicEvidence | None = None
