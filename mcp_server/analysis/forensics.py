@@ -54,6 +54,10 @@ def _piece_label(piece: chess.Piece | None) -> str | None:
     return f"{_color_name(piece.color)}_{PIECE_NAMES[piece.piece_type]}"
 
 
+def _piece_at_label(piece: chess.Piece, square: chess.Square) -> str:
+    return f"{_color_name(piece.color)}_{PIECE_NAMES[piece.piece_type]}@{chess.square_name(square)}"
+
+
 def _captured_piece(board: chess.Board, move: chess.Move) -> chess.Piece | None:
     if board.is_en_passant(move):
         offset = -8 if board.turn == chess.WHITE else 8
@@ -333,6 +337,301 @@ async def _candidate_evidence(
     )
 
 
+def _material_balance(board: chess.Board, color: chess.Color) -> int:
+    own = 0
+    opponent = 0
+    for piece in board.piece_map().values():
+        value = PIECE_VALUES[piece.piece_type]
+        if piece.color == color:
+            own += value
+        else:
+            opponent += value
+    return own - opponent
+
+
+def _first_irreversible_event_ply(
+    board: chess.Board,
+    forced_line: ForcedLineEvidence,
+) -> int | None:
+    work = board.copy(stack=True)
+    for ply, raw in enumerate(forced_line.uci, start=1):
+        try:
+            move = chess.Move.from_uci(raw)
+        except (ValueError, chess.InvalidMoveError):
+            return None
+        if move not in work.legal_moves:
+            return None
+        irreversible = work.is_capture(move) or move.promotion is not None
+        work.push(move)
+        if irreversible or work.is_game_over(claim_draw=False):
+            return ply
+    return None
+
+
+def _forcing_prefix_plies(board: chess.Board, forced_line: ForcedLineEvidence) -> int:
+    work = board.copy(stack=True)
+    count = 0
+    for raw in forced_line.uci:
+        try:
+            move = chess.Move.from_uci(raw)
+        except (ValueError, chess.InvalidMoveError):
+            break
+        if move not in work.legal_moves:
+            break
+        forcing = work.gives_check(move) or work.is_capture(move) or move.promotion is not None
+        if not forcing:
+            break
+        count += 1
+        work.push(move)
+    return count
+
+
+def _reply_failure_profile(
+    board_before: chess.Board,
+    board_after: chess.Board,
+    reply: StrongestReplyEvidence | None,
+    forced_line: ForcedLineEvidence,
+) -> dict[str, Any] | None:
+    if reply is None:
+        return None
+    try:
+        move = chess.Move.from_uci(reply.uci)
+    except (ValueError, chess.InvalidMoveError):
+        return None
+    if move not in board_after.legal_moves:
+        return None
+
+    mover = board_before.turn
+    balance_before_reply = _material_balance(board_after, mover)
+    post_reply = board_after.copy(stack=True)
+    post_reply.push(move)
+    balance_after_reply = _material_balance(post_reply, mover)
+    immediate_material_swing = balance_after_reply - balance_before_reply
+    first_irreversible = _first_irreversible_event_ply(board_after, forced_line)
+    forcing_prefix = _forcing_prefix_plies(board_after, forced_line)
+
+    if reply.is_check and reply.is_capture:
+        reply_type = "check_capture"
+    elif reply.is_check:
+        reply_type = "check"
+    elif reply.is_capture:
+        reply_type = "capture"
+    else:
+        reply_type = "quiet"
+
+    if post_reply.is_checkmate():
+        realization = "immediate_mate"
+    elif immediate_material_swing < 0:
+        realization = "immediate_material"
+    elif reply.is_forcing and first_irreversible is not None and first_irreversible > 1:
+        realization = "forcing_sequence"
+    elif reply.is_forcing:
+        realization = "forcing_reply"
+    else:
+        realization = "quiet_reply"
+
+    return {
+        "mechanism": "reply_failure_profile",
+        "reply": reply.san,
+        "reply_type": reply_type,
+        "opponent_first_pv_move_forcing": reply.is_forcing,
+        "immediate_material_swing_for_mover_cp": immediate_material_swing,
+        "first_irreversible_event_ply": first_irreversible,
+        "forcing_prefix_plies": forcing_prefix,
+        "tactical_sequence_resolved_in_returned_pv": forced_line.tactical_sequence_resolved,
+        "realization_kind": realization,
+        "eval_after_reply_cp": reply.eval_after_reply_cp,
+        "eval_after_reply_mate": reply.eval_after_reply_mate,
+        "inference_boundary": (
+            "This is board/line evidence, not proof of what the player calculated. "
+            "No share_of_total_loss_after_first_reply is emitted because a minimax "
+            "evaluation after the played move already assumes the opponent's best reply."
+        ),
+    }
+
+
+def _piece_attack_state(
+    board: chess.Board,
+    color: chess.Color,
+) -> dict[str, tuple[int, int, bool]]:
+    state: dict[str, tuple[int, int, bool]] = {}
+    for square, piece in board.piece_map().items():
+        if piece.color != color or piece.piece_type == chess.KING:
+            continue
+        state[_piece_at_label(piece, square)] = (
+            len(board.attackers(not color, square)),
+            len(board.attackers(color, square)),
+            board.is_pinned(color, square),
+        )
+    return state
+
+
+def _position_update_evidence(
+    board_before: chess.Board,
+    played_move: chess.Move | None,
+) -> dict[str, Any]:
+    if not board_before.move_stack:
+        return {
+            "mechanism": "position_update_after_opponent_move",
+            "history_available": False,
+            "inference_boundary": (
+                "A naked FEN has no previous-move history, so failed-position-update "
+                "evidence cannot be reconstructed."
+            ),
+        }
+
+    before_opponent = board_before.copy(stack=True)
+    opponent_move = before_opponent.pop()
+    try:
+        opponent_san = before_opponent.san(opponent_move)
+    except (ValueError, AssertionError):
+        opponent_san = opponent_move.uci()
+
+    mover = board_before.turn
+    prior = _piece_attack_state(before_opponent, mover)
+    current = _piece_attack_state(board_before, mover)
+
+    newly_attacked: list[str] = []
+    newly_exposed: list[str] = []
+    newly_pinned: list[str] = []
+    defender_losses: list[str] = []
+    for label, (attackers_after, defenders_after, pinned_after) in current.items():
+        previous = prior.get(label)
+        if previous is None:
+            continue
+        attackers_before, defenders_before, pinned_before = previous
+        if attackers_before == 0 and attackers_after > 0:
+            newly_attacked.append(label)
+            if defenders_after == 0:
+                newly_exposed.append(label)
+        if defenders_after < defenders_before:
+            defender_losses.append(
+                f"{label}:{defenders_before}->{defenders_after}"
+            )
+        if not pinned_before and pinned_after:
+            newly_pinned.append(label)
+
+    king_in_check = board_before.is_check()
+    urgent_targets = sorted(set(newly_exposed + newly_pinned))
+    urgent_change = king_in_check or bool(urgent_targets)
+
+    unresolved: list[str] = []
+    addresses_change: bool | None = None
+    if played_move is not None and played_move in board_before.legal_moves:
+        after_user = board_before.copy(stack=True)
+        after_user.push(played_move)
+        after_state = _piece_attack_state(after_user, mover)
+        for label in newly_exposed:
+            state = after_state.get(label)
+            if state is not None and state[0] > 0 and state[1] == 0:
+                unresolved.append(label)
+        for label in newly_pinned:
+            state = after_state.get(label)
+            if state is not None and state[2]:
+                unresolved.append(label)
+        if king_in_check and after_user.is_check():
+            unresolved.append("king_in_check")
+        addresses_change = not unresolved
+
+    return {
+        "mechanism": "position_update_after_opponent_move",
+        "history_available": True,
+        "opponent_move_uci": opponent_move.uci(),
+        "opponent_move_san": opponent_san,
+        "king_in_check_after_opponent_move": king_in_check,
+        "newly_attacked_user_pieces": sorted(newly_attacked),
+        "newly_exposed_user_pieces": sorted(newly_exposed),
+        "newly_pinned_user_pieces": sorted(newly_pinned),
+        "defender_count_losses": sorted(defender_losses),
+        "opponent_move_created_urgent_change": urgent_change,
+        "played_move_addresses_change": addresses_change,
+        "unresolved_urgent_targets_after_played_move": sorted(set(unresolved)),
+        "inference_boundary": (
+            "urgent_change is a deterministic board-state proxy. It can support, "
+            "but does not itself prove, a coaching label such as plan persistence."
+        ),
+    }
+
+
+def _wdl_expectation(wdl: tuple[int, int, int] | None, color: chess.Color) -> float | None:
+    if wdl is None:
+        return None
+    wins, draws, losses = wdl
+    total = wins + draws + losses
+    if total <= 0:
+        return None
+    white_expectation = (wins + 0.5 * draws) / total
+    return white_expectation if color == chess.WHITE else 1.0 - white_expectation
+
+
+def _stability_evidence(
+    result: MCPMoveAnalysis,
+    *,
+    mover: chess.Color,
+    reply: StrongestReplyEvidence | None,
+    depth: int,
+) -> dict[str, Any]:
+    before_expectation = _wdl_expectation(result.eval_before.wdl, mover)
+    after_expectation = _wdl_expectation(result.eval_after.wdl, mover)
+    wdl_loss_pp = None
+    if before_expectation is not None and after_expectation is not None:
+        wdl_loss_pp = max(0.0, (before_expectation - after_expectation) * 100.0)
+
+    mate_before = result.eval_before.mate
+    mate_after = result.eval_after.mate
+    mate_status_changed = (mate_before is None) != (mate_after is None)
+    if mate_before is not None and mate_after is not None:
+        mate_status_changed = mate_status_changed or ((mate_before > 0) != (mate_after > 0))
+
+    forcing_punishment = bool(
+        reply is not None
+        and reply.is_forcing
+        and result.move_class.value in {"mistake", "blunder"}
+    )
+    small_cp_loss = result.centipawn_loss is not None and result.centipawn_loss <= 30
+    small_wdl_loss = wdl_loss_pp is not None and wdl_loss_pp <= 2.0
+    practical_equivalent = bool(
+        result.action_equivalent
+        or result.is_engine_best
+        or (
+            result.move_class.value in {"best", "good"}
+            and not forcing_punishment
+            and not mate_status_changed
+            and (small_wdl_loss or (wdl_loss_pp is None and small_cp_loss))
+        )
+    )
+
+    if practical_equivalent:
+        coach_priority = "negligible"
+    elif result.move_class.value in {"mistake", "blunder"} and forcing_punishment:
+        coach_priority = "high"
+    elif result.move_class.value in {"mistake", "blunder"}:
+        coach_priority = "medium"
+    elif result.move_class.value == "inaccuracy":
+        coach_priority = "low"
+    else:
+        coach_priority = "routine"
+
+    return {
+        "classification_verified": result.classification_verified,
+        "action_equivalent": result.action_equivalent,
+        "is_engine_best": result.is_engine_best,
+        "requested_depth": depth,
+        "searched_depth_before": result.eval_before.searched_depth or result.eval_before.depth,
+        "searched_depth_after": result.eval_after.searched_depth or result.eval_after.depth,
+        "wdl_loss_percentage_points": wdl_loss_pp,
+        "mate_status_changed": mate_status_changed,
+        "forcing_punishment": forcing_punishment,
+        "practical_equivalent": practical_equivalent,
+        "coach_priority": coach_priority,
+        "practical_equivalence_basis": (
+            "action-equivalence/engine-best first; otherwise a good-or-better move with "
+            "<=2 WDL percentage-point loss (or <=30 cp when WDL is unavailable), no mate "
+            "status transition, and no forcing tactical punishment."
+        ),
+    }
+
+
 def _mechanism_evidence(
     result: MCPMoveAnalysis,
     reply: StrongestReplyEvidence | None,
@@ -358,6 +657,8 @@ def _mechanism_evidence(
             signatures.append("FORCING_CHECK_REPLY")
         if reply.is_capture:
             signatures.append("FORCING_CAPTURE_REPLY")
+        if reply.is_check and reply.is_capture:
+            signatures.append("CHECK_CAPTURE_REPLY")
 
     if reply is not None and reply.is_capture and reply.captured_piece:
         try:
@@ -423,7 +724,24 @@ async def enrich_move_analysis(
         depth=depth,
         deep=detail == "forensic",
     )
+    forced_line = _principal_line(board_after, result.eval_after.pv)
     mechanisms, signatures = _mechanism_evidence(result, reply, tactical_after)
+
+    reply_profile = _reply_failure_profile(board_before, board_after, reply, forced_line)
+    if reply_profile is not None:
+        mechanisms.append(reply_profile)
+        immediate_material_swing = reply_profile["immediate_material_swing_for_mover_cp"]
+        if isinstance(immediate_material_swing, int) and immediate_material_swing <= -100:
+            signatures.append("IMMEDIATE_MATERIAL_PUNISHMENT")
+        if reply_profile["tactical_sequence_resolved_in_returned_pv"]:
+            signatures.append("TACTICAL_SEQUENCE_RESOLVED_IN_PV")
+
+    update_evidence = _position_update_evidence(board_before, played_move)
+    mechanisms.append(update_evidence)
+    if update_evidence.get("opponent_move_created_urgent_change"):
+        signatures.append("OPPONENT_MOVE_CREATED_URGENT_CHANGE")
+        if update_evidence.get("played_move_addresses_change") is False:
+            signatures.append("FAILED_POSITION_UPDATE_CANDIDATE")
 
     requested_candidates: list[str] = []
     if detail == "forensic":
@@ -451,17 +769,15 @@ async def enrich_move_analysis(
         strongest_reply=reply,
         position_delta=delta,
         mechanism_evidence=mechanisms,
-        evidence_signatures=signatures,
-        forced_line=_principal_line(board_after, result.eval_after.pv),
+        evidence_signatures=sorted(set(signatures)),
+        forced_line=forced_line,
         candidate_comparisons=comparisons,
-        stability={
-            "classification_verified": result.classification_verified,
-            "action_equivalent": result.action_equivalent,
-            "is_engine_best": result.is_engine_best,
-            "requested_depth": depth,
-            "searched_depth_before": result.eval_before.searched_depth or result.eval_before.depth,
-            "searched_depth_after": result.eval_after.searched_depth or result.eval_after.depth,
-        },
+        stability=_stability_evidence(
+            result,
+            mover=board_before.turn,
+            reply=reply,
+            depth=depth,
+        ),
     )
     payload = result.model_dump(
         exclude={"same_action_type", "same_outcome", "within_cp_threshold"}
