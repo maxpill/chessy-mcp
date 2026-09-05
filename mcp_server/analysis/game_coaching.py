@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import chess
 import chess.pgn
@@ -266,7 +266,9 @@ def _build_segments(evals: list[MCPEval], *, perspective: Perspective) -> list[G
         return []
 
     values = [_perspective_cp(ev, perspective) for ev in evals]
-    raw_states = [_position_state(value) for value in values[1:]]
+    raw_states: list[PositionState] = [
+        cast(PositionState, _position_state(value)) for value in values[1:]
+    ]
     states, transition_confirmed = _confirm_segment_states(raw_states)
     if not states:
         return []
