@@ -10,7 +10,6 @@ tools.
 from __future__ import annotations
 
 import logging
-from collections import Counter
 from typing import Literal
 
 from mcp.server.mcpserver import Context
@@ -19,7 +18,6 @@ from mcp.types import ToolAnnotations
 
 from mcp_server._mcp import mcp
 from mcp_server.analysis.game_analyzer import GameAnalyzer
-from mcp_server.analysis.game_termination import build_game_termination_assessment
 from mcp_server.metrics import metrics
 from mcp_server.models.game_coaching import ForensicGameAnalysisResult
 from mcp_server.tools._common import (
@@ -60,10 +58,10 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     It also measures top-2 candidate gaps, tags strongest forcing replies, marks
     unique defensive resources and counts reasonable final-position resources.
 
-    Rich modes also attach an evidence-bounded termination assessment. An
-    explicit resignation-style PGN ``Termination`` header is treated as confirmed
-    resignation; a decisive result on a non-terminal board without that header is
-    only a resignation candidate because timeout/adjudication remain possible.
+    Rich modes attach an evidence-bounded termination assessment. An explicit
+    resignation-style PGN ``Termination`` header is treated as confirmed
+    resignation; a decisive result on a non-terminal board without that header
+    is only a resignation candidate because timeout/adjudication remain possible.
     ``objectively_forced`` is true only for rules termination/forced mate, never
     merely because the engine evaluation is strongly negative.
 
@@ -71,6 +69,11 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     per-game count maps. They are intended for an external cross-game failure
     corpus without making this otherwise stateless MCP server persist player
     profiles or infer psychological causes from one game.
+
+    Game-story segments use a small persistence filter so a one-ply threshold
+    oscillation does not become a fake new phase. Large/decisive swings are kept
+    immediate, and the response records both transition cause and confirmation
+    plies plus segment peak/trough/stability evidence.
 
     ``perspective`` controls whose practical story is selected. The legacy
     engine metrics still cover both sides. ``max_critical_moments`` is clamped
@@ -102,7 +105,7 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
         )
 
     try:
-        result = await _ANALYZER.analyze(
+        return await _ANALYZER.analyze(
             pgn=pgn,
             depth=depth,
             strict=strict,
@@ -112,37 +115,6 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             ctx=ctx,
             metrics=metrics,
         )
-        if result.coaching is not None:
-            coaching = result.coaching
-            termination = build_game_termination_assessment(
-                pgn,
-                final_position=coaching.final_position,
-            )
-            signature_counts = Counter(
-                signature
-                for moment in coaching.critical_moments
-                for signature in moment.evidence_signatures
-            )
-            reason_counts = Counter(
-                reason
-                for moment in coaching.critical_moments
-                for reason in moment.reasons
-            )
-            self_reported = sorted(
-                moment.ply
-                for moment in coaching.critical_moments
-                if moment.user_comment_raw
-            )
-            coaching = coaching.model_copy(
-                update={
-                    "termination": termination,
-                    "critical_evidence_signature_counts": dict(sorted(signature_counts.items())),
-                    "critical_reason_counts": dict(sorted(reason_counts.items())),
-                    "self_reported_critical_plies": self_reported,
-                }
-            )
-            result = result.model_copy(update={"coaching": coaching})
-        return result
     except ToolError:
         await metrics.record("analyze_game", 0.0, is_error=True)
         raise
