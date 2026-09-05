@@ -9,7 +9,17 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-class UCIError(Exception):
+class UCIError(ConnectionError):
+    """Recoverable UCI-over-TCP transport/session failure.
+
+    The engine pool already treats ``ConnectionError`` as a dead transport:
+    it discards the stale handler, creates a fresh engine connection, and
+    retries the same operation once. The TCP client raises ``UCIError`` for
+    disconnects and read timeouts, so making it a ``ConnectionError`` subtype
+    ensures real production TCP failures use that recovery path instead of
+    escaping immediately as MCP ``engine_error`` responses.
+    """
+
     pass
 
 
