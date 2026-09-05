@@ -5,17 +5,23 @@ at a time. All concurrent callers for the same key await the same task
 result.
 
 Cancellation safety: every waiter awaits the shared future through
-``asyncio.shield(...)``. Without shielding, the cancellation of ANY one waiter
-(e.g. its HTTP request being aborted by a client) would propagate to the
-shared Future and cancel the work for every other waiter in flight — a single
-disconnected client could take down an expensive Stockfish search for
-everyone else. Shielding isolates per-waiter cancellation.
+``asyncio.shield(...)`` so one disconnected caller cannot cancel shared work.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+
+
+def _consume_unobserved_exception[T](future: asyncio.Future[T]) -> None:
+    """Mark producer-only failures as observed without changing waiter semantics."""
+    if future.cancelled():
+        return
+    try:
+        future.exception()
+    except BaseException:
+        pass
 
 
 class SingleFlight[T]:
@@ -32,6 +38,7 @@ class SingleFlight[T]:
                 do_wait = True
             else:
                 future = asyncio.get_running_loop().create_future()
+                future.add_done_callback(_consume_unobserved_exception)
                 self._in_flight[key] = future
                 do_wait = False
 
