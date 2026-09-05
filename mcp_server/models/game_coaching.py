@@ -118,6 +118,47 @@ class FinalPositionAssessment(BaseModel):
     verification_depth: int | None = None
 
 
+class GameTerminationAssessment(BaseModel):
+    """Evidence-bounded interpretation of how a recorded game ended.
+
+    A decisive PGN result with a non-terminal final board is deliberately only
+    a resignation *candidate*: without a Termination header it could also be a
+    timeout, adjudication, or another external ending. The MCP never turns a
+    large negative centipawn score into "resignation was forced".
+    """
+
+    pgn_result: str
+    termination_header: str | None = None
+    decisive_result: bool = False
+    winner_side: Literal["white", "black"] | None = None
+    loser_side: Literal["white", "black"] | None = None
+    status: Literal[
+        "explicit_resignation",
+        "candidate_nonterminal_decisive_result",
+        "board_checkmate",
+        "other_terminal_result",
+        "ongoing_or_unknown",
+    ] = "ongoing_or_unknown"
+    confidence: Literal["high", "medium", "low"] = "low"
+    final_board_terminal: bool = False
+    final_board_checkmate: bool = False
+    continued_play_was_legal: bool = False
+    forced_mate_against_loser: bool | None = None
+    objectively_forced: bool | None = None
+    mate_distance_white_pov: int | None = None
+    eval_for_loser_effective_cp: int | None = None
+    best_defensive_move_uci: str | None = None
+    best_defensive_move_san: str | None = None
+    legal_resource_count: int = 0
+    reasonable_resource_count: int | None = None
+    defensive_resources_exist: bool = False
+    inference_boundary: str = (
+        "Only an explicit resignation-style Termination header is treated as confirmed "
+        "resignation. A decisive result on a non-terminal board is merely a candidate. "
+        "objectively_forced refers to forced mate/rules termination, never to a cp threshold."
+    )
+
+
 class GameCoachingEvidence(BaseModel):
     detail: Literal["coach", "forensic"]
     perspective: Literal["white", "black"]
@@ -127,6 +168,7 @@ class GameCoachingEvidence(BaseModel):
     positive_moments: list[PositiveMoment] = Field(default_factory=list)
     root_cause_links: list[RootCauseLink] = Field(default_factory=list)
     final_position: FinalPositionAssessment
+    termination: GameTerminationAssessment | None = None
     scan_depth: int
     verification_depth: int | None = None
     adaptive_escalation_depth: int | None = None
