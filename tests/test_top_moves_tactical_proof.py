@@ -50,6 +50,15 @@ def _root_result(*moves: str) -> TopMovesResult:
     )
 
 
+def test_default_forensic_wrapper_preserves_legacy_payload_and_null_evidence() -> None:
+    legacy = _root_result("e2e4", "d2d4")
+    wrapped = ForensicTopMovesResult(**legacy.model_dump())
+
+    assert wrapped.result == legacy.result
+    assert wrapped.returned_n == legacy.returned_n
+    assert wrapped.forensics is None
+
+
 @pytest.mark.asyncio
 async def test_tactical_proof_samples_engine_ranked_defenses_when_tree_is_wide() -> None:
     board = chess.Board()
