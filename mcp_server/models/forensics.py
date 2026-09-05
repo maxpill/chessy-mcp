@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from mcp_server.models.legacy import MCPMoveAnalysis
+from mcp_server.models.legacy import MCPMoveAnalysis, TopMovesResult
 
 
 class PositionFingerprint(BaseModel):
@@ -143,6 +143,12 @@ class TopMovesForensicEvidence(BaseModel):
     tactical_snapshot: TacticalSnapshot
     candidate_comparisons: list[CandidateEvidence] = Field(default_factory=list)
     proof: TacticalProofEvidence | None = None
+
+
+class ForensicTopMovesResult(TopMovesResult):
+    """Backward-compatible ``top_moves`` result with opt-in evidence."""
+
+    forensics: TopMovesForensicEvidence | None = None
 
 
 class ForensicEvidence(BaseModel):
