@@ -25,6 +25,7 @@ from mcp_server.models.forensics import (
     CandidatePositionDifference,
     ForensicMoveAnalysis,
     ForensicTopMovesResult,
+    PositionDelta,
 )
 
 MATE_VALUE = 100_000
@@ -55,6 +56,46 @@ def _material_effect_for_mover(candidate: CandidateEvidence, mover: chess.Color)
         return 0
     white_net = delta.material_delta_white - delta.material_delta_black
     return white_net if mover == chess.WHITE else -white_net
+
+
+def _piece_safety_labels(delta: PositionDelta) -> set[str]:
+    return {
+        (
+            f"{item.target}:attackers={item.attackers_before}->{item.attackers_after}:"
+            f"defenders={item.defenders_before}->{item.defenders_after}"
+        )
+        for item in delta.piece_safety_changes
+    }
+
+
+def _piece_mobility_labels(delta: PositionDelta) -> set[str]:
+    return {
+        (
+            f"{item.target}:mobility={item.mobility_before}->{item.mobility_after}:"
+            f"gained={','.join(item.gained_squares) or '-'}:lost={','.join(item.lost_squares) or '-'}"
+        )
+        for item in delta.piece_mobility_changes
+    }
+
+
+def _square_control_labels(delta: PositionDelta) -> set[str]:
+    return {
+        (
+            f"{item.square}:white={item.white_attackers_before}->{item.white_attackers_after}:"
+            f"black={item.black_attackers_before}->{item.black_attackers_after}"
+        )
+        for item in delta.strategic_square_control_changes
+    }
+
+
+def _mechanism_labels(candidate: CandidateEvidence) -> set[str]:
+    return {
+        (
+            f"{item.mechanism}:trigger={item.trigger_uci or '-'}:actor={item.actor or '-'}:"
+            f"targets={','.join(item.targets) or '-'}"
+        )
+        for item in candidate.tactical_snapshot_after.mechanism_candidates
+    }
 
 
 def enrich_candidate_geometry(board: chess.Board, candidate: CandidateEvidence) -> CandidateEvidence:
@@ -121,7 +162,8 @@ def build_candidate_differences(
     The engine-best move should normally be supplied as ``reference_uci``. If it
     is absent from the candidate list, the first candidate becomes the reference.
     This makes questions such as "why g4 instead of gxh4?" directly answerable
-    from feature deltas after both moves.
+    from feature deltas after both moves, including safety, piece activity,
+    strategic-square control and typed tactical geometry.
     """
     items = list(candidates)
     if len(items) < 2:
@@ -133,6 +175,11 @@ def build_candidate_differences(
     reference_delta = reference.position_delta
     if reference_delta is None:
         return []
+
+    reference_safety = _piece_safety_labels(reference_delta)
+    reference_mobility = _piece_mobility_labels(reference_delta)
+    reference_control = _square_control_labels(reference_delta)
+    reference_mechanisms = _mechanism_labels(reference)
 
     out: list[CandidatePositionDifference] = []
     for candidate in items:
@@ -146,6 +193,11 @@ def build_candidate_differences(
         eval_gap: int | None = None
         if reference_value is not None and candidate_value is not None:
             eval_gap = mover_sign * (candidate_value - reference_value)
+
+        candidate_safety = _piece_safety_labels(delta)
+        candidate_mobility = _piece_mobility_labels(delta)
+        candidate_control = _square_control_labels(delta)
+        candidate_mechanisms = _mechanism_labels(candidate)
 
         out.append(
             CandidatePositionDifference(
@@ -195,6 +247,26 @@ def build_candidate_differences(
                 only_candidate_pawn_structure_changes=sorted(
                     set(delta.pawn_structure_changes)
                     - set(reference_delta.pawn_structure_changes)
+                ),
+                only_reference_piece_safety_changes=sorted(reference_safety - candidate_safety),
+                only_candidate_piece_safety_changes=sorted(candidate_safety - reference_safety),
+                only_reference_piece_mobility_changes=sorted(
+                    reference_mobility - candidate_mobility
+                ),
+                only_candidate_piece_mobility_changes=sorted(
+                    candidate_mobility - reference_mobility
+                ),
+                only_reference_strategic_square_control_changes=sorted(
+                    reference_control - candidate_control
+                ),
+                only_candidate_strategic_square_control_changes=sorted(
+                    candidate_control - reference_control
+                ),
+                only_reference_mechanism_candidates=sorted(
+                    reference_mechanisms - candidate_mechanisms
+                ),
+                only_candidate_mechanism_candidates=sorted(
+                    candidate_mechanisms - reference_mechanisms
                 ),
                 king_ring_attack_delta_difference_white=(
                     delta.king_ring_attack_delta_white
