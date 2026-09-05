@@ -8,12 +8,14 @@ test fixtures don't need to change their import paths.
 
 from __future__ import annotations
 
-from core.engines.types import MoveClass
 from mcp_server.models.action import ActionBlock
 from mcp_server.models.action_policy import ActionPolicyMetadata
 from mcp_server.models.eval import EvalBlock
-from mcp_server.models.game_coaching import ForensicGameAnalysisResult, GameCoachingEvidence
 from mcp_server.models.history import HistoryBlock
+from mcp_server.models.mcpeval import MCPEval
+from mcp_server.models.mcpeval_factory import attach_factory
+from mcp_server.models.policy import PolicyBlock
+from core.engines.types import MoveClass
 from mcp_server.models.legacy import (
     GameAnalysisResult,
     MCPMoveAnalysis,
@@ -21,9 +23,6 @@ from mcp_server.models.legacy import (
     PlyAnalysisItem,
     TopMovesResult,
 )
-from mcp_server.models.mcpeval import MCPEval
-from mcp_server.models.mcpeval_factory import attach_factory
-from mcp_server.models.policy import PolicyBlock
 
 # Bind ``from_eval`` so MCPEval.from_eval(...) keeps working unchanged.
 attach_factory(MCPEval)
@@ -43,9 +42,7 @@ __all__ = [
     "ActionBlock",
     "ActionPolicyMetadata",
     "EvalBlock",
-    "ForensicGameAnalysisResult",
     "GameAnalysisResult",
-    "GameCoachingEvidence",
     "HistoryBlock",
     "MCPEval",
     "MCPMoveAnalysis",
