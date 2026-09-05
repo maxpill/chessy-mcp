@@ -16,6 +16,7 @@ from mcp.types import ToolAnnotations
 
 from mcp_server._mcp import mcp
 from mcp_server.analysis.position_integrity import enrich_position_eval
+from mcp_server.analysis.tactical_snapshot_extensions import extend_position_eval
 from mcp_server.engine import _evaluate_game_position_cached, _get_analyzer_pool
 from mcp_server.metrics import metrics
 from mcp_server.models.forensics import ForensicEval
@@ -98,7 +99,8 @@ async def evaluate_position(
         evidence_detail: Literal["coach", "forensic"] = (
             "forensic" if detail == "forensic" else "coach"
         )
-        return enrich_position_eval(result, board, detail=evidence_detail)
+        enriched = enrich_position_eval(result, board, detail=evidence_detail)
+        return extend_position_eval(enriched, board)
     except ToolError:
         await metrics.record("evaluate_position", (time.time() - t0) * 1000, is_error=True)
         raise
