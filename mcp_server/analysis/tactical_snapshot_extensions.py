@@ -8,6 +8,8 @@ discovered checks and skewers. No engine search is performed here.
 
 from __future__ import annotations
 
+from typing import Any
+
 import chess
 
 from mcp_server.analysis.forensic_extensions import (
@@ -23,7 +25,7 @@ from mcp_server.models.forensics import (
 MAX_EXTENDED_MECHANISM_CANDIDATES = 32
 
 
-def _candidate_from_raw(raw: dict[str, object]) -> MechanismCandidateEvidence:
+def _candidate_from_raw(raw: dict[str, Any]) -> MechanismCandidateEvidence:
     mechanism = str(raw["mechanism"])
     trigger_uci = raw.get("trigger_uci")
     trigger_san = raw.get("trigger_san")
@@ -74,7 +76,7 @@ def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> 
     }
 
     for move in board.legal_moves:
-        raw_items: list[dict[str, object]] = []
+        raw_items: list[dict[str, Any]] = []
         discovered = _discovered_check_evidence(board, move)
         if discovered is not None:
             raw_items.append(discovered)
