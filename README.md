@@ -32,7 +32,7 @@ The stack lives in a separate Komodo stack at
 `/etc/komodo/stacks/chessy-mcp/` and is deployed on push to `main` via a
 GitHub webhook to the public tunnel:
 
-```
+```text
 https://webhook-komodo.trychessy.com/listener/github/stack/chessy-mcp/deploy
 ```
 
@@ -77,12 +77,83 @@ Four Streamable-HTTP MCP tools at `/mcp`:
 | `classify_move`     | Grade a played move against the engine's best alternative |
 | `analyze_game`      | Full PGN analysis with accuracy, mistakes, turning points |
 
-The 4-tool surface is intentional — the chessy app's coach runtime is the
+The 4-tool surface is intentional - the chessy app's coach runtime is the
 primary consumer, and this server is sized for that workload.
+
+### Coaching forensics
+
+`classify_move` keeps its default low-cost classification path, but coaching
+clients can opt into structured evidence without adding another MCP tool:
+
+```text
+classify_move(..., detail="coach")
+classify_move(..., detail="forensic", compare_moves=["g4", "gxh4"])
+```
+
+`detail="coach"` attaches deterministic position fingerprints, CCT-style
+forcing-move snapshots, strongest-reply metadata, position deltas, mechanism
+evidence and the principal continuation. `detail="forensic"` additionally
+verifies the strongest reply one step deeper and evaluates the resulting
+positions after the played move, engine-best move and explicitly requested
+comparison moves.
+
+`top_moves` exposes the same evidence-first approach for puzzle and candidate
+questions:
+
+```text
+top_moves(..., detail="coach")
+top_moves(..., detail="forensic", include_moves=["g4", "gxh4"])
+top_moves(..., proof_mode="tactical", proof_defenses=5)
+```
+
+`include_moves` forces SAN/UCI alternatives into resulting-position analysis
+even when they are outside the returned MultiPV top-N. Tactical proof mode
+checks every opponent reply when there are at most eight legal defenses;
+otherwise it samples the requested number of engine-ranked defenses. The
+response carries `proof_status=exhaustive`, `sampled_top_defenses`, or
+`terminal_after_root`, so a single PV is never mislabeled as a complete proof.
+Each defense includes its resulting FEN, evaluation and principal continuation.
+
+`analyze_game` can now produce a coaching post-mortem instead of only an engine
+report:
+
+```text
+analyze_game(..., depth=18, detail="coach", perspective="black")
+analyze_game(..., depth=18, detail="forensic", perspective="black", max_critical_moments=6)
+```
+
+Coach mode reuses the full-game eval scan and structures it into perspective-
+relative `game_segments`, `advantage_events`, 1-7 `critical_moments`,
+`positive_moments`, evidence-bounded `root_cause_links`, PGN mainline comments
+and a final-position defensibility snapshot. It deliberately does not promote
+every small engine delta into a lesson.
+
+Forensic mode keeps the cheap whole-game scan, then automatically re-searches
+only the selected critical positions. The default d18 scan is verified around
+d22, d20 around d24, and an unstable classification can escalate only that
+position to at most d26. Each verified moment can include classification
+stability, a top-2 candidate gap, resource uniqueness and the strongest forcing
+reply. This implements the intended `scan -> select -> verify` workflow without
+paying d24+ for every ply in a long game.
+
+Annotated mainline comments are preserved as `user_comment_raw`. That lets the
+coaching layer combine engine evidence such as `FORCING_CAPTURE_REPLY` with a
+player statement such as "I did not see Qxc5+" before assigning a process label.
+
+The evidence layer intentionally does **not** claim what the player thought.
+It emits machine-readable signatures such as `FORCING_CAPTURE_REPLY` and
+`MISSED_FORCING_REPLY_CANDIDATE`; the coach/LLM combines those board facts
+with the player's self-report before assigning process labels such as
+"incomplete CCT" or "calculation stopped too early".
+
+The response also echoes a canonical piece map, material, side to move,
+castling/en-passant state and a deterministic position hash. That gives
+screen-based clients a position-verification handshake before they explain a
+puzzle or game position.
 
 ## Performance
 
-- **Stockfish pool size** defaults to `min(cpu_count, 8)` — sized to the
+- **Stockfish pool size** defaults to `min(cpu_count, 8)` - sized to the
   OVH production box (8 cores Xeon E5-1620 v2).
 - **Lifespan-managed pool**: the FastMCP `lifespan` context initializes
   the pool at startup so the first request doesn't pay a 100ms+
@@ -90,7 +161,7 @@ primary consumer, and this server is sized for that workload.
 - **GZip compression**: Starlette's `GZipMiddleware` cuts analyze_game
   payload sizes ~6× on the wire (`minimum_size=1024`).
 - **uvloop + httptools**: replaces the default asyncio loop and
-  h11 parser — measured ~30% throughput improvement on JSON-RPC workloads.
+  h11 parser - measured ~30% throughput improvement on JSON-RPC workloads.
 - **Single-flight cache coalescing**: concurrent identical evaluation
   requests share one Stockfish call via the `SingleFlight` helper.
 - **Multi-tier cache (L1 memory LRU + L2 SQLite WAL)** absorbs repeat

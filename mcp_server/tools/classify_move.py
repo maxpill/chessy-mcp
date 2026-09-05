@@ -3,6 +3,10 @@
 Thin entry point. The per-move classification logic lives in
 :class:`mcp_server.analysis.move_classifier.MoveClassifier` plus
 :func:`mcp_server.analysis.move_classifier.validate_classify_input`.
+
+The optional ``detail`` surface keeps the default response cheap while
+allowing coaching clients to request evidence-first board forensics: forcing
+moves, strongest reply, position deltas and explicit candidate comparisons.
 """
 
 from __future__ import annotations
@@ -26,16 +30,19 @@ from mcp_server.analysis.classify_helpers import (
     build_classification,
     played_continuation_san,
 )
+from mcp_server.analysis.forensics import enrich_move_analysis
 from mcp_server.analysis.move_classifier import MoveClassifier, validate_classify_input
 from mcp_server.cache import classify_cache_key
 from mcp_server.engine import _cache, _get_analyzer_pool, _single_flight
 from mcp_server.metrics import metrics
 from mcp_server.models import MCPMoveAnalysis
+from mcp_server.models.forensics import ForensicMoveAnalysis
 from mcp_server.tcp_analyzer import TCPAnalyzerPool
 from mcp_server.tools._common import _tool_error, _validate_requested_depth, error_code_for
 
 log = logging.getLogger("chessy_mcp.classify_move")
 _CLASSIFIER = MoveClassifier.with_defaults()
+DetailMode = Literal["standard", "coach", "forensic"]
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
@@ -46,13 +53,34 @@ async def classify_move(
     depth: int = 20,
     action_type: Literal["play_move", "claim_draw", "claim_draw_with_intended_move"] = "play_move",
     strict: bool = False,
+    detail: DetailMode = "standard",
+    compare_moves: list[str] | None = None,
     ctx: Context | None = None,
-) -> MCPMoveAnalysis:
-    """Grade a played move against Stockfish's best alternative."""
+) -> ForensicMoveAnalysis:
+    """Grade a played move against Stockfish's best alternative.
+
+    ``detail='standard'`` preserves the previous low-cost behavior and wire
+    fields, adding only ``forensics=null``. ``detail='coach'`` attaches board
+    fingerprints, CCT-style tactical snapshots, strongest-reply metadata,
+    position deltas and the principal continuation without extra verification
+    searches. ``detail='forensic'`` additionally evaluates the strongest reply
+    one step deeper and compares the played move, engine-best move and any
+    explicitly requested ``compare_moves`` by their resulting positions.
+
+    ``compare_moves`` accepts SAN or UCI and is capped at eight candidates.
+    Supplying it automatically upgrades ``standard`` to ``forensic`` because a
+    comparison necessarily requires additional engine work.
+    """
     t0 = time.time()
     depth = _validate_requested_depth(depth, tool="classify_move")
     raw_requested_depth = max(1, min(depth, 30))
     try:
+        if detail not in {"standard", "coach", "forensic"}:
+            raise ValueError(f"INVALID_DETAIL: {detail}")
+        if compare_moves is not None and len(compare_moves) > 8:
+            raise ValueError("INVALID_COMPARE_MOVES: at most 8 candidates are allowed")
+        effective_detail: DetailMode = "forensic" if compare_moves and detail == "standard" else detail
+
         outcome = validate_classify_input(
             fen=fen,
             moves=moves,
@@ -83,12 +111,20 @@ async def classify_move(
                 update={"requested_depth": raw_requested_depth}
             )
             eval_aft = cached.eval_after.model_copy(update={"requested_depth": raw_requested_depth})
-            return cached.model_copy(
+            base = cached.model_copy(
                 update={
                     "eval_before": eval_bef,
                     "eval_after": eval_aft,
                     "syntax_warning": outcome.syntax_warning,
                 }
+            )
+            return await _finish_result(
+                base,
+                outcome=outcome,
+                pool=pool,
+                depth=depth,
+                detail=effective_detail,
+                compare_moves=compare_moves,
             )
 
         async def _compute() -> MCPMoveAnalysis:
@@ -176,7 +212,15 @@ async def classify_move(
         result = cast(MCPMoveAnalysis, await _single_flight.do(cache_key, _compute))
         await _cache.set_classify(cache_key, result)
         await metrics.record("classify_move", (time.time() - t0) * 1000, cache_hit=False)
-        return result.model_copy(update={"syntax_warning": outcome.syntax_warning})
+        base = result.model_copy(update={"syntax_warning": outcome.syntax_warning})
+        return await _finish_result(
+            base,
+            outcome=outcome,
+            pool=pool,
+            depth=depth,
+            detail=effective_detail,
+            compare_moves=compare_moves,
+        )
     except ToolError:
         await metrics.record("classify_move", 0.0, is_error=True)
         raise
@@ -187,6 +231,34 @@ async def classify_move(
     except Exception as exc:
         await metrics.record("classify_move", 0.0, is_error=True)
         raise _tool_error(code="engine_error", message=str(exc), tool="classify_move") from exc
+
+
+async def _finish_result(
+    result: MCPMoveAnalysis,
+    *,
+    outcome: Any,
+    pool: Any,
+    depth: int,
+    detail: DetailMode,
+    compare_moves: list[str] | None,
+) -> ForensicMoveAnalysis:
+    if detail == "standard" and not compare_moves:
+        payload = result.model_dump(
+            exclude={"same_action_type", "same_outcome", "within_cp_threshold"}
+        )
+        return ForensicMoveAnalysis(**payload)
+    evidence_detail: Literal["coach", "forensic"] = (
+        "forensic" if detail == "forensic" else "coach"
+    )
+    return await enrich_move_analysis(
+        result,
+        board_before=outcome.board,
+        played_move=outcome.chess_move,
+        pool=pool,
+        depth=depth,
+        detail=evidence_detail,
+        compare_moves=compare_moves,
+    )
 
 
 def _uses_pool_classify_fast_path(pool: Any, outcome: Any) -> bool:

@@ -1,7 +1,7 @@
 """``analyze_game`` MCP tool.
 
 Thin entry point. The end-to-end orchestration lives in
-:class:`mcp_server.analysis.game_analyzer.GameAnalyzer` — this module
+:class:`mcp_server.analysis.game_analyzer.GameAnalyzer` - this module
 just unwraps the FastMCP ``Context``, forwards the call, and translates
 :class:`ToolError` failures consistently with the other three analysis
 tools.
@@ -10,15 +10,16 @@ tools.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from mcp_server._mcp import mcp
 from mcp_server.analysis.game_analyzer import GameAnalyzer
 from mcp_server.metrics import metrics
-from mcp_server.models import GameAnalysisResult
-from mcp_server._mcp import mcp
+from mcp_server.models.game_coaching import ForensicGameAnalysisResult
 from mcp_server.tools._common import (
     _tool_error,
     _validate_requested_depth,
@@ -35,37 +36,65 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     pgn: str,
     depth: int = 18,
     strict: bool = False,
+    detail: Literal["standard", "coach", "forensic"] = "standard",
+    perspective: Literal["white", "black"] = "white",
+    max_critical_moments: int = 6,
     ctx: Context | None = None,
-) -> GameAnalysisResult:
-    """Analyze a full game in PGN format with Stockfish, providing accuracy scores, mistake counts, and metadata.
+) -> ForensicGameAnalysisResult:
+    """Analyze a full PGN, optionally as a structured coaching post-mortem.
 
-    Supports standard PGN, annotated PGNs (with comments, NAGs, variations), conversational
-    preamble/trailer text, markdown-wrapped PGNs, and bare move lists. Side variations in parentheses
-    and comments are ignored for the mainline analysis. `white_acpl` / `black_acpl` report the effective
-    ACPL across all plies (including 1000cp mate transitions and draw claim forfeitures), while
-    `white_raw_acpl` / `black_raw_acpl` report unweighted raw CPL on non-mate plies.
+    The default ``detail="standard"`` path preserves the existing accuracy,
+    ACPL, mistake counts and legacy ``turning_points`` behavior.
 
-    Args:
-        pgn: PGN string, annotated game, or move text.
-        depth: Search depth per move (default 18, clamped 1-30). ``analyze_game`` fans
-            one Stockfish search per mainline ply — default 18 trims compute vs the
-            previous d14 while staying accurate enough to separate inaccuracy/mistake
-            classes. For "find the turning points" mode, d18 is enough. For precise
-            post-mortems where borderline decisions matter, push to 20 or selectively
-            re-classify borderline plies at d22-24. Avoid going above d24 except for
-            3-7 critical positions: nodes scale roughly 5x from d20→d24 and ~10x to d30
-            (Stockfish 18 figures), with sharply diminishing Elo per added depth.
-        strict: When True, reject non-canonical SAN syntax, move number mismatches, or metadata discrepancies (default False).
+    ``detail="coach"`` adds an evidence-first story of the game without extra
+    engine searches: perspective-relative game segments, advantage/recovery
+    events, 1-7 pedagogically selected critical moments, positive resources,
+    root-cause-to-materialization links, player comments from the PGN mainline
+    and a final-position defensibility snapshot.
 
-    Returns:
-         GameAnalysisResult with player accuracy %, ACPL, blunder/mistake counts, turning points, and game metadata.
+    ``detail="forensic"`` automatically deep-verifies only the selected
+    critical positions. A normal d18 scan is re-checked around d22, d20 around
+    d24, and unstable classifications can escalate selectively to at most d26.
+    It also measures top-2 candidate gaps, tags strongest forcing replies, marks
+    unique defensive resources and counts reasonable final-position resources.
+
+    ``perspective`` controls whose practical story is selected. The legacy
+    engine metrics still cover both sides. ``max_critical_moments`` is clamped
+    to 1-7 so full-game output stays coach-like instead of becoming an engine
+    dump.
+
+    Annotated PGN comments are retained as ``user_comment_raw`` on the matching
+    critical ply. Chess MCP reports the board/engine evidence but deliberately
+    does not infer a human process label such as "incomplete CCT" on its own.
     """
     depth = _validate_requested_depth(depth, tool="analyze_game")
+    if detail not in {"standard", "coach", "forensic"}:
+        raise _tool_error(
+            code="invalid_argument",
+            message=f"INVALID_DETAIL: {detail}",
+            tool="analyze_game",
+        )
+    if perspective not in {"white", "black"}:
+        raise _tool_error(
+            code="invalid_argument",
+            message=f"INVALID_PERSPECTIVE: {perspective}",
+            tool="analyze_game",
+        )
+    if max_critical_moments < 1 or max_critical_moments > 7:
+        raise _tool_error(
+            code="invalid_argument",
+            message="INVALID_MAX_CRITICAL_MOMENTS: expected 1..7",
+            tool="analyze_game",
+        )
+
     try:
         return await _ANALYZER.analyze(
             pgn=pgn,
             depth=depth,
             strict=strict,
+            detail=detail,
+            perspective=perspective,
+            max_critical_moments=max_critical_moments,
             ctx=ctx,
             metrics=metrics,
         )

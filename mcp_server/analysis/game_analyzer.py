@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import chess
 import chess.pgn
@@ -19,6 +19,7 @@ from core.engines.openings import lookup_opening
 if TYPE_CHECKING:
     from mcp.server.mcpserver import Context
 
+from mcp_server.analysis.game_coaching import build_game_coaching_evidence
 from mcp_server.analysis.game_validation import GameMetadata, extract_game_metadata
 from mcp_server.analysis.mainline_parser import parse_mainline
 from mcp_server.analysis.result_reconciliation import reconcile_result
@@ -28,7 +29,8 @@ from mcp_server.engine import (
     _gather_evaluate_positions_bounded,
     _get_analyzer_pool,
 )
-from mcp_server.models import GameAnalysisResult, MCPEval
+from mcp_server.models import MCPEval
+from mcp_server.models.game_coaching import ForensicGameAnalysisResult
 from mcp_server.parsers import (
     _check_multiple_games,
     _extract_canonical_pgn_text,
@@ -42,6 +44,8 @@ from mcp_server.parsers import (
 # The service deliberately accepts local/TCP pools plus test doubles. Their
 # runtime contract is structural at this injection boundary.
 type EnginePool = Any
+GameDetail = Literal["standard", "coach", "forensic"]
+GamePerspective = Literal["white", "black"]
 
 
 @dataclass
@@ -99,11 +103,15 @@ class GameAnalyzer:
         *,
         strict: bool,
         ctx: Context | None,
+        detail: GameDetail = "standard",
+        perspective: GamePerspective = "white",
+        max_critical_moments: int = 6,
         metrics: Any | None = None,
-    ) -> GameAnalysisResult:
+    ) -> ForensicGameAnalysisResult:
         t0 = time.time()
         raw_requested_depth = depth
         depth = max(1, min(depth, 30))
+        max_critical_moments = max(1, min(max_critical_moments, 7))
 
         sanitized_pgn, lexical_header_warnings = _sanitize_malformed_pgn_header_lines(
             pgn, strict=strict
@@ -164,11 +172,13 @@ class GameAnalyzer:
         if strict and not moves:
             if metadata.syntax_warnings:
                 raise ValueError(
-                    f"STRICT_PGN_ERROR: PGN contains syntax normalization or move number mismatch: {metadata.syntax_warnings[0]}"
+                    "STRICT_PGN_ERROR: PGN contains syntax normalization or move number mismatch: "
+                    f"{metadata.syntax_warnings[0]}"
                 )
             if metadata.metadata_warnings:
                 raise ValueError(
-                    f"STRICT_PGN_ERROR: PGN contains metadata inconsistency: {metadata.metadata_warnings[0]}"
+                    "STRICT_PGN_ERROR: PGN contains metadata inconsistency: "
+                    f"{metadata.metadata_warnings[0]}"
                 )
 
         is_standard_start = game.board().fen() == chess.STARTING_FEN
@@ -182,7 +192,7 @@ class GameAnalyzer:
             )
             if metrics is not None:
                 await metrics.record("analyze_game", (time.time() - t0) * 1000, cache_hit=True)
-            return GameAnalysisResult(
+            return ForensicGameAnalysisResult(
                 total_plies=0,
                 white_accuracy=None,
                 black_accuracy=None,
@@ -231,6 +241,7 @@ class GameAnalyzer:
                 **identity,
                 accuracy_method="win_probability_logistic",
                 mate_penalty_policy="1000_cp_mate_transition",
+                coaching=None,
             )
 
         eval_pairs = await self._evaluate_positions(
@@ -255,12 +266,29 @@ class GameAnalyzer:
         if strict:
             if metadata.syntax_warnings:
                 raise ValueError(
-                    f"STRICT_PGN_ERROR: PGN contains syntax normalization or move number mismatch: {metadata.syntax_warnings[0]}"
+                    "STRICT_PGN_ERROR: PGN contains syntax normalization or move number mismatch: "
+                    f"{metadata.syntax_warnings[0]}"
                 )
             if metadata.metadata_warnings:
                 raise ValueError(
-                    f"STRICT_PGN_ERROR: PGN contains metadata inconsistency: {metadata.metadata_warnings[0]}"
+                    "STRICT_PGN_ERROR: PGN contains metadata inconsistency: "
+                    f"{metadata.metadata_warnings[0]}"
                 )
+
+        coaching = None
+        if detail != "standard":
+            coaching = await build_game_coaching_evidence(
+                positions=positions,
+                moves=moves,
+                evals=evals,
+                game=game,
+                perspective=perspective,
+                detail=detail,
+                max_critical_moments=max_critical_moments,
+                scan_depth=depth,
+                pool=pool,
+                evaluate_positions=self._evaluate_positions,
+            )
 
         if metrics is not None:
             await metrics.record(
@@ -269,7 +297,7 @@ class GameAnalyzer:
                 cache_hit=all_cached,
             )
 
-        return GameAnalysisResult(
+        return ForensicGameAnalysisResult(
             total_plies=len(moves),
             white_accuracy=game_metrics.white_accuracy,
             black_accuracy=game_metrics.black_accuracy,
@@ -318,6 +346,7 @@ class GameAnalyzer:
             **identity,
             accuracy_method="win_probability_logistic",
             mate_penalty_policy="1000_cp_mate_transition",
+            coaching=coaching,
         )
 
 

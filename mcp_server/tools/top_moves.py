@@ -1,24 +1,28 @@
 """``top_moves`` MCP tool.
 
-Thin entry point. The end-to-end orchestration lives in
-:class:`mcp_server.analysis.top_moves_finder.TopMovesFinder`. This module
-just unwraps the FastMCP context, normalizes inputs, forwards the call,
-and translates ``ToolError`` failures consistently.
+Thin entry point. The end-to-end ranking orchestration lives in
+:class:`mcp_server.analysis.top_moves_finder.TopMovesFinder`. Optional coaching
+forensics are attached after the cached ranking path so the default API keeps
+its existing cost and cache semantics.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from typing import Literal
 
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from mcp_server.analysis.top_moves_finder import TopMovesFinder
-from mcp_server.metrics import metrics
-from mcp_server.models import TopMovesResult
 from mcp_server._mcp import mcp
+from mcp_server.analysis.top_moves_finder import TopMovesFinder
+from mcp_server.analysis.top_moves_forensics import enrich_top_moves_result
+from mcp_server.engine import _get_analyzer_pool
+from mcp_server.metrics import metrics
+from mcp_server.models.forensics import ForensicTopMovesResult
+from mcp_server.parsers import _build_board_with_metadata
 from mcp_server.tools._common import (
     _resolve_verbosity,
     _tool_error,
@@ -39,19 +43,30 @@ async def top_moves(
     depth: int = 20,
     strict: bool = False,
     verbosity: str | None = None,
+    detail: Literal["standard", "coach", "forensic"] = "standard",
+    include_moves: list[str] | None = None,
+    proof_mode: Literal["none", "tactical"] = "none",
+    proof_defenses: int = 3,
     ctx: Context | None = None,
-) -> TopMovesResult:
-    """Get the top N candidate moves for a position, ranked best first.
+) -> ForensicTopMovesResult:
+    """Get top candidates, with optional explicit comparisons and tactical proof.
 
-    Args:
-        fen: FEN or PGN string for the position.
-        moves: Optional UCI or SAN moves to replay onto the position first.
-        n: Number of candidates to return (default 3, clamped 1-20).
-        depth: Stockfish search depth (default 20, clamped 1-30).
-        strict: When True, reject non-canonical SAN syntax or move numbers (default False).
+    The default ``detail="standard"`` path keeps the previous ranking/caching
+    behavior and adds only ``forensics=null`` to the response schema. Rich modes:
 
-    Returns:
-        TopMovesResult with ranked candidates and rule-aware action surface.
+    - ``detail="coach"`` adds a deterministic board fingerprint and CCT-style
+      tactical snapshot.
+    - ``detail="forensic"`` additionally evaluates the returned root candidates'
+      resulting positions.
+    - ``include_moves`` evaluates up to eight explicit SAN/UCI alternatives even
+      when they are outside the engine's top-N, enabling questions such as
+      "why g4 instead of gxh4?".
+    - ``proof_mode="tactical"`` evaluates the engine-best move's reply tree. If
+      the opponent has at most eight legal replies every reply is checked and the
+      proof is labelled ``exhaustive``. Otherwise only engine-ranked defenses are
+      sampled and the response explicitly says ``sampled_top_defenses``.
+
+    ``proof_defenses`` controls the sampled defense count and is clamped to 1-8.
     """
     t0 = time.time()
     depth = _validate_requested_depth(depth, tool="top_moves")
@@ -59,6 +74,9 @@ async def top_moves(
     raw_requested_n = n
     clamped_n = max(1, min(n, 20))
     try:
+        if len(include_moves or []) > 8:
+            raise ValueError("INVALID_COMPARE_MOVE: include_moves supports at most 8 moves")
+
         verbosity_mode = _resolve_verbosity(verbosity)
         out = await _FINDER.run(
             fen=fen,
@@ -72,12 +90,36 @@ async def top_moves(
             verbosity_mode=verbosity_mode,
             ctx=ctx,
         )
+        result = ForensicTopMovesResult(**out.result.model_dump())
+
+        rich_requested = detail != "standard" or bool(include_moves) or proof_mode != "none"
+        if rich_requested and result.status == "active":
+            board, _input_fen, _canonical_fen, _canonicalized = _build_board_with_metadata(
+                fen,
+                moves or [],
+                strict=strict,
+            )
+            pool = await _get_analyzer_pool(ctx)
+            effective_detail: Literal["coach", "forensic"] = (
+                "forensic" if detail == "forensic" or proof_mode == "tactical" else "coach"
+            )
+            result = await enrich_top_moves_result(
+                result,
+                board,
+                pool=pool,
+                depth=raw_requested_depth,
+                detail=effective_detail,
+                include_moves=include_moves,
+                proof_mode=proof_mode,
+                proof_defenses=max(1, min(int(proof_defenses), 8)),
+            )
+
         await metrics.record(
             "top_moves",
             (time.time() - t0) * 1000,
             cache_hit=out.cache_hit,
         )
-        return out.result
+        return result
     except ToolError:
         await metrics.record("top_moves", 0.0, is_error=True)
         raise
