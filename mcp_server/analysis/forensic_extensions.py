@@ -101,9 +101,11 @@ def build_adaptive_forcing_resolution(
     """Summarize a returned PV until its forcing sequence locally resolves.
 
     This does not extend the engine PV. It walks only the moves already supplied
-    by the engine and stops early once at least one forcing move has occurred and
-    the side to move has no legal check, capture or promotion. That is a useful
-    coaching quiet-point heuristic, not proof that no quiet tactical threat exists.
+    by the engine and stops early once at least one forcing move has occurred,
+    the side to move is not currently in check, and that side has no legal
+    check, capture or promotion. This keeps mandatory quiet check evasions inside
+    the sequence. It is a coaching quiet-point heuristic, not proof that no
+    quiet tactical threat exists.
     """
     work = board.copy(stack=True)
     perspective = mover if mover is not None else board.turn
@@ -170,7 +172,7 @@ def build_adaptive_forcing_resolution(
             break
 
         forcing_available = _forcing_moves(work)
-        if forcing_seen and not forcing_available:
+        if forcing_seen and not work.is_check() and not forcing_available:
             termination_reason = (
                 "material_resolution" if capture_or_promotion_seen else "quiet_position"
             )
@@ -187,8 +189,9 @@ def build_adaptive_forcing_resolution(
         "first_material_loss_ply_for_mover": first_material_loss_ply,
         "proof_scope": (
             "Uses only the returned principal variation and a local forcing-move quiet-point "
-            "heuristic. It does not extend the engine search and does not prove that a quiet "
-            "position has no strategic or non-forcing tactical threat."
+            "heuristic. Mandatory quiet check evasions remain inside the sequence. It does not "
+            "extend the engine search and does not prove that a quiet position has no strategic "
+            "or non-forcing tactical threat."
         ),
     }
 
