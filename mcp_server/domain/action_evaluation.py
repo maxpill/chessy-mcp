@@ -49,11 +49,11 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "ActionSource",
-    "ActionEvaluation",
     "MATE_CP",
-    "evaluate_action",
+    "ActionEvaluation",
+    "ActionSource",
     "choose_recommended_action",
+    "evaluate_action",
     "terminal_outcome_from_status",
 ]
 
@@ -131,7 +131,7 @@ async def evaluate_action(
     board: chess.Board,
     action: GameAction,
     *,
-    pool: "EnginePoolLike | None" = None,
+    pool: EnginePoolLike | None = None,
     depth: int = 8,
     rule_status: Any | None = None,
 ) -> ActionEvaluation:
@@ -190,7 +190,7 @@ async def _evaluate_play_move(
     board: chess.Board,
     action: Any,
     *,
-    pool: "EnginePoolLike | None",
+    pool: EnginePoolLike | None,
     depth: int,
     rule_status: Any | None,
 ) -> ActionEvaluation:
@@ -298,7 +298,7 @@ async def _post_state_engine_eval(
     post: chess.Board,
     *,
     mover_color: chess.Color,
-    pool: "EnginePoolLike | None",
+    pool: EnginePoolLike | None,
     depth: int,
 ) -> tuple[int | None, int | None]:
     """Run a short engine call on the post-state, return (canonical_cp, mate_distance)
