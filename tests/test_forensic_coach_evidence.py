@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import chess
@@ -13,6 +14,7 @@ from mcp_server.analysis.forensics import (
     enrich_move_analysis,
     parse_candidate_move,
 )
+from mcp_server.middleware.request_cost import estimate_mcp_request_cost
 from mcp_server.models import MCPEval, MCPMoveAnalysis
 
 
@@ -30,7 +32,6 @@ def test_position_fingerprint_echoes_board_state_deterministically() -> None:
     assert first.legal_move_count == 20
     assert first.material == {"white": 4000, "black": 4000}
     assert first.piece_map["white"]["king"] == ["e1"]
-    assert first.piece_map["white"]["pawns"] if "pawns" in first.piece_map["white"] else True
     assert first.piece_map["white"]["pawn"] == [
         "a2",
         "b2",
@@ -84,6 +85,36 @@ def test_compare_move_parser_accepts_san_and_uci_and_rejects_illegal() -> None:
     assert parse_candidate_move(board, "e2e4").uci() == "e2e4"
     with pytest.raises(ValueError, match="INVALID_COMPARE_MOVE"):
         parse_candidate_move(board, "Qh8")
+
+
+def test_forensic_classification_is_charged_more_than_standard() -> None:
+    def rpc(arguments: dict[str, object]) -> bytes:
+        return json.dumps(
+            {
+                "params": {
+                    "name": "classify_move",
+                    "arguments": arguments,
+                }
+            }
+        ).encode()
+
+    standard = estimate_mcp_request_cost(rpc({"fen": "startpos", "move": "e4", "depth": 20}))
+    coach = estimate_mcp_request_cost(
+        rpc({"fen": "startpos", "move": "e4", "depth": 20, "detail": "coach"})
+    )
+    forensic = estimate_mcp_request_cost(
+        rpc(
+            {
+                "fen": "startpos",
+                "move": "e4",
+                "depth": 20,
+                "detail": "forensic",
+                "compare_moves": ["d4", "Nf3"],
+            }
+        )
+    )
+
+    assert standard < coach < forensic
 
 
 class _FakePool:
