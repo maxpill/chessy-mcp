@@ -68,7 +68,12 @@ def _candidate_from_raw(raw: dict[str, Any]) -> MechanismCandidateEvidence:
 
 
 def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> TacticalSnapshot:
-    """Append discovered-check/skewer geometry for all legal root moves."""
+    """Append discovered-check/skewer geometry for all legal root moves.
+
+    Candidates are deduplicated and globally sorted before the output cap is
+    applied. This keeps the wire result deterministic even when python-chess's
+    legal-move iteration order changes or a position has many motif candidates.
+    """
     candidates = list(snapshot.mechanism_candidates)
     seen = {
         (item.mechanism, item.trigger_uci, item.actor, tuple(item.targets))
@@ -94,8 +99,6 @@ def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> 
                 continue
             seen.add(key)
             candidates.append(candidate)
-            if len(candidates) >= MAX_EXTENDED_MECHANISM_CANDIDATES:
-                return snapshot.model_copy(update={"mechanism_candidates": candidates})
 
     candidates.sort(
         key=lambda item: (
@@ -105,7 +108,9 @@ def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> 
             tuple(item.targets),
         )
     )
-    return snapshot.model_copy(update={"mechanism_candidates": candidates})
+    return snapshot.model_copy(
+        update={"mechanism_candidates": candidates[:MAX_EXTENDED_MECHANISM_CANDIDATES]}
+    )
 
 
 def extend_position_eval(result: ForensicEval, board: chess.Board) -> ForensicEval:
