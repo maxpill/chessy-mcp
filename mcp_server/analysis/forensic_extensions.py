@@ -278,7 +278,7 @@ def _discovered_check_evidence(board: chess.Board, move: chess.Move) -> dict[str
         "trigger_san": san,
         "moved_piece_square": chess.square_name(move.to_square),
         "discovered_checker_squares": [chess.square_name(square) for square in discovered_checkers],
-        "double_check": move.to_square in checkers,
+        "double_check": len(checkers) >= 2,
         "target": f"{_color_name(not mover)}_king@{chess.square_name(enemy_king)}",
         "proof_scope": (
             "Deterministic check geometry: after the legal move, at least one checking piece "
@@ -339,9 +339,13 @@ def _skewer_evidence(board: chess.Board, move: chess.Move) -> list[dict[str, Any
         (front_square, front), (rear_square, rear) = occupied
         if front.color == mover or rear.color == mover:
             continue
-        front_value = MATE_VALUE if front.piece_type == chess.KING else PIECE_VALUES[front.piece_type]
-        rear_value = PIECE_VALUES[rear.piece_type]
-        if front.piece_type != chess.KING and front_value <= rear_value:
+        front_priority = (
+            MATE_VALUE if front.piece_type == chess.KING else PIECE_VALUES[front.piece_type]
+        )
+        rear_priority = (
+            MATE_VALUE if rear.piece_type == chess.KING else PIECE_VALUES[rear.piece_type]
+        )
+        if front_priority <= rear_priority:
             continue
         out.append(
             {
@@ -351,12 +355,17 @@ def _skewer_evidence(board: chess.Board, move: chess.Move) -> list[dict[str, Any
                 "actor": _piece_label(actor, move.to_square),
                 "front_target": _piece_label(front, front_square),
                 "rear_target": _piece_label(rear, rear_square),
-                "front_value_cp": front_value if front.piece_type != chess.KING else None,
-                "rear_value_cp": rear_value,
+                "front_value_cp": (
+                    None if front.piece_type == chess.KING else PIECE_VALUES[front.piece_type]
+                ),
+                "rear_value_cp": (
+                    None if rear.piece_type == chess.KING else PIECE_VALUES[rear.piece_type]
+                ),
                 "proof_scope": (
                     "Geometric skewer candidate after the legal move: a slider attacks a "
-                    "higher-priority front target with a lower-value enemy piece behind it on "
-                    "the same ray. This does not prove the front piece must move or material is won."
+                    "higher-priority front target with a lower-priority enemy piece behind it "
+                    "on the same ray. Kings are treated as higher-priority than material. This "
+                    "does not prove the front piece must move or material is won."
                 ),
             }
         )
