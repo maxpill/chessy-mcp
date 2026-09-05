@@ -18,6 +18,7 @@ from mcp.types import ToolAnnotations
 
 from mcp_server._mcp import mcp
 from mcp_server.analysis.game_analyzer import GameAnalyzer
+from mcp_server.analysis.game_termination import build_game_termination_assessment
 from mcp_server.metrics import metrics
 from mcp_server.models.game_coaching import ForensicGameAnalysisResult
 from mcp_server.tools._common import (
@@ -58,6 +59,13 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     It also measures top-2 candidate gaps, tags strongest forcing replies, marks
     unique defensive resources and counts reasonable final-position resources.
 
+    Rich modes also attach an evidence-bounded termination assessment. An
+    explicit resignation-style PGN ``Termination`` header is treated as confirmed
+    resignation; a decisive result on a non-terminal board without that header is
+    only a resignation candidate because timeout/adjudication remain possible.
+    ``objectively_forced`` is true only for rules termination/forced mate, never
+    merely because the engine evaluation is strongly negative.
+
     ``perspective`` controls whose practical story is selected. The legacy
     engine metrics still cover both sides. ``max_critical_moments`` is clamped
     to 1-7 so full-game output stays coach-like instead of becoming an engine
@@ -88,7 +96,7 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
         )
 
     try:
-        return await _ANALYZER.analyze(
+        result = await _ANALYZER.analyze(
             pgn=pgn,
             depth=depth,
             strict=strict,
@@ -98,6 +106,19 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             ctx=ctx,
             metrics=metrics,
         )
+        if result.coaching is not None:
+            termination = build_game_termination_assessment(
+                pgn,
+                final_position=result.coaching.final_position,
+            )
+            result = result.model_copy(
+                update={
+                    "coaching": result.coaching.model_copy(
+                        update={"termination": termination}
+                    )
+                }
+            )
+        return result
     except ToolError:
         await metrics.record("analyze_game", 0.0, is_error=True)
         raise
