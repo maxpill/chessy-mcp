@@ -1,29 +1,4 @@
-"""Pure result + termination reconciliation for ``analyze_game``.
-
-Takes the final board, headers, movetext result, and orchestration
-metadata, and returns the canonical ``(result, termination, warnings)``
-triple plus :class:`ResultInferred`. Side-effect free; no engine calls.
-
-The reconciliation order matters and is documented inline:
-
-  1. Board truth: if the final board is terminal, derive ``result`
-     and ``auto_termination` from the rule status (checkmate vs draw).
-  2. Header / movetext disagreement: warn if the three signals disagree.
-  3. Header truth: if no board truth, prefer ``Result` header or
-     movetext token (skipping ``*` / ``?`).
-  4. Termination inference: lift the result from a winner/loser
-     Termination header when otherwise unknown.
-  5. Mating possibility: drop a "mate impossible" finding if the
-     declared Result says decisive but no checkmate sequence exists.
-  6. Termination reconciliation: cross-check header against board state,
-     normalize, surface contradictions.
-  7. Strict-mode extras: rejection of unknown Termination tokens,
-     premature-draw-agreement detection.
-
-Termination-resolution logic lives in
-:mod:`mcp_server.analysis.termination_resolution`. Warning emission
-lives in :mod:`mcp_server.analysis.reconciliation_warnings`.
-"""
+"""Pure result + termination reconciliation for ``analyze_game``."""
 
 from __future__ import annotations
 
@@ -48,10 +23,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class ReconciledResult:
-    """Final result/termination triple produced by :func:`reconcile_result`.
-
-    Public surface is the dataclass; module-level functions are private.
-    """
+    """Final result/termination triple produced by :func:`reconcile_result`."""
 
     result: str
     termination: str | None
@@ -68,13 +40,7 @@ def reconcile_result(
     moves_count: int,
     strict: bool,
 ) -> ReconciledResult:
-    """Reconcile PGN ``Result` / ``Termination` headers, movetext token,
-    and board truth into a single canonical answer.
-
-    The function copies ``metadata.metadata_warnings` into a local list
-    and appends to it — callers receive the merged warnings plus the
-    canonical ``result` / ``termination` values.
-    """
+    """Reconcile PGN Result / Termination headers, movetext, and board truth."""
     warnings: list[str] = list(metadata.metadata_warnings)
     rule_final = evaluate_rule_status(final_board, history_complete="complete")
     result_board: str | None = None
@@ -87,21 +53,25 @@ def reconcile_result(
             result_board = "1/2-1/2"
             auto_termination = rule_final.terminal
 
-    result_val = _pick_result_value(
-        result_board=result_board,
-        metadata=metadata,
-        result_movetext=result_movetext,
-        warnings=warnings,
+    result_val = (
+        _pick_result_value(
+            result_board=result_board,
+            metadata=metadata,
+            result_movetext=result_movetext,
+            warnings=warnings,
+        )
+        or "*"
     )
 
-    if result_val == "*" or result_val is None:
+    if result_val == "*":
         inferred = infer_from_termination(metadata.termination_header)
         if inferred is not None:
             result_val = inferred
 
-    result_val, mate_warnings = validate_mating_possibility(
+    validated_result, mate_warnings = validate_mating_possibility(
         final_board, result_val, metadata.termination_header
     )
+    result_val = validated_result or "*"
     warnings.extend(mate_warnings)
 
     termination_val, term_warnings = resolve_termination(
@@ -131,7 +101,7 @@ def reconcile_result(
     )
 
     return ReconciledResult(
-        result=result_val or "*",
+        result=result_val,
         termination=termination_val,
         warnings=warnings,
         auto_termination=auto_termination,
@@ -152,8 +122,7 @@ def _pick_result_value(
     result_movetext: str | None,
     warnings: list[str],
 ) -> str | None:
-    """Pick the canonical ``result` string given the board truth, header,
-    and movetext token. Mutates ``warnings` with disagreement findings."""
+    """Pick the canonical result from board truth, header, and movetext."""
     if result_board is not None:
         result_val = result_board
         if metadata.result_header and metadata.result_header not in ("*", "?"):
