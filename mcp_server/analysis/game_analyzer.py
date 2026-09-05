@@ -1,38 +1,15 @@
-"""``GameAnalyzer`` service class — orchestrates full-game PGN analysis.
+"""``GameAnalyzer`` service class: orchestrates full-game PGN analysis.
 
-Extracted from ``mcp_server.tools.analyze_game``. Encapsulates the
-end-to-end ``analyze_game`` flow as a class with constructor-injected
-dependencies (engine pool callable, cache, grader) so the tool entry
-point in ``mcp_server.tools.analyze_game`` can shrink to a thin
-dispatcher.
-
-Public surface:
-
-  * :class:`GameAnalyzer` — the service. ``analyze(pgn, depth, strict)``
-    returns a populated :class:`GameAnalysisResult`.
-
-Dependencies (injected via the constructor):
-
-  * ``get_pool``: async callable ``(ctx: Context | None) -> AnalyzerPool | TCPAnalyzerPool``
-  * ``evaluate_positions``: async callable
-    ``(positions, depth, pool, requested_depth, history_complete) -> list[tuple[MCPEval, bool]]``
-  * ``compute_metrics``: pure function
-    ``(positions, moves, evals) -> GameMetrics``
-  * ``identity``: pure function ``(pool) -> dict``
-  * ``engine_version``: pure function ``(pool) -> str``
-
-The default values wire the service to the live tool entry points via
-:meth:`GameAnalyzer.with_defaults`, while tests can construct a
-``GameAnalyzer`` with stub callables to exercise the orchestration logic
-without booting an engine.
+The analyzer uses constructor-injected dependencies so the MCP entry point can
+stay thin and tests can supply engine/cache stubs without booting Stockfish.
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import chess
 import chess.pgn
@@ -41,8 +18,6 @@ from core.engines.openings import lookup_opening
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import Context
-
-    from mcp_server.models import GameAnalysisResult, MCPEval
 
 from mcp_server.analysis.game_validation import GameMetadata, extract_game_metadata
 from mcp_server.analysis.mainline_parser import parse_mainline
@@ -64,18 +39,13 @@ from mcp_server.parsers import (
     _validate_strict_mainline_surface,
 )
 
-EnginePool = "AnalyzerPool | TCPAnalyzerPool"
+# The service deliberately accepts local/TCP pools plus test doubles. Their
+# runtime contract is structural at this injection boundary.
+type EnginePool = Any
 
 
 @dataclass
 class GameMetrics:
-    """Typed return shape for the game-metrics pure function.
-
-    Mirrors the existing ``_compute_game_metrics`` tuple but with named
-    attributes so the analyzer can construct the response without
-    positional unpacking.
-    """
-
     white_accuracy: float | None
     black_accuracy: float | None
     white_acpl: float | None
@@ -94,11 +64,7 @@ class GameMetrics:
 
 
 class GameAnalyzer:
-    """End-to-end ``analyze_game`` orchestrator.
-
-    Constructor-injected dependencies make the class testable without
-    booting an engine; ``with_defaults`` is the production factory.
-    """
+    """End-to-end ``analyze_game`` orchestrator."""
 
     def __init__(
         self,
@@ -118,7 +84,6 @@ class GameAnalyzer:
 
     @classmethod
     def with_defaults(cls) -> GameAnalyzer:
-        """Production wiring — plugs the analyzer into the live engine layer."""
         return cls(
             get_pool=_get_analyzer_pool,
             evaluate_positions=_gather_evaluate_positions_bounded,
@@ -136,11 +101,6 @@ class GameAnalyzer:
         ctx: Context | None,
         metrics: Any | None = None,
     ) -> GameAnalysisResult:
-        """Run a full PGN game analysis. Returns a populated
-        :class:`GameAnalysisResult` on success; raises ``ValueError`` for
-        recoverable strict-validation errors and ``Exception`` for
-        engine-level failures.
-        """
         t0 = time.time()
         raw_requested_depth = depth
         depth = max(1, min(depth, 30))
@@ -167,8 +127,6 @@ class GameAnalyzer:
         result_movetext = _find_movetext_result(canonical_pgn)
         is_comment_only_input = bool(getattr(game, "comment_only_input", False))
 
-        # Reconcile trailing-ply count BEFORE header validation warnings
-        # so the "N plies ignored" line lands in metadata_warnings once.
         ignored_trailing_plies = reconcile_trailing_plies(
             canonical_pgn=canonical_pgn,
             cleaned_movetext=cleaned_movetext,
@@ -285,11 +243,7 @@ class GameAnalyzer:
         evals: list[MCPEval] = [ep[0] for ep in eval_pairs]
         all_cached = all(ep[1] for ep in eval_pairs)
 
-        # Compute metrics, then enrich with opening detection + strict pass.
-        # The pure ``compute_metrics`` function returns a typed structure;
-        # ``_wrap_compute_game_metrics`` translates the legacy tuple shape
-        # for backwards compatibility with the existing tests.
-        game_metrics = _wrap_compute_game_metrics(positions, moves, evals)
+        game_metrics = self._compute_metrics(positions, moves, evals)
         final_opening, final_eco, opening_disagreement, eco_disagreement = _detect_opening(
             moves, is_standard_start, metadata
         )
@@ -376,16 +330,6 @@ def _wrap_compute_game_metrics(
     moves: list[chess.Move],
     evals: list[MCPEval],
 ) -> GameMetrics:
-    """Translate the legacy tuple-return shape of
-    :func:`mcp_server.tools.game_metrics._compute_game_metrics` into a
-    typed :class:`GameMetrics` for the analyzer's response builder.
-
-    Lazy-imports ``_compute_game_metrics`` to break the existing
-    ``analysis -> tools.game_metrics -> server -> tools.analyze_game ->
-    analysis`` circular-import dance — the tool is loaded from
-    ``server.py`` after GameAnalyzer is fully initialized, so a
-    top-level import here would deadlock in some import orders.
-    """
     from mcp_server.tools.game_metrics import _compute_game_metrics as _impl
 
     (
@@ -425,7 +369,6 @@ def _detect_opening(
     is_standard_start: bool,
     metadata: GameMetadata,
 ) -> tuple[str | None, str | None, str | None, str | None]:
-    """Return ``(final_opening, final_eco, opening_disagreement, eco_disagreement)``."""
     uci_moves = [m.uci() for m in moves]
     if is_standard_start:
         detected_opening, detected_eco, _ = lookup_opening(uci_moves)

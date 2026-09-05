@@ -1,11 +1,10 @@
 """Typed action discriminated union for the MCP API contract.
 
 Audit invariant I-03: a client must never confuse a `claim_draw` with a
-`play_move`. The typed union makes that structurally impossible — Pydantic
-discriminated unions with a `type` literal field are the proper way to model
-this. The legacy dict-builder functions at the bottom of the module keep the
-existing MCPEval.* payload contracts working; new code should construct the
-typed models directly.
+`play_move`. The typed union makes that structurally impossible. Pydantic
+discriminated unions with a `type` literal field model this contract. The
+legacy dict-builder functions at the bottom keep the existing MCPEval payloads
+working; new code can construct the typed models directly.
 """
 
 from __future__ import annotations
@@ -15,8 +14,6 @@ from typing import Annotated, Any, Literal
 
 import chess
 from pydantic import BaseModel, Discriminator, TypeAdapter
-
-# --------------------------------------------------------- action vocabulary ---
 
 
 class TypeOfAction(StrEnum):
@@ -39,9 +36,6 @@ class Outcome(StrEnum):
     DRAW = "draw"
 
 
-# ----------------------------------------------------------- typed payloads ---
-
-
 class MovePayload(BaseModel):
     """A single chess move in both UCI and SAN form."""
 
@@ -60,47 +54,43 @@ class ActionValue(BaseModel):
 class PlayMoveAction(BaseModel):
     """Play the move on the board."""
 
-    type: Literal["play_move"] = TypeOfAction.PLAY_MOVE
+    type: Literal["play_move"] = "play_move"
     move: MovePayload
     value: ActionValue | None = None
 
 
 class ClaimDrawAction(BaseModel):
-    """Claim a draw now (fifty-move / threefold repetition has already occurred)."""
+    """Claim a draw now."""
 
-    type: Literal["claim_draw"] = TypeOfAction.CLAIM_DRAW
+    type: Literal["claim_draw"] = "claim_draw"
     reason: Literal["fifty_moves", "threefold_repetition"]
 
 
 class ClaimDrawWithIntendedMoveAction(BaseModel):
-    """Declare an intended move and claim a draw with it (50-move / threefold)."""
+    """Declare an intended move and claim a draw with it."""
 
-    type: Literal["claim_draw_with_intended_move"] = TypeOfAction.CLAIM_DRAW_WITH_INTENDED_MOVE
+    type: Literal["claim_draw_with_intended_move"] = "claim_draw_with_intended_move"
     reason: Literal["fifty_moves", "threefold_repetition"]
     intended_move: MovePayload
 
 
 class GameOverAction(BaseModel):
-    """Game is over — no action possible. Captures terminal status + outcome."""
+    """Game is over, no action possible."""
 
-    type: Literal["game_over"] = TypeOfAction.GAME_OVER
+    type: Literal["game_over"] = "game_over"
     outcome: Literal["win", "loss", "draw"]
     reason: str
 
 
 GameAction = PlayMoveAction | ClaimDrawAction | ClaimDrawWithIntendedMoveAction | GameOverAction
-Action = GameAction  # back-compat alias
+Action = GameAction
 
-# Pydantic discriminated-union adapter — validates any incoming dict against GameAction.
 _action_adapter: TypeAdapter[GameAction] = TypeAdapter(Annotated[GameAction, Discriminator("type")])
 
 
 def parse_action(payload: dict[str, Any]) -> GameAction:
     """Validate and re-parse a dict-shaped action payload into the typed model."""
     return _action_adapter.validate_python(payload)
-
-
-# ----------------------------------------- dict-construction internal helpers ---
 
 
 def _build_play_move_dict(
@@ -134,9 +124,6 @@ def _build_claim_with_intended_dict(
 
 def _build_game_over_dict(outcome: str, reason: str) -> dict[str, Any]:
     return {"type": TypeOfAction.GAME_OVER.value, "outcome": outcome, "reason": reason}
-
-
-# ------------------------------------------------------- public builders (dict) ---
 
 
 def build_played_action(

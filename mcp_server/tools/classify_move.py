@@ -1,14 +1,8 @@
 """``classify_move`` MCP tool.
 
 Thin entry point. The per-move classification logic lives in
-:class:`mcp_server.analysis.move_classifier.MoveClassifier` +
+:class:`mcp_server.analysis.move_classifier.MoveClassifier` plus
 :func:`mcp_server.analysis.move_classifier.validate_classify_input`.
-SAN / line-conversion helpers live in
-:mod:`mcp_server.analysis.classify_helpers`.
-
-This module unwraps the FastMCP context, drives the cache lookup, and
-translates :class:`ToolError` failures consistently with the other
-analysis tools.
 """
 
 from __future__ import annotations
@@ -23,7 +17,9 @@ from mcp.types import ToolAnnotations
 
 from core.engines.pool import AnalyzerPool
 
+from mcp_server._mcp import mcp
 from mcp_server.analysis.classify_helpers import (
+    ActionType,
     best_san_for_score,
     board_after_fen_for_chess_move,
     board_after_for_chess_move,
@@ -35,17 +31,10 @@ from mcp_server.cache import classify_cache_key
 from mcp_server.engine import _cache, _get_analyzer_pool, _single_flight
 from mcp_server.metrics import metrics
 from mcp_server.models import MCPMoveAnalysis
-from mcp_server._mcp import mcp
 from mcp_server.tcp_analyzer import TCPAnalyzerPool
-from mcp_server.tools._common import (
-    _tool_error,
-    _validate_requested_depth,
-    error_code_for,
-)
-
+from mcp_server.tools._common import _tool_error, _validate_requested_depth, error_code_for
 
 log = logging.getLogger("chessy_mcp.classify_move")
-
 _CLASSIFIER = MoveClassifier.with_defaults()
 
 
@@ -59,20 +48,7 @@ async def classify_move(
     strict: bool = False,
     ctx: Context | None = None,
 ) -> MCPMoveAnalysis:
-    """Grade a played move against Stockfish's best alternative.
-
-    Args:
-        fen: FEN or PGN string for the position BEFORE `move`.
-        move: The move to grade in UCI or SAN.
-        moves: Optional UCI or SAN moves to replay onto the position first.
-        depth: Stockfish search depth (default 20, clamped 1-30).
-        action_type: 'play_move', 'claim_draw', or 'claim_draw_with_intended_move'.
-        strict: When True, reject non-canonical SAN syntax or move numbers.
-
-    Returns:
-        MCPMoveAnalysis with move_class, centipawn_loss, effective_loss,
-        eval_before, eval_after, best_move_san, best_line_san, played_line_san.
-    """
+    """Grade a played move against Stockfish's best alternative."""
     t0 = time.time()
     depth = _validate_requested_depth(depth, tool="classify_move")
     raw_requested_depth = max(1, min(depth, 30))
@@ -116,17 +92,15 @@ async def classify_move(
             )
 
         async def _compute() -> MCPMoveAnalysis:
-            # Audit tests expect a fast-path: when the pool exposes its own
-            # `classify_move` method (custom analyzer pool), bypass the
-            # before/after eval pipeline and use the pool's helper directly.
-            if _uses_pool_classify_fast_path(pool, outcome):
+            fast_move = outcome.chess_move
+            if _uses_pool_classify_fast_path(pool, outcome) and fast_move is not None:
                 ma = await pool.classify_move(  # type: ignore[attr-defined]
-                    outcome.board, outcome.chess_move, depth=depth
+                    outcome.board, fast_move, depth=depth
                 )
                 return _build_from_pool_classify(
                     ma=ma,
                     board=outcome.board,
-                    chess_move=outcome.chess_move,
+                    chess_move=fast_move,
                     outcome_history_complete=outcome.history_complete,
                     outcome_rule_before=outcome.rule_before,
                     action_type=action_type,
@@ -182,7 +156,7 @@ async def classify_move(
                 from core.engines.types import MoveClass
 
                 if score.move_class in (MoveClass.MISTAKE, MoveClass.BLUNDER):
-                    pass  # verification didn't change move_class; mark unverified
+                    pass
             return build_classification(
                 played_uci=played_uci,
                 played_san=played_san,
@@ -201,11 +175,7 @@ async def classify_move(
 
         result = cast(MCPMoveAnalysis, await _single_flight.do(cache_key, _compute))
         await _cache.set_classify(cache_key, result)
-        await metrics.record(
-            "classify_move",
-            (time.time() - t0) * 1000,
-            cache_hit=False,
-        )
+        await metrics.record("classify_move", (time.time() - t0) * 1000, cache_hit=False)
         return result.model_copy(update={"syntax_warning": outcome.syntax_warning})
     except ToolError:
         await metrics.record("classify_move", 0.0, is_error=True)
@@ -220,8 +190,6 @@ async def classify_move(
 
 
 def _uses_pool_classify_fast_path(pool: Any, outcome: Any) -> bool:
-    """Custom analyzer pools (test fixtures) expose ``classify_move`. The
-    standard pool types do not — keep the audit-aligned slow path."""
     return (
         outcome.chess_move is not None
         and hasattr(pool, "classify_move")
@@ -236,17 +204,9 @@ def _build_from_pool_classify(
     chess_move: Any,
     outcome_history_complete: str,
     outcome_rule_before: Any,
-    action_type: str,
+    action_type: ActionType,
     syntax_warning: str | None,
 ) -> MCPMoveAnalysis:
-    """Build an :class:`MCPMoveAnalysis` from a pool-classify's
-    ``MoveAnalysis` output. Delegates to the single
-    :func:`build_classification` builder so both paths produce
-    identical responses.
-
-    Audit invariants preserved byte-for-byte: B-01..B-03, P0, P1, P2,
-    P3, U-02..U-15.
-    """
     from mcp_server.models import MCPEval
     from mcp_server.move_grading import score_played_move
 

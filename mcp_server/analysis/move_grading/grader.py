@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 import chess
 
+from core.engines.types import MoveClass
 from mcp_server.analysis.move_grading.dispatcher import dispatch_score
 from mcp_server.analysis.move_grading.winprob import win_prob_fn
 from mcp_server.models import MCPEval, PlayedMoveScore
@@ -18,19 +19,17 @@ class MoveGrader:
 
     Construction-time dependencies:
 
-        - ``win_prob_fn`` — White-POV win-probability function. Defaults to
-          :func:`mcp_server.analysis.move_grading.winprob.win_prob_fn`.
-        - ``cp_classifier`` — centipawn-loss → move-class function (default
-          :func:`core.engines.grading.classify_centipawn_loss`).
+        - ``win_prob_fn``: White-POV win-probability function.
+        - ``cp_classifier``: centipawn-loss to move-class function.
 
-    Both injectable for testing without monkeypatching ``core``.
+    Both are injectable for testing without monkeypatching ``core``.
     """
 
     def __init__(
         self,
         *,
         win_prob_fn: Callable[[float], float] | None = None,
-        cp_classifier: Callable[[int], MoveClass] | None = None,  # noqa: F821
+        cp_classifier: Callable[[int], MoveClass] | None = None,
     ) -> None:
         self._win_prob_fn = win_prob_fn if win_prob_fn is not None else win_prob_fn_default()
         self._cp_classifier = (
@@ -60,12 +59,12 @@ class MoveGrader:
 
 
 def win_prob_fn_default() -> Callable[[float], float]:
-    """Default win-probability fn — uses the local winprob wrapper."""
+    """Default win-probability function."""
     return win_prob_fn
 
 
-def default_cp_classifier():
-    """Default centipawn → move-class classifier from ``core.engines.grading``."""
+def default_cp_classifier() -> Callable[[int], MoveClass]:
+    """Default centipawn to move-class classifier."""
     from core.engines.grading import classify_centipawn_loss
 
     return classify_centipawn_loss

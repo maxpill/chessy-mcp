@@ -21,6 +21,7 @@ import re
 from typing import Final
 
 import chess
+import chess.pgn
 
 from mcp_server.parsers.pgn.tags import TAG_PAIR_REGEX
 from mcp_server.parsers.pgn.unicode import (
@@ -36,12 +37,10 @@ __all__ = [
     "validate_strict_mainline_surface",
 ]
 
-
 _RESULT_TOKENS: Final[frozenset[str]] = frozenset({"1-0", "0-1", "1/2-1/2", "*"})
 
 
 def strip_promotion_eq(s: str) -> str:
-    """Strip the optional ``=`` in PGN promotion (``e8=Q`` → ``e8Q`` per §8.1.4)."""
     return re.sub(r"=([QRBN])$", r"\1", s)
 
 
@@ -79,12 +78,6 @@ def validate_movetext_tokens(
     strict: bool = False,
     nag_warnings: list[str] | None = None,
 ) -> list[str]:
-    """Check that all tokens in the active movetext section are valid.
-
-    `nag_warnings`, when provided, receives out-of-range NAG tokens in lenient
-    mode (audit P3 INVESTIGATE: ``$999999`` was silently accepted in lenient
-    mode). Strict mode returns them in `invalid_tokens` instead.
-    """
     t = normalize_movetext_figurines(movetext)
     t = _split_attached_annotations(t)
     t = _normalize_castling_and_ep(t)
@@ -136,8 +129,6 @@ def validate_movetext_tokens(
         nag_m = re.match(r"^\$([0-9]+)$", clean_tok)
         if nag_m:
             nag_val = int(nag_m.group(1))
-            # P3/INVESTIGATE: NAGs outside 0..255 silently dropped before;
-            # lenient mode now surfaces the warning via nag_warnings.
             if nag_val > 255:
                 if strict:
                     invalid_tokens.append(tok)
@@ -185,7 +176,6 @@ def validate_movetext_tokens(
 
 
 def strict_top_level_movetext_tokens(text: str) -> list[str]:
-    """Return top-level movetext tokens with comments/RAVs masked out."""
     normalized = normalize_movetext_figurines(normalize_unicode_pgn_results(text))
     masked = _mask_comments_and_escapes(normalized)
 
@@ -225,9 +215,6 @@ def strict_top_level_movetext_tokens(text: str) -> list[str]:
         return f" {match.group(1)}{dots} "
 
     top_level = re.sub(r"(?<![A-Za-z0-9_])(\d+)\.(\.\.)?", split_move_number, top_level)
-    # R4-§C: PGN §8.1 allows whitespace around the move-number dot.
-    # Collapse split-digit / split-dot form back into a single move-number
-    # token so the strict validator does not see a bare digit as SAN.
     top_level = re.sub(
         r"(?<!\S)(\d+)\s+(\.+)(\s+|$)",
         lambda m: f" {m.group(1)}{m.group(2)} ",
@@ -237,7 +224,6 @@ def strict_top_level_movetext_tokens(text: str) -> list[str]:
 
 
 def validate_strict_mainline_surface(text: str, game: chess.pgn.Game) -> None:
-    """Require canonical SAN and correct explicit move numbers in strict mode."""
     tokens = strict_top_level_movetext_tokens(text)
     moves = list(game.mainline_moves())
     board = game.board()

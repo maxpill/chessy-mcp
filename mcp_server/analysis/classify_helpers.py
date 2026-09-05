@@ -3,18 +3,20 @@
 Extracted from :mod:`mcp_server.tools.classify_move` so the tool
 entry point stays focused on FastMCP plumbing (cache lookup, single-
 flight, error translation). All helpers here are pure functions over
-``chess.Board` + ``MCPEval``.
+``chess.Board`` + ``MCPEval``.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import chess
 from core.engines.analyzer import pv_to_san
 from core.engines.types import Eval
 
 from mcp_server.models import MCPMoveAnalysis
+
+ActionType = Literal["play_move", "claim_draw", "claim_draw_with_intended_move"]
 
 
 def best_san_for_score(
@@ -95,7 +97,7 @@ def build_classification(
     best_san: str | None,
     best_line_san: str | None,
     played_continuation: str | None,
-    action_type: str,
+    action_type: ActionType,
     syntax_warning: str | None,
 ) -> MCPMoveAnalysis:
     """Single construction path for :class:`MCPMoveAnalysis`.
@@ -113,15 +115,10 @@ def build_classification(
     played_outcome, played_value = _outcome_from_action(
         action_type, eval_after, board_after, board.turn
     )
-    # best_outcome reflects the action the *policy* recommends, not the move
-    # that happens to coincide with the engine's MultiPV top.
     best_outcome, best_value = _outcome_from_action(
         score.best_action, eval_before, board, board.turn
     )
 
-    # Bug fix (chessy-mcp-deep-audit §6): when best_move == played_move,
-    # best_action_obj.value must equal played_action_obj.value. Both describe
-    # the same LegalAction so they must carry the same post-position value.
     is_same_move = (
         eval_before.best_move and played_uci and eval_before.best_move.lower() == played_uci.lower()
     )
@@ -168,9 +165,6 @@ def build_classification(
             cp=eval_after.cp,
             mate=eval_after.mate,
         ),
-        # Bug fix (chessy-mcp-deep-audit §6): same LegalAction → same value.
-        # When played == best, rebuild best_action_obj from post-state so
-        # best.value == played.value.
         best_action_obj=(
             build_best_action(
                 recommended_action="play_move",
@@ -213,11 +207,7 @@ def _outcome_from_action(
     board: chess.Board,
     mover_color: chess.Color,
 ) -> tuple[Any, int | None]:
-    """Compute the Outcome of an action evaluation from the mover's POV.
-
-    For draw claims the outcome is unconditionally DRAW regardless of the
-    engine's evaluation. For play_move / game_over we inspect the eval.
-    """
+    """Compute the Outcome of an action evaluation from the mover's POV."""
     from mcp_server.domain.types import Outcome
 
     if action_type in ("claim_draw", "claim_draw_with_intended_move"):
@@ -262,9 +252,6 @@ def _outcome_from_eval(eval_obj: Any, mover_color: chess.Color) -> tuple[Any, in
     if cp is not None:
         mover_sign = 1 if mover_color == chess.WHITE else -1
         signed_cp = mover_sign * cp
-        # Decisive threshold: any cp above FORCED_WIN_THRESHOLD_CP from the
-        # mover's POV is winning. Same constant the action policy uses for
-        # "forced win overrides claim_draw" (mcp_server/rules/constants.py).
         if signed_cp >= 2000:
             return Outcome.WIN, signed_cp
         if signed_cp <= -2000:
@@ -275,9 +262,7 @@ def _outcome_from_eval(eval_obj: Any, mover_color: chess.Color) -> tuple[Any, in
 
 
 def _classification_verified(score: Any, action_type: str) -> bool:
-    """Audit P1: ``classification_verified`` flips to False on
-    play_move + non-play best + claimed best, missing loss_kind with
-    positive effective_loss, or engine-best + positive effective_loss."""
+    """Audit P1: ensure classification metadata is self-consistent."""
     if (
         action_type == "play_move"
         and score.best_action != "play_move"
@@ -296,8 +281,6 @@ def _classification_verified(score: Any, action_type: str) -> bool:
     return True
 
 
-# Back-compat shims (legacy underscored names preserved for any test that
-# monkeypatches them).
 _best_san_for_score = best_san_for_score
 _safe_san = safe_san
 _played_continuation_san = played_continuation_san

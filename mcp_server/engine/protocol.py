@@ -1,9 +1,4 @@
-"""Engine Protocol — public typing surface.
-
-Defines the structural type both ``core.engines.pool.AnalyzerPool`` and
-``mcp_server.tcp_analyzer.TCPAnalyzerPool`` implement, plus narrower
-sub-protocols for the operations the eval pipeline actually uses.
-"""
+"""Engine protocol: the common typing surface for local and TCP pools."""
 
 from __future__ import annotations
 
@@ -15,26 +10,22 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class EngineLike(Protocol):
-    """Minimum eval surface used by ``mcp_server.engine.eval_pipeline``."""
+    """Minimum engine identity surface used by the evaluation pipeline."""
 
     name: str
 
 
 @runtime_checkable
 class EnginePoolLike(Protocol):
-    """Pool used by the eval pipeline — exposes ``.evaluate(board, depth, ...)``.
+    """Common subset implemented by AnalyzerPool and TCPAnalyzerPool."""
 
-    Both ``AnalyzerPool`` (local Stockfish subprocesses) and ``TCPAnalyzerPool``
-    (remote UCI over TCP) conform.
-    """
+    name: str
+    engine_version: str
 
     async def evaluate(
         self,
         board: chess.Board,
         *,
-        depth: int = ...,
-        root_moves: Any = ...,
-        reuse_tt: bool = ...,
+        depth: int | None = None,
+        root_moves: list[chess.Move] | None = None,
     ) -> Any: ...
-
-    def engine_version(self) -> str: ...
