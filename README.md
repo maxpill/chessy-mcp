@@ -97,6 +97,23 @@ verifies the strongest reply one step deeper and evaluates the resulting
 positions after the played move, engine-best move and explicitly requested
 comparison moves.
 
+`top_moves` exposes the same evidence-first approach for puzzle and candidate
+questions:
+
+```text
+top_moves(..., detail="coach")
+top_moves(..., detail="forensic", include_moves=["g4", "gxh4"])
+top_moves(..., proof_mode="tactical", proof_defenses=5)
+```
+
+`include_moves` forces SAN/UCI alternatives into resulting-position analysis
+even when they are outside the returned MultiPV top-N. Tactical proof mode
+checks every opponent reply when there are at most eight legal defenses;
+otherwise it samples the requested number of engine-ranked defenses. The
+response carries `proof_status=exhaustive`, `sampled_top_defenses`, or
+`terminal_after_root`, so a single PV is never mislabeled as a complete proof.
+Each defense includes its resulting FEN, evaluation and principal continuation.
+
 The evidence layer intentionally does **not** claim what the player thought.
 It emits machine-readable signatures such as `FORCING_CAPTURE_REPLY` and
 `MISSED_FORCING_REPLY_CANDIDATE`; the coach/LLM combines those board facts
