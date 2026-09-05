@@ -70,6 +70,30 @@ class TacticalHangingEvidence(BaseModel):
     )
 
 
+class MechanismCandidateEvidence(BaseModel):
+    """Evidence-bounded tactical motif candidate.
+
+    `mechanism` names the board geometry that was detected. `proof_scope`
+    states exactly what was and was not established so a coaching layer does
+    not promote a geometric candidate into a forced tactical claim.
+    """
+
+    mechanism: Literal[
+        "absolute_pin",
+        "check_capture",
+        "fork_candidate",
+        "overloaded_defender_candidate",
+        "promotion_tactic",
+        "removal_of_defender_candidate",
+    ]
+    trigger_uci: str | None = None
+    trigger_san: str | None = None
+    actor: str | None = None
+    targets: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    proof_scope: str
+
+
 class TacticalSnapshot(BaseModel):
     side_to_move: Literal["white", "black"]
     checks: list[ForcingMoveEvidence] = Field(default_factory=list)
@@ -80,6 +104,7 @@ class TacticalSnapshot(BaseModel):
     tactically_hanging_candidates: list[TacticalHangingEvidence] = Field(default_factory=list)
     attacked_defenders: list[DefenderLoadEvidence] = Field(default_factory=list)
     overloaded_defender_candidates: list[DefenderLoadEvidence] = Field(default_factory=list)
+    mechanism_candidates: list[MechanismCandidateEvidence] = Field(default_factory=list)
 
 
 class StrongestReplyEvidence(BaseModel):
@@ -103,6 +128,22 @@ class PieceSafetyDelta(BaseModel):
     defenders_after: int
 
 
+class PieceMobilityDelta(BaseModel):
+    target: str
+    mobility_before: int
+    mobility_after: int
+    gained_squares: list[str] = Field(default_factory=list)
+    lost_squares: list[str] = Field(default_factory=list)
+
+
+class SquareControlDelta(BaseModel):
+    square: str
+    white_attackers_before: int
+    white_attackers_after: int
+    black_attackers_before: int
+    black_attackers_after: int
+
+
 class PositionDelta(BaseModel):
     material_delta_white: int = 0
     material_delta_black: int = 0
@@ -114,6 +155,8 @@ class PositionDelta(BaseModel):
     newly_pinned_pieces: list[str] = Field(default_factory=list)
     removed_pins: list[str] = Field(default_factory=list)
     piece_safety_changes: list[PieceSafetyDelta] = Field(default_factory=list)
+    piece_mobility_changes: list[PieceMobilityDelta] = Field(default_factory=list)
+    strategic_square_control_changes: list[SquareControlDelta] = Field(default_factory=list)
     opened_files: list[str] = Field(default_factory=list)
     closed_files: list[str] = Field(default_factory=list)
     pawn_structure_changes: list[str] = Field(default_factory=list)
@@ -192,8 +235,9 @@ class PositionForensicEvidence(BaseModel):
     tactical_after_best: TacticalSnapshot | None = None
     best_move_delta: PositionDelta | None = None
     inference_boundary: str = (
-        "Static board evidence is deterministic. Tactical-hanging and overloaded-defender "
-        "fields are explicitly candidates with bounded proof scopes, not human-process claims."
+        "Static board evidence is deterministic. Tactical-hanging, motif and "
+        "overloaded-defender fields have explicit bounded proof scopes and are not "
+        "human-process claims."
     )
 
 
