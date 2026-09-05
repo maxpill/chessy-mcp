@@ -1,22 +1,4 @@
-"""``MoveClassifier`` service — thin orchestration facade.
-
-The actual per-move classification logic already lives as a focused
-sequence of helper calls inside :mod:`mcp_server.tools.classify_move`.
-Phase 21 extracts that orchestration into a typed service object with
-constructor-injected dependencies, leaving the ``classify_move` MCP
-tool as a thin dispatcher.
-
-The service is intentionally NOT a re-implementation: it delegates to
-the same helpers the inline tool used, in the same order. Behavior
-preservation is the explicit constraint (audit P1 fail-open / B-01..B-03
-shape-validity rules must keep firing in the same conditions).
-
-Public surface:
-
-  * :class:`MoveClassifier` — :meth:`classify` returns a populated
-    ``MCPMoveAnalysis`; constructor takes async + pure-function deps
-    so tests can construct one with stubs.
-"""
+"""``MoveClassifier`` service: typed orchestration for per-move classification."""
 
 from __future__ import annotations
 
@@ -33,19 +15,12 @@ from mcp_server.parsers import (
     _history_provenance_for_input,
     _parse_move_on_board_with_warning,
 )
-from mcp_server.rules import (
-    evaluate_rule_status,
-    is_terminal_position,
-)
+from mcp_server.rules import evaluate_rule_status, is_terminal_position
 
 log = logging.getLogger("chessy_mcp.analysis.move_classifier")
 
 
 class _ValidationOutcome:
-    """Bundled output of :func:`validate_classify_input`: board, rule
-    status, parsed move (if any), and a structural warning to surface
-    on the response."""
-
     def __init__(
         self,
         board: chess.Board,
@@ -69,16 +44,6 @@ def validate_classify_input(
     action_type: str,
     strict: bool,
 ) -> _ValidationOutcome:
-    """Structural pre-conditions + board + rule status.
-
-    Audit invariants honored:
-      * P2 (request-shape before board-state).
-      * R5 (move parameter must be a string).
-      * B-01 (claim_draw ignores supplied move argument).
-      * U-12 (lenient mode still warns on claim_draw with move).
-      * P2 (terminal-state handling runs before action-specific claim
-        validation so the error is consistent across action types).
-    """
     if move is not None and not isinstance(move, str):
         raise ValueError(f"INVALID_INPUT: 'move' must be a string, got {type(move).__name__}.")
     syntax_warning: str | None = None
@@ -134,19 +99,6 @@ def validate_classify_input(
 
 
 class MoveClassifier:
-    """Per-move classification service.
-
-    Constructor-injected dependencies:
-      * :meth:`evaluate_position` — async ``(board, depth, pool,
-        requested_depth, history_complete) -> (MCPEval, cache_hit)``.
-      * :meth:`compute_score` — pure ``(board, move, eval_before,
-        eval_after, board_after, eval_played, action_type) ->
-        PlayedMoveScore``. Default wires :func:`score_played_move`.
-      * :meth:`build_classification` — pure ``(analysis, fen_before,
-        fen_after, ...) -> MCPMoveAnalysis``. Default wires
-        :meth:`MCPMoveAnalysis.from_analysis`.
-    """
-
     def __init__(
         self,
         evaluate_position: Callable[..., Awaitable[tuple[MCPEval, bool]]],
@@ -159,7 +111,6 @@ class MoveClassifier:
 
     @classmethod
     def with_defaults(cls) -> MoveClassifier:
-        """Production wiring — plugs into the live engine layer."""
         from mcp_server.engine import _evaluate_game_position_cached
         from mcp_server.move_grading import score_played_move
 
@@ -178,16 +129,9 @@ class MoveClassifier:
         raw_requested_depth: int,
         pool,
     ) -> tuple[MCPEval, MCPEval, PlayedMoveScore, bool]:
-        """Run evaluations + scoring. Returns ``(eval_before, eval_after,
-        score, verification_attempted)``.
-
-        Caller is responsible for the verification-step reflow on
-        ``MISTAKE/BLUNDER + matches engine best`` so the
-        :class:`MCPMoveAnalysis` builder sees the post-verification
-        verdict.
-        """
         board = outcome.board
         history_complete = outcome.history_complete
+        chess_move = outcome.chess_move
         eval_before, _ = await self._evaluate_position(
             board,
             depth,
@@ -204,9 +148,12 @@ class MoveClassifier:
                 history_complete=history_complete,
             )
             eval_after = force_draw_outcome(eval_after)
-        else:
             board_after = board.copy(stack=True)
-            board_after.push(outcome.chess_move)
+        else:
+            if chess_move is None:
+                raise ValueError("MISSING_MOVE: play_move requires a parsed chess move")
+            board_after = board.copy(stack=True)
+            board_after.push(chess_move)
             eval_after, _ = await self._evaluate_position(
                 board_after,
                 depth,
@@ -214,14 +161,11 @@ class MoveClassifier:
                 requested_depth=raw_requested_depth,
                 history_complete=history_complete,
             )
-        if action_type in ("claim_draw", "claim_draw_with_intended_move"):
-            board_after = board.copy(stack=True)
-        else:
-            board_after = board.copy(stack=True)
-            board_after.push(outcome.chess_move)
+
+        score_move = chess_move if chess_move is not None else next(iter(board.legal_moves))
         score = self._compute_score(
             board,
-            outcome.chess_move if outcome.chess_move is not None else next(iter(board.legal_moves)),
+            score_move,
             eval_before,
             eval_after,
             board_after=board_after,
@@ -244,16 +188,6 @@ class MoveClassifier:
         pool,
         action_type: str,
     ) -> tuple[MCPEval, MCPEval, PlayedMoveScore, bool]:
-        """Audit P1 verification — depth+4 search when the played move
-        matches the engine's best but the classifier decided
-        MISTAKE/BLUNDER.
-
-        Returns the (possibly updated) eval_before, eval_after, score,
-        and a bool indicating whether verification ran. Caller passes
-        the result into :meth:`MCPMoveAnalysis.from_analysis` so the
-        response's ``classification_verified` reflects the actual
-        outcome (no silent downgrading).
-        """
         verification_attempted = False
         if (
             action_type != "play_move"
