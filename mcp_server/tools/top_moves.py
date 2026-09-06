@@ -58,7 +58,15 @@ async def top_moves(
     - ``detail="coach"`` adds a deterministic board fingerprint and CCT-style
       tactical snapshot.
     - ``detail="forensic"`` additionally evaluates the returned root candidates'
-      resulting positions.
+      resulting positions and walks each already returned candidate PV to an
+      evidence-bounded continuation endpoint. Each endpoint exposes its FEN,
+      fingerprint, tactical snapshot, root-to-endpoint delta, irreversible events,
+      consumed plies and termination reason. ``pv_exhausted`` explicitly means
+      only that the available PV ended, not that the position is quiet.
+    - ``candidate_differences`` compares both the immediate resulting positions
+      and, when available, ``continuation_endpoint_difference``. Endpoint
+      comparisons preserve unequal PV lengths/termination reasons instead of
+      pretending that two engine lines are a controlled causal experiment.
     - ``include_moves`` evaluates up to eight explicit SAN/UCI alternatives even
       when they are outside the engine's top-N. Supplying explicit alternatives
       automatically uses forensic comparison semantics and reserves a separate
@@ -69,6 +77,8 @@ async def top_moves(
       and the proof is labelled ``exhaustive``. Otherwise only engine-ranked defenses
       are sampled and the response explicitly says ``sampled_top_defenses``.
 
+    Continuation-endpoint reconstruction adds no new Stockfish search; it uses
+    only candidate PVs that were already returned by the existing engine work.
     ``proof_defenses`` controls the sampled defense count and is clamped to 1-8.
     """
     t0 = time.time()
