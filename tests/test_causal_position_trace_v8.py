@@ -28,7 +28,7 @@ def test_causal_trace_records_materialization_and_position_identity() -> None:
     trace = build_causal_position_trace(root, ["e8e7"])
 
     assert trace["plies_traced"] == 1
-    assert trace["termination_reason"] == "pv_exhausted"
+    assert trace["termination_reason"] == "terminal_position"
     step = trace["steps"][0]
     assert step["side"] == "black"
     assert step["san"] == "Kxe7"
