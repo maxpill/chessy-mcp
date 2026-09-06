@@ -29,6 +29,7 @@ def test_causal_trace_records_materialization_and_position_identity() -> None:
 
     assert trace["plies_traced"] == 1
     assert trace["termination_reason"] == "terminal_position"
+    assert trace["transition_anchors"]["first_material_change_ply"] == 1
     step = trace["steps"][0]
     assert step["side"] == "black"
     assert step["san"] == "Kxe7"
