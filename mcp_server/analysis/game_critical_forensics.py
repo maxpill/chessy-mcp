@@ -11,6 +11,7 @@ engine search:
 * transition anchors for when material, defender, pin, line, square-control or
   king-pressure changes first appear;
 * strongest-reply materialization timing over the already returned PV;
+* actual-game materialization links kept separate from principal-variation evidence;
 * normalized evidence categories that can be aggregated across games without
   turning one position into a psychological diagnosis.
 
@@ -115,7 +116,7 @@ def _reply_materialization_evidence(
     if not strongest_reply_uci:
         return None, []
     try:
-        reply = chess.Move.from_uci(strongest_reply_uci.lower())
+        reply = chess.Move.from_uci(str(strongest_reply_uci).lower())
     except (ValueError, chess.InvalidMoveError):
         return None, []
     if reply not in board_after.legal_moves:
@@ -143,6 +144,43 @@ def _reply_materialization_evidence(
     if not aligned:
         signatures.append("REPLY_PV_ALIGNMENT_UNAVAILABLE")
     return materialization, signatures
+
+
+def _actual_game_materialization_link(
+    coaching: GameCoachingEvidence,
+    *,
+    root_ply: int,
+) -> dict[str, Any] | None:
+    """Expose the existing actual-game materialization heuristic beside PV evidence.
+
+    ``root_cause_links`` historically names the selected critical ply a root
+    cause when the actual game suffers its first adverse material-balance change
+    within six plies. That is useful temporal evidence but not a proof of causal
+    necessity, so this helper carries the original basis and a strict inference
+    boundary into the per-critical-moment trace.
+    """
+    link = next(
+        (item for item in coaching.root_cause_links if item.root_cause_ply == root_ply),
+        None,
+    )
+    if link is None:
+        return None
+    return {
+        "root_cause_ply": link.root_cause_ply,
+        "root_cause_san": link.root_cause_san,
+        "materialization_ply": link.materialization_ply,
+        "materialization_san": link.materialization_san,
+        "material_swing_cp": link.material_swing_cp,
+        "plies_later": link.plies_later,
+        "basis": link.basis,
+        "source": "actual_game_mainline_material_balance",
+        "proof_scope": (
+            "Temporal actual-game evidence only: this is the first adverse material-balance "
+            "change found within the bounded six-ply window after the selected critical move. "
+            "It does not prove that the earlier move uniquely caused the later loss, and it "
+            "must not be merged with the engine principal variation as if both were one line."
+        ),
+    }
 
 
 def _failure_categories(signatures: list[str]) -> list[FailureEvidenceCategory]:
@@ -266,8 +304,29 @@ def enrich_game_critical_forensics(
         if trace is not None and reply_materialization is not None:
             trace = {**trace, "strongest_reply_materialization": reply_materialization}
 
+        actual_materialization = _actual_game_materialization_link(
+            coaching,
+            root_ply=moment.ply,
+        )
+        if actual_materialization is not None:
+            if trace is None:
+                trace = {
+                    "steps": [],
+                    "source": "actual_game_materialization_only",
+                    "actual_game_materialization_link": actual_materialization,
+                }
+            else:
+                trace = {
+                    **trace,
+                    "actual_game_materialization_link": actual_materialization,
+                }
+
         signatures = list(moment.evidence_signatures)
         signatures.extend(reply_materialization_signatures)
+        if actual_materialization is not None:
+            signatures.append("ACTUAL_GAME_MATERIALIZATION_LINK_AVAILABLE")
+            if actual_materialization["plies_later"] == 1:
+                signatures.append("ACTUAL_GAME_MATERIALIZATION_NEXT_PLY")
         if mate_before:
             signatures.append("MATE_IN_ONE_AVAILABLE_BEFORE_MOVE")
             if not played_was_mate:
