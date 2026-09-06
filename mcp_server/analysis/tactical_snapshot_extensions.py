@@ -2,8 +2,8 @@
 
 The base position-integrity layer already exposes pins, forks, overloaded
 pieces and defender-removal candidates. This module adds deterministic geometry
-for discovered checks and skewers plus a bounded opponent-threat probe. No
-engine search is performed here.
+for discovered checks, skewers and relative pins plus a bounded opponent-threat
+probe. No engine search is performed here.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from mcp_server.analysis.forensic_extensions import (
     _skewer_evidence,
 )
 from mcp_server.analysis.forensics import PIECE_NAMES
+from mcp_server.analysis.threat_forensics import relative_pin_candidates
 from mcp_server.models.forensics import (
     ForensicEval,
     ForcingMoveEvidence,
@@ -67,6 +68,21 @@ def _candidate_from_raw(raw: dict[str, Any]) -> MechanismCandidateEvidence:
             "rear_value_cp": raw.get("rear_value_cp"),
         },
         proof_scope=proof_scope,
+    )
+
+
+def _relative_pin_candidate(raw: dict[str, Any]) -> MechanismCandidateEvidence:
+    return MechanismCandidateEvidence(
+        mechanism="relative_pin_candidate",
+        actor=str(raw["actor"]),
+        targets=[str(raw["front_target"]), str(raw["rear_target"])],
+        evidence={
+            "front_target": raw["front_target"],
+            "rear_target": raw["rear_target"],
+            "front_value_cp": raw["front_value_cp"],
+            "rear_value_cp": raw["rear_value_cp"],
+        },
+        proof_scope=str(raw["proof_scope"]),
     )
 
 
@@ -156,6 +172,19 @@ def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> 
                 continue
             seen.add(key)
             candidates.append(candidate)
+
+    for raw in relative_pin_candidates(board):
+        candidate = _relative_pin_candidate(raw)
+        key = (
+            candidate.mechanism,
+            candidate.trigger_uci,
+            candidate.actor,
+            tuple(candidate.targets),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
 
     candidates.sort(
         key=lambda item: (
