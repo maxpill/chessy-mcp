@@ -8,6 +8,7 @@ engine search:
 * exhaustive mate-in-one availability before and after the played move;
 * bounded immediate mate-threat evidence under a hypothetical legal pass;
 * concrete opponent forcing-reply deltas around the played move;
+* the same extended tactical-hanging layer used by rich position/move analysis;
 * a bounded per-ply position-delta trace over the already returned post-move PV;
 * transition anchors for when material, defender, pin, line, square-control or
   king-pressure changes first appear;
@@ -34,7 +35,9 @@ from mcp_server.analysis.mate_forensics import (
     mate_in_one_moves,
     mate_in_one_threats_if_pass,
 )
+from mcp_server.analysis.position_integrity import build_rich_tactical_snapshot
 from mcp_server.analysis.reply_materialization import build_reply_materialization_trace
+from mcp_server.analysis.tactical_snapshot_extensions import extend_tactical_snapshot
 from mcp_server.models import MCPEval
 from mcp_server.models.game_coaching import (
     FailureCorpusBucket,
@@ -98,6 +101,39 @@ def _trace_signatures(trace: dict[str, Any]) -> list[str]:
     }
     signatures.extend(value for key, value in mapping.items() if key in flags)
     return signatures
+
+
+def _hanging_label(item: Any) -> str:
+    target = item.target
+    return f"{target.color}_{target.piece}@{target.square}"
+
+
+def _new_extended_hanging_targets(
+    board_before: chess.Board,
+    board_after: chess.Board,
+    *,
+    perspective: str,
+) -> list[str]:
+    """Compare the full rich hanging layer, including local exchange proof."""
+    before = extend_tactical_snapshot(
+        board_before,
+        build_rich_tactical_snapshot(board_before),
+    )
+    after = extend_tactical_snapshot(
+        board_after,
+        build_rich_tactical_snapshot(board_after),
+    )
+    before_targets = {
+        _hanging_label(item)
+        for item in before.tactically_hanging_candidates
+        if item.target.color == perspective
+    }
+    after_targets = {
+        _hanging_label(item)
+        for item in after.tactically_hanging_candidates
+        if item.target.color == perspective
+    }
+    return sorted(after_targets - before_targets)
 
 
 def _reply_materialization_evidence(
@@ -249,6 +285,14 @@ def enrich_game_critical_forensics(
         board_before = positions[moment.ply - 1]
         board_after = positions[moment.ply]
         forcing_delta = critical_forcing_threat_delta(board_before, board_after)
+        extended_hanging = _new_extended_hanging_targets(
+            board_before,
+            board_after,
+            perspective=coaching.perspective,
+        )
+        all_new_hanging = sorted(
+            set(moment.newly_tactically_hanging_user_targets) | set(extended_hanging)
+        )
         mate_before = mate_in_one_moves(board_before)
         mate_after = mate_in_one_moves(board_after)
         mate_threats, threat_probe_available, threat_probe_reason = mate_in_one_threats_if_pass(
@@ -324,6 +368,8 @@ def enrich_game_critical_forensics(
         signatures = list(moment.evidence_signatures)
         signatures.extend(reply_materialization_signatures)
         signatures.extend(forcing_delta["signatures"])
+        if all_new_hanging:
+            signatures.append("NEW_TACTICALLY_HANGING_CANDIDATE_AFTER_MOVE")
         if actual_materialization is not None:
             signatures.append("ACTUAL_GAME_MATERIALIZATION_LINK_AVAILABLE")
             if actual_materialization["plies_later"] == 1:
@@ -365,6 +411,7 @@ def enrich_game_critical_forensics(
                     "resolved_opponent_forcing_threat_candidates": forcing_delta[
                         "resolved_opponent_forcing_threat_candidates"
                     ],
+                    "newly_tactically_hanging_user_targets": all_new_hanging,
                     "mate_in_one_moves_before": mate_before,
                     "played_move_was_mate_in_one": played_was_mate,
                     "opponent_mate_in_one_threats_if_pass_before": mate_threats,
