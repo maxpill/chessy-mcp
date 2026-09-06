@@ -98,6 +98,40 @@ def _mechanism_labels(candidate: CandidateEvidence) -> set[str]:
     }
 
 
+def _threat_labels(candidate: CandidateEvidence) -> set[str]:
+    return {
+        (
+            f"{item.uci}:{item.san}:check={int(item.is_check)}:"
+            f"capture={int(item.is_capture)}:promotion={item.promotion or '-'}"
+        )
+        for item in candidate.tactical_snapshot_after.opponent_forcing_threats_if_pass
+    }
+
+
+def _root_irreversible_reasons(board: chess.Board, candidate: CandidateEvidence) -> list[str]:
+    move = _legal_uci(board, candidate.uci)
+    if move is None:
+        return []
+    piece = board.piece_at(move.from_square)
+    reasons: list[str] = []
+    if piece is not None and piece.piece_type == chess.PAWN:
+        reasons.append("pawn_move")
+    if board.is_capture(move):
+        reasons.append("capture")
+    if move.promotion is not None:
+        reasons.append("promotion")
+    if board.is_castling(move):
+        reasons.append("castling")
+
+    before_rights = board.castling_xfen() or "-"
+    post = board.copy(stack=True)
+    post.push(move)
+    after_rights = post.castling_xfen() or "-"
+    if after_rights != before_rights:
+        reasons.append(f"castling_rights:{before_rights}->{after_rights}")
+    return reasons
+
+
 def enrich_candidate_geometry(board: chess.Board, candidate: CandidateEvidence) -> CandidateEvidence:
     """Attach resulting-position and reply geometry to one candidate.
 
@@ -163,7 +197,8 @@ def build_candidate_differences(
     is absent from the candidate list, the first candidate becomes the reference.
     This makes questions such as "why g4 instead of gxh4?" directly answerable
     from feature deltas after both moves, including safety, piece activity,
-    strategic-square control and typed tactical geometry.
+    strategic-square control, opponent forcing-threat candidates and typed
+    tactical geometry.
     """
     items = list(candidates)
     if len(items) < 2:
@@ -180,6 +215,8 @@ def build_candidate_differences(
     reference_mobility = _piece_mobility_labels(reference_delta)
     reference_control = _square_control_labels(reference_delta)
     reference_mechanisms = _mechanism_labels(reference)
+    reference_threats = _threat_labels(reference)
+    reference_irreversible = _root_irreversible_reasons(board, reference)
 
     out: list[CandidatePositionDifference] = []
     for candidate in items:
@@ -198,6 +235,8 @@ def build_candidate_differences(
         candidate_mobility = _piece_mobility_labels(delta)
         candidate_control = _square_control_labels(delta)
         candidate_mechanisms = _mechanism_labels(candidate)
+        candidate_threats = _threat_labels(candidate)
+        candidate_irreversible = _root_irreversible_reasons(board, candidate)
 
         out.append(
             CandidatePositionDifference(
@@ -205,6 +244,11 @@ def build_candidate_differences(
                 reference_san=reference.san,
                 candidate_uci=candidate.uci,
                 candidate_san=candidate.san,
+                first_divergence_ply=1,
+                first_divergence={
+                    "reference": reference.san,
+                    "candidate": candidate.san,
+                },
                 eval_gap_candidate_minus_reference_for_mover_cp=eval_gap,
                 material_effect_difference_for_mover_cp=(
                     _material_effect_for_mover(candidate, board.turn)
@@ -220,6 +264,10 @@ def build_candidate_differences(
                     if candidate.opponent_best_reply is not None
                     else None
                 ),
+                reference_root_move_irreversible=bool(reference_irreversible),
+                candidate_root_move_irreversible=bool(candidate_irreversible),
+                reference_root_irreversible_reasons=reference_irreversible,
+                candidate_root_irreversible_reasons=candidate_irreversible,
                 only_reference_newly_en_prise=sorted(
                     set(reference_delta.newly_en_prise_pieces)
                     - set(delta.newly_en_prise_pieces)
@@ -245,8 +293,7 @@ def build_candidate_differences(
                     - set(delta.pawn_structure_changes)
                 ),
                 only_candidate_pawn_structure_changes=sorted(
-                    set(delta.pawn_structure_changes)
-                    - set(reference_delta.pawn_structure_changes)
+                    set(delta.pawn_structure_changes) - set(reference_delta.pawn_structure_changes)
                 ),
                 only_reference_piece_safety_changes=sorted(reference_safety - candidate_safety),
                 only_candidate_piece_safety_changes=sorted(candidate_safety - reference_safety),
@@ -267,6 +314,12 @@ def build_candidate_differences(
                 ),
                 only_candidate_mechanism_candidates=sorted(
                     candidate_mechanisms - reference_mechanisms
+                ),
+                only_reference_opponent_forcing_threats_if_pass=sorted(
+                    reference_threats - candidate_threats
+                ),
+                only_candidate_opponent_forcing_threats_if_pass=sorted(
+                    candidate_threats - reference_threats
                 ),
                 king_ring_attack_delta_difference_white=(
                     delta.king_ring_attack_delta_white
@@ -338,7 +391,10 @@ def upgrade_move_forensics(
                 }
             )
 
-    candidates = [enrich_candidate_geometry(board_before, item) for item in evidence.candidate_comparisons]
+    candidates = [
+        enrich_candidate_geometry(board_before, item)
+        for item in evidence.candidate_comparisons
+    ]
     reference_move = _legal_uci(board_before, result.eval_before.best_move)
     reference_uci = reference_move.uci() if reference_move is not None else None
     updates["candidate_comparisons"] = candidates
@@ -365,7 +421,10 @@ def upgrade_top_moves_forensics(
     if evidence is None:
         return result
 
-    candidates = [enrich_candidate_geometry(board, item) for item in evidence.candidate_comparisons]
+    candidates = [
+        enrich_candidate_geometry(board, item)
+        for item in evidence.candidate_comparisons
+    ]
     reference_uci = candidates[0].uci if candidates else None
     upgraded = evidence.model_copy(
         update={
