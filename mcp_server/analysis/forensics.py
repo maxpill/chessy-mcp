@@ -324,6 +324,10 @@ async def _candidate_evidence(
     ev: Any | None = None
     if not post.is_game_over(claim_draw=False):
         ev = await pool.evaluate(post, depth=depth)
+    continuation = _principal_line(
+        post,
+        getattr(ev, "pv", None) if ev is not None else None,
+    )
     return CandidateEvidence(
         requested=requested,
         uci=move.uci(),
@@ -334,6 +338,11 @@ async def _candidate_evidence(
         searched_depth=getattr(ev, "depth", None),
         opponent_best_reply=_reply_from_eval(post, ev) if ev is not None else None,
         tactical_snapshot_after=snapshot,
+        continuation_uci=continuation.uci,
+        continuation_san=continuation.san,
+        continuation_termination_reason=continuation.termination_reason,
+        continuation_tactical_sequence_resolved=continuation.tactical_sequence_resolved,
+        continuation_proof_status=continuation.proof_status,
     )
 
 
