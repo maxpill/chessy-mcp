@@ -12,7 +12,9 @@ coach workflow:
 
 The null-move probe is deliberately labelled hypothetical. It is not an engine
 threat search and does not prove that a forcing move survives best defense.
-Relative pins and zwischenzugs are geometry/candidate evidence only.
+Exact-UCI comparisons always use the complete legal forcing sets; only response
+lists are presentation-capped. Relative pins and zwischenzugs are
+geometry/candidate evidence only.
 """
 
 from __future__ import annotations
@@ -33,11 +35,22 @@ def _color_name(color: chess.Color) -> Literal["white", "black"]:
     return "white" if color == chess.WHITE else "black"
 
 
-def _captured_piece(board: chess.Board, move: chess.Move) -> chess.Piece | None:
+def _captured_piece_with_square(
+    board: chess.Board,
+    move: chess.Move,
+) -> tuple[chess.Piece | None, chess.Square | None]:
+    if not board.is_capture(move):
+        return None, None
     if board.is_en_passant(move):
         offset = -8 if board.turn == chess.WHITE else 8
-        return board.piece_at(move.to_square + offset)
-    return board.piece_at(move.to_square)
+        square = move.to_square + offset
+    else:
+        square = move.to_square
+    return board.piece_at(square), square
+
+
+def _captured_piece(board: chess.Board, move: chess.Move) -> chess.Piece | None:
+    return _captured_piece_with_square(board, move)[0]
 
 
 def _piece_label(piece: chess.Piece | None, square: chess.Square | None = None) -> str | None:
@@ -47,7 +60,11 @@ def _piece_label(piece: chess.Piece | None, square: chess.Square | None = None) 
     return f"{base}@{chess.square_name(square)}" if square is not None else base
 
 
-def _forcing_moves(board: chess.Board) -> list[dict[str, Any]]:
+def _forcing_moves(
+    board: chess.Board,
+    *,
+    limit: int | None = MAX_FORCING_FACTS,
+) -> list[dict[str, Any]]:
     facts: list[dict[str, Any]] = []
     for move in board.legal_moves:
         is_check = board.gives_check(move)
@@ -55,7 +72,7 @@ def _forcing_moves(board: chess.Board) -> list[dict[str, Any]]:
         is_promotion = move.promotion is not None
         if not (is_check or is_capture or is_promotion):
             continue
-        captured = _captured_piece(board, move)
+        captured, captured_square = _captured_piece_with_square(board, move)
         facts.append(
             {
                 "uci": move.uci(),
@@ -63,17 +80,25 @@ def _forcing_moves(board: chess.Board) -> list[dict[str, Any]]:
                 "is_check": is_check,
                 "is_capture": is_capture,
                 "promotion": PIECE_NAMES.get(move.promotion) if move.promotion else None,
-                "captured_piece": _piece_label(captured),
+                "captured_piece": _piece_label(captured, captured_square),
             }
         )
     facts.sort(
         key=lambda item: (
             not bool(item["is_check"]),
             not bool(item["is_capture"]),
+            item["promotion"] is None,
             item["san"],
+            item["uci"],
         )
     )
-    return facts[:MAX_FORCING_FACTS]
+    if limit is None:
+        return facts
+    return facts[: max(0, limit)]
+
+
+def _wire(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return items[:MAX_FORCING_FACTS]
 
 
 def opponent_forcing_threat_update(
@@ -90,8 +115,7 @@ def opponent_forcing_threat_update(
 
     This is a deterministic null-move threat candidate, not proof that the threat
     survives a legal defense. Exact-UCI persistence after the player's move is
-    reported separately and is intentionally narrower than semantic threat
-    equivalence.
+    computed on complete legal forcing sets before presentation truncation.
     """
     if not board_before.move_stack:
         return {
@@ -112,7 +136,7 @@ def opponent_forcing_threat_update(
     except (ValueError, AssertionError):
         opponent_san = opponent_move.uci()
 
-    baseline = _forcing_moves(before_opponent)
+    baseline_all = _forcing_moves(before_opponent, limit=None)
     if board_before.is_game_over(claim_draw=False):
         return {
             "mechanism": "opponent_forcing_threat_update",
@@ -121,7 +145,9 @@ def opponent_forcing_threat_update(
             "opponent_move_uci": opponent_move.uci(),
             "opponent_move_san": opponent_san,
             "reason": "terminal_position",
-            "forcing_moves_before_opponent_move": baseline,
+            "forcing_moves_before_opponent_move": _wire(baseline_all),
+            "forcing_move_counts": {"before_opponent_move_total": len(baseline_all)},
+            "presentation_truncated": len(baseline_all) > MAX_FORCING_FACTS,
             "inference_boundary": "The current position is terminal, so a null-move probe is not meaningful.",
         }
     if board_before.is_check():
@@ -132,7 +158,9 @@ def opponent_forcing_threat_update(
             "opponent_move_uci": opponent_move.uci(),
             "opponent_move_san": opponent_san,
             "reason": "player_in_check_after_opponent_move",
-            "forcing_moves_before_opponent_move": baseline,
+            "forcing_moves_before_opponent_move": _wire(baseline_all),
+            "forcing_move_counts": {"before_opponent_move_total": len(baseline_all)},
+            "presentation_truncated": len(baseline_all) > MAX_FORCING_FACTS,
             "inference_boundary": (
                 "Passing while in check is illegal. The check itself is already an urgent "
                 "position update, so no null-move threat probe is fabricated."
@@ -141,35 +169,53 @@ def opponent_forcing_threat_update(
 
     passed = board_before.copy(stack=True)
     passed.push(chess.Move.null())
-    threats_if_pass = _forcing_moves(passed)
-    baseline_uci = {item["uci"] for item in baseline}
-    new_threats = [item for item in threats_if_pass if item["uci"] not in baseline_uci]
+    threats_all = _forcing_moves(passed, limit=None)
+    baseline_uci = {item["uci"] for item in baseline_all}
+    new_all = [item for item in threats_all if item["uci"] not in baseline_uci]
 
-    unresolved: list[dict[str, Any]] = []
+    unresolved_all: list[dict[str, Any]] = []
     addresses: bool | None = None
+    current_all: list[dict[str, Any]] = []
     if played_move is not None and played_move in board_before.legal_moves:
         after_user = board_before.copy(stack=True)
         after_user.push(played_move)
-        current = {item["uci"]: item for item in _forcing_moves(after_user)}
-        unresolved = [current[item["uci"]] for item in new_threats if item["uci"] in current]
-        addresses = not unresolved
+        current_all = _forcing_moves(after_user, limit=None)
+        current = {item["uci"]: item for item in current_all}
+        unresolved_all = [current[item["uci"]] for item in new_all if item["uci"] in current]
+        addresses = not unresolved_all
 
+    counts = {
+        "before_opponent_move_total": len(baseline_all),
+        "if_player_passes_total": len(threats_all),
+        "newly_enabled_total": len(new_all),
+        "after_played_move_total": len(current_all),
+        "unresolved_exact_total": len(unresolved_all),
+    }
+    truncated = {
+        "before_opponent_move": len(baseline_all) > MAX_FORCING_FACTS,
+        "if_player_passes": len(threats_all) > MAX_FORCING_FACTS,
+        "newly_enabled": len(new_all) > MAX_FORCING_FACTS,
+        "unresolved_exact": len(unresolved_all) > MAX_FORCING_FACTS,
+    }
     return {
         "mechanism": "opponent_forcing_threat_update",
         "history_available": True,
         "pass_probe_available": True,
         "opponent_move_uci": opponent_move.uci(),
         "opponent_move_san": opponent_san,
-        "forcing_moves_before_opponent_move": baseline,
-        "opponent_forcing_moves_if_player_passes": threats_if_pass,
-        "newly_enabled_forcing_threats_if_pass": new_threats,
+        "forcing_moves_before_opponent_move": _wire(baseline_all),
+        "opponent_forcing_moves_if_player_passes": _wire(threats_all),
+        "newly_enabled_forcing_threats_if_pass": _wire(new_all),
         "played_move_addresses_exact_new_threats": addresses,
-        "unresolved_exact_new_threats_after_played_move": unresolved,
+        "unresolved_exact_new_threats_after_played_move": _wire(unresolved_all),
+        "forcing_move_counts": counts,
+        "presentation_truncated": truncated,
         "proof_scope": (
             "Hypothetical null-move comparison only. It identifies forcing checks, captures "
             "and promotions that become available on the opponent's next turn if the player "
             "does nothing. It does not prove that these moves survive best legal defense. "
-            "Threat persistence after the played move is checked by exact UCI only."
+            "Exact-UCI threat creation/persistence is computed on complete legal forcing sets "
+            "before wire truncation; returned lists are presentation-capped with total counts."
         ),
     }
 
@@ -292,8 +338,12 @@ def zwischenzug_candidate_after_reply(
         return None
 
     recapture_uci = {item["uci"] for item in recaptures}
-    intermediate = [item for item in _forcing_moves(post) if item["uci"] not in recapture_uci]
-    if not intermediate:
+    intermediate_all = [
+        item
+        for item in _forcing_moves(post, limit=None)
+        if item["uci"] not in recapture_uci
+    ]
+    if not intermediate_all:
         return None
 
     return {
@@ -301,11 +351,14 @@ def zwischenzug_candidate_after_reply(
         "reply_uci": reply.uci(),
         "reply_san": reply_san,
         "available_immediate_recaptures": recaptures,
-        "intermediate_forcing_moves": intermediate[:MAX_ZWISCHENZUGS],
+        "intermediate_forcing_moves": intermediate_all[:MAX_ZWISCHENZUGS],
+        "intermediate_forcing_move_count": len(intermediate_all),
+        "presentation_truncated": len(intermediate_all) > MAX_ZWISCHENZUGS,
         "proof_scope": (
             "After the capturing reply, an immediate recapture is legal but at least one other "
-            "forcing check/capture/promotion is also legal. This establishes a zwischenzug "
-            "candidate only; it does not prove that the intermediate move is best or winning."
+            "forcing check/capture/promotion is also legal. Existence is checked against the "
+            "complete legal forcing set; the returned list is presentation-capped. This "
+            "establishes a zwischenzug candidate only, not that it is best or winning."
         ),
     }
 
@@ -325,8 +378,14 @@ def apply_threat_forensics(
 
     threat_update = opponent_forcing_threat_update(board_before, played_move)
     mechanisms.append(threat_update)
+    new_count = (
+        threat_update.get("forcing_move_counts", {}).get("newly_enabled_total")
+        if isinstance(threat_update.get("forcing_move_counts"), dict)
+        else None
+    )
     new_threats = threat_update.get("newly_enabled_forcing_threats_if_pass")
-    if isinstance(new_threats, list) and new_threats:
+    has_new_threats = bool(new_count) if isinstance(new_count, int) else bool(new_threats)
+    if has_new_threats:
         signatures.append("OPPONENT_MOVE_ENABLED_FORCING_THREAT_CANDIDATE")
         if threat_update.get("played_move_addresses_exact_new_threats") is False:
             signatures.append("FAILED_FORCING_THREAT_UPDATE_CANDIDATE")
