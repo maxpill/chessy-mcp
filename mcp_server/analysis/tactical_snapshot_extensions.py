@@ -2,9 +2,10 @@
 
 The base position-integrity layer already exposes pins, forks, overloaded
 pieces and defender-removal candidates. This module adds deterministic geometry
-for discovered checks, skewers and relative pins, a bounded opponent-threat
-probe, and a capture-only local exchange tree for defended pieces. No engine
-search is performed here.
+for discovered checks, skewers, relative pins, discovered attacks,
+interference and trapped-piece candidates, a bounded opponent-threat probe, and
+a capture-only local exchange tree for defended pieces. No engine search is
+performed here.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from typing import Any
 
 import chess
 
+from mcp_server.analysis.advanced_motifs import advanced_motif_candidates
 from mcp_server.analysis.forensic_extensions import (
     _discovered_check_evidence,
     _skewer_evidence,
@@ -382,6 +384,18 @@ def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> 
 
     for raw in relative_pin_candidates(board):
         candidate = _relative_pin_candidate(raw)
+        key = (
+            candidate.mechanism,
+            candidate.trigger_uci,
+            candidate.actor,
+            tuple(candidate.targets),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+
+    for candidate in advanced_motif_candidates(board):
         key = (
             candidate.mechanism,
             candidate.trigger_uci,
