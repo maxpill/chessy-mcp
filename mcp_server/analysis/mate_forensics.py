@@ -6,8 +6,9 @@ Stockfish evaluations can encode those facts, but a coach benefits from an
 explicit board-grounded answer.
 
 This module performs only legal move generation, checkmate verification and a
-bounded hypothetical null-move probe. It adds no engine search and makes no
-claim about why a player missed the move.
+bounded hypothetical null-move probe. Immediate mate scans are exhaustive over
+all legal root moves. It adds no engine search and makes no claim about why a
+player missed the move.
 """
 
 from __future__ import annotations
@@ -18,8 +19,6 @@ import chess
 
 from mcp_server.analysis.forensics import PIECE_NAMES
 from mcp_server.models.forensics import ForensicMoveAnalysis
-
-MAX_MATE_IN_ONE_MOVES = 16
 
 
 def _color_name(color: chess.Color) -> str:
@@ -54,7 +53,7 @@ def _back_rank_geometry(
 
 
 def mate_in_one_moves(board: chess.Board) -> list[dict[str, Any]]:
-    """Return every legal move that checkmates immediately, bounded for wire size."""
+    """Return every legal move that checkmates immediately."""
     if board.is_game_over(claim_draw=False):
         return []
 
@@ -79,7 +78,7 @@ def mate_in_one_moves(board: chess.Board) -> list[dict[str, Any]]:
         )
 
     out.sort(key=lambda item: (item["san"], item["uci"]))
-    return out[:MAX_MATE_IN_ONE_MOVES]
+    return out
 
 
 def mate_in_one_threats_if_pass(
@@ -146,7 +145,7 @@ def apply_mate_forensics(
         "opponent_mate_in_one_moves_after_played": opponent_mates,
         "strongest_reply_is_mate_in_one": strongest_reply_is_mate,
         "proof_scope": (
-            "The before/after mate-in-one scans are exhaustive legal immediate-mate scans. "
+            "The before/after mate-in-one scans enumerate every legal immediate mate. "
             "The threat list uses a hypothetical null move only when passing is legal, so it "
             "answers what mate-in-one the opponent would have if the mover did nothing. It "
             "does not prove that a legal defense cannot answer the threat and does not infer "
