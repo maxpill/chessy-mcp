@@ -8,7 +8,11 @@ from mcp_server.analysis.forensics import (
     build_position_fingerprint,
     build_tactical_snapshot,
 )
-from mcp_server.analysis.mate_forensics import apply_mate_forensics, mate_in_one_moves
+from mcp_server.analysis.mate_forensics import (
+    apply_mate_forensics,
+    mate_in_one_moves,
+    mate_in_one_threats_if_pass,
+)
 from mcp_server.models import MCPEval
 from mcp_server.models.forensics import (
     ForcedLineEvidence,
@@ -133,3 +137,34 @@ def test_played_mate_in_one_is_recorded_as_positive_fact() -> None:
     signatures = upgraded.forensics.evidence_signatures
     assert "PLAYED_MATE_IN_ONE" in signatures
     assert "MISSED_MATE_IN_ONE_CANDIDATE" not in signatures
+
+
+def test_scholars_mate_threat_is_visible_under_hypothetical_pass() -> None:
+    board = _board_after("e4", "e5", "Bc4", "Nc6", "Qh5")
+
+    threats, available, reason = mate_in_one_threats_if_pass(board)
+
+    assert available is True
+    assert reason is None
+    qxf7 = next(item for item in threats if item["uci"] == "h5f7")
+    assert qxf7["san"] == "Qxf7#"
+
+
+def test_mate_threat_update_reports_when_defense_addresses_immediate_mate() -> None:
+    board = _board_after("e4", "e5", "Bc4", "Nc6", "Qh5")
+    played = board.parse_san("g6")
+    result = _result_for_move(board, played)
+
+    upgraded = apply_mate_forensics(result, board, played_move=played)
+
+    assert upgraded.forensics is not None
+    signatures = upgraded.forensics.evidence_signatures
+    assert "OPPONENT_MATE_IN_ONE_THREAT_IF_PASS" in signatures
+    assert "IMMEDIATE_MATE_THREAT_ADDRESSED" in signatures
+    assert "FAILED_MATE_THREAT_UPDATE_CANDIDATE" not in signatures
+    scan = next(
+        item
+        for item in upgraded.forensics.mechanism_evidence
+        if item.get("mechanism") == "mate_in_one_scan"
+    )
+    assert scan["played_move_addresses_immediate_mate_threat"] is True
