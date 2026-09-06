@@ -112,8 +112,6 @@ def _evaluation_magnitude_stability(
     initial_effective_loss: int | None,
     verified_effective_loss: int | None,
 ) -> dict[str, Any]:
-    wdl_delta: float | None = None
-    effective_delta: int | None = None
     if initial_wdl_loss is not None and verified_wdl_loss is not None:
         wdl_delta = round(abs(verified_wdl_loss - initial_wdl_loss), 3)
         return {
@@ -251,9 +249,7 @@ def _comparison(
     after_pv_stable = _pv_prefix_stable(result.eval_after, verified_after)
     tactical_pv_stable: bool | None = None
     if tactical_context:
-        available = [
-            item for item in (before_pv_stable, after_pv_stable) if item is not None
-        ]
+        available = [item for item in (before_pv_stable, after_pv_stable) if item is not None]
         tactical_pv_stable = all(available) if available else None
 
     return {
@@ -514,14 +510,6 @@ async def verify_forensic_classification_stability(
             final_score = escalated_score
             final_before = escalated_before
             final_after = escalated_after
-            final = _comparison(
-                result,
-                final_before,
-                final_after,
-                final_score,
-                mover=board_before.turn,
-            )
-            stability.update(final)
             stability["verification_depth"] = escalation_depth
             stability["verification_status"] = "escalated"
 
