@@ -57,7 +57,7 @@ def _wdl_loss_percentage_points(result: ForensicMoveAnalysis, mover: chess.Color
     after = _mover_wdl_expectation(result.eval_after.wdl, mover)
     if before is None or after is None:
         return None
-    return max(0.0, (before - after) * 100.0)
+    return round(max(0.0, (before - after) * 100.0), 3)
 
 
 def _opponent_mate_signature(mover: chess.Color) -> str:
