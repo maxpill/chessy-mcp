@@ -1,19 +1,20 @@
 """Per-ply causal board-state trace for rich move coaching.
 
-The engine PV says what both sides may play.  Coaching additionally needs to
+The engine PV says what both sides may play. Coaching additionally needs to
 show what each ply *changes*: material, defenders, pins, en-prise pieces,
-activity, files, pawn structure and king pressure.  This module reconstructs
+activity, files, pawn structure and king pressure. This module reconstructs
 those deterministic board deltas from the already-returned principal variation.
 
-No engine search is performed here.  The trace deliberately stops at the
+No engine search is performed here. The trace deliberately stops at the
 adaptive forcing-resolution point when that evidence is available, otherwise it
-is bounded by the returned PV and ``MAX_CAUSAL_TRACE_PLIES``.  It is evidence
+is bounded by the returned PV and ``MAX_CAUSAL_TRACE_PLIES``. It is evidence
 for a coaching causal chain, not proof that one changed feature caused the
 engine evaluation.
 """
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import chess
@@ -23,7 +24,7 @@ from mcp_server.analysis.position_integrity import (
     build_rich_position_delta,
     build_rich_tactical_snapshot,
 )
-from mcp_server.models.forensics import ForensicMoveAnalysis, PositionDelta, TacticalSnapshot
+from mcp_server.models.forensics import ForensicMoveAnalysis, PositionDelta
 
 MAX_CAUSAL_TRACE_PLIES = 12
 MAX_DETAIL_ITEMS = 10
@@ -175,7 +176,11 @@ def build_causal_position_trace(
     max_plies: int | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic per-ply position-delta trace over a returned PV."""
-    limit = MAX_CAUSAL_TRACE_PLIES if max_plies is None else max(0, min(max_plies, MAX_CAUSAL_TRACE_PLIES))
+    limit = (
+        MAX_CAUSAL_TRACE_PLIES
+        if max_plies is None
+        else max(0, min(max_plies, MAX_CAUSAL_TRACE_PLIES))
+    )
     work = board_after_played.copy(stack=True)
     steps: list[dict[str, Any]] = []
     termination_reason = "no_pv" if not pv_uci else "pv_exhausted"
@@ -208,11 +213,20 @@ def build_causal_position_trace(
             after_snapshot=after_snapshot,
         )
 
-        before_mechanisms = {_mechanism_key(item) for item in before_snapshot.mechanism_candidates}
-        after_mechanisms = {_mechanism_key(item) for item in after_snapshot.mechanism_candidates}
-        before_hanging = {_hanging_key(item) for item in before_snapshot.tactically_hanging_candidates}
-        after_hanging = {_hanging_key(item) for item in after_snapshot.tactically_hanging_candidates}
+        before_mechanisms = {
+            _mechanism_key(item) for item in before_snapshot.mechanism_candidates
+        }
+        after_mechanisms = {
+            _mechanism_key(item) for item in after_snapshot.mechanism_candidates
+        }
+        before_hanging = {
+            _hanging_key(item) for item in before_snapshot.tactically_hanging_candidates
+        }
+        after_hanging = {
+            _hanging_key(item) for item in after_snapshot.tactically_hanging_candidates
+        }
 
+        position_after_fen = work.fen()
         steps.append(
             {
                 "ply": ply,
@@ -223,14 +237,22 @@ def build_causal_position_trace(
                 "is_capture": is_capture,
                 "is_promotion": is_promotion,
                 "captured_piece": _piece_label(captured),
-                "position_after_fen": work.fen(),
-                "position_after_hash": __import__("hashlib").sha256(work.fen().encode()).hexdigest()[:16],
+                "position_after_fen": position_after_fen,
+                "position_after_hash": hashlib.sha256(position_after_fen.encode()).hexdigest()[:16],
                 "delta": _delta_summary(delta),
                 "causal_flags": _causal_flags(delta),
-                "new_mechanism_candidates": sorted(after_mechanisms - before_mechanisms)[:MAX_DETAIL_ITEMS],
-                "resolved_mechanism_candidates": sorted(before_mechanisms - after_mechanisms)[:MAX_DETAIL_ITEMS],
-                "new_tactical_hanging_candidates": sorted(after_hanging - before_hanging)[:MAX_DETAIL_ITEMS],
-                "resolved_tactical_hanging_candidates": sorted(before_hanging - after_hanging)[:MAX_DETAIL_ITEMS],
+                "new_mechanism_candidates": sorted(after_mechanisms - before_mechanisms)[
+                    :MAX_DETAIL_ITEMS
+                ],
+                "resolved_mechanism_candidates": sorted(before_mechanisms - after_mechanisms)[
+                    :MAX_DETAIL_ITEMS
+                ],
+                "new_tactical_hanging_candidates": sorted(after_hanging - before_hanging)[
+                    :MAX_DETAIL_ITEMS
+                ],
+                "resolved_tactical_hanging_candidates": sorted(before_hanging - after_hanging)[
+                    :MAX_DETAIL_ITEMS
+                ],
             }
         )
 
