@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from mcp.server.mcpserver import Context
 
 from mcp_server.analysis.game_coaching import build_game_coaching_evidence
+from mcp_server.analysis.game_critical_forensics import enrich_game_critical_forensics
 from mcp_server.analysis.game_termination import build_game_termination_assessment
 from mcp_server.analysis.game_validation import GameMetadata, extract_game_metadata
 from mcp_server.analysis.mainline_parser import parse_mainline
@@ -332,6 +333,11 @@ class GameAnalyzer:
                 scan_depth=depth,
                 pool=pool,
                 evaluate_positions=self._evaluate_positions,
+            )
+            coaching = enrich_game_critical_forensics(
+                coaching,
+                positions=positions,
+                evals=evals,
             )
             coaching = _finalize_coaching_evidence(pgn, coaching)
 
