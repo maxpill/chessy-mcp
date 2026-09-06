@@ -98,16 +98,22 @@ def _comparison_requests(
     detail: Literal["coach", "forensic"],
     include_moves: list[str] | None,
 ) -> list[str]:
-    """Keep engine reference plus every explicit alternative whenever possible.
+    """Return comparison candidates without changing coach-mode semantics.
 
-    Explicit alternatives are never silently displaced by a long top-N list.
-    Up to eight caller-supplied moves are preserved, with one extra slot reserved
-    for the engine-best reference move. Without explicit alternatives, forensic
-    mode keeps up to eight automatic engine candidates as before.
+    ``coach`` preserves the original contract: explicit ``include_moves`` are
+    analyzed exactly as requested and no engine reference is injected.
+
+    ``forensic`` reserves one extra slot for the engine-best reference so the
+    caller can compare resulting positions against an explicit baseline. Up to
+    eight caller-supplied alternatives remain guaranteed and additional engine
+    candidates are appended only while space remains.
     """
     engine_sans = _engine_candidate_sans(result, board)
     explicit = [_canonical_candidate_san(board, text) for text in include_moves or []]
     explicit = list(dict.fromkeys(explicit))[:MAX_EXPLICIT_COMPARE_MOVES]
+
+    if explicit and detail == "coach":
+        return explicit
 
     if explicit:
         requested: list[str] = []
@@ -116,12 +122,11 @@ def _comparison_requests(
         for san in explicit:
             if san not in requested:
                 requested.append(san)
-        if detail == "forensic":
-            for san in engine_sans[1:]:
-                if len(requested) >= MAX_TOTAL_COMPARE_MOVES:
-                    break
-                if san not in requested:
-                    requested.append(san)
+        for san in engine_sans[1:]:
+            if len(requested) >= MAX_TOTAL_COMPARE_MOVES:
+                break
+            if san not in requested:
+                requested.append(san)
         return requested[:MAX_TOTAL_COMPARE_MOVES]
 
     if detail == "forensic":
