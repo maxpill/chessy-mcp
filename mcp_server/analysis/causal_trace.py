@@ -106,7 +106,47 @@ def _control_changes(delta: PositionDelta) -> list[dict[str, Any]]:
     ]
 
 
+def _weak_square_candidates(delta: PositionDelta) -> list[str]:
+    out: list[str] = []
+    for item in delta.strategic_square_control_changes:
+        if (
+            item.white_attackers_before > 0
+            and item.white_attackers_after == 0
+            and item.black_attackers_after > 0
+        ):
+            out.append(f"white_lost_control@{item.square}")
+        if (
+            item.black_attackers_before > 0
+            and item.black_attackers_after == 0
+            and item.white_attackers_after > 0
+        ):
+            out.append(f"black_lost_control@{item.square}")
+    return out[:MAX_DETAIL_ITEMS]
+
+
+def _slider_line_changes(delta: PositionDelta) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    opened: list[dict[str, Any]] = []
+    closed: list[dict[str, Any]] = []
+    for item in delta.piece_mobility_changes[:MAX_DETAIL_ITEMS]:
+        if item.gained_squares:
+            opened.append(
+                {
+                    "slider": item.target,
+                    "gained_squares": item.gained_squares[:MAX_DETAIL_ITEMS],
+                }
+            )
+        if item.lost_squares:
+            closed.append(
+                {
+                    "slider": item.target,
+                    "lost_squares": item.lost_squares[:MAX_DETAIL_ITEMS],
+                }
+            )
+    return opened, closed
+
+
 def _delta_summary(delta: PositionDelta) -> dict[str, Any]:
+    opened_slider_lines, closed_slider_lines = _slider_line_changes(delta)
     return {
         "material_delta_white_cp": delta.material_delta_white,
         "material_delta_black_cp": delta.material_delta_black,
@@ -120,6 +160,9 @@ def _delta_summary(delta: PositionDelta) -> dict[str, Any]:
         "piece_safety_changes": _piece_safety_changes(delta),
         "piece_mobility_changes": _mobility_changes(delta),
         "strategic_square_control_changes": _control_changes(delta),
+        "newly_weak_square_candidates": _weak_square_candidates(delta),
+        "opened_slider_lines": opened_slider_lines,
+        "closed_slider_lines": closed_slider_lines,
         "opened_files": delta.opened_files,
         "closed_files": delta.closed_files,
         "pawn_structure_changes": delta.pawn_structure_changes[:MAX_DETAIL_ITEMS],
@@ -145,6 +188,12 @@ def _causal_flags(delta: PositionDelta) -> list[str]:
         flags.append("defender_count_dropped")
     if any(item.attackers_after > item.attackers_before for item in delta.piece_safety_changes):
         flags.append("attacker_count_increased")
+    if any(item.gained_squares for item in delta.piece_mobility_changes):
+        flags.append("slider_line_opened")
+    if any(item.lost_squares for item in delta.piece_mobility_changes):
+        flags.append("slider_line_closed")
+    if _weak_square_candidates(delta):
+        flags.append("strategic_control_lost")
     if delta.opened_files:
         flags.append("file_opened")
     if delta.closed_files:
@@ -167,6 +216,36 @@ def _adaptive_trace_limit(result: ForensicMoveAnalysis) -> int | None:
         if isinstance(consumed, int) and consumed >= 0:
             return consumed
     return None
+
+
+def _transition_anchors(steps: list[dict[str, Any]]) -> dict[str, int | None]:
+    anchors: dict[str, int | None] = {
+        "first_material_change_ply": None,
+        "first_defender_drop_ply": None,
+        "first_new_en_prise_ply": None,
+        "first_new_pin_ply": None,
+        "first_slider_line_opened_ply": None,
+        "first_strategic_control_loss_ply": None,
+        "first_king_pressure_change_ply": None,
+    }
+    flag_to_key = {
+        "material_changed": "first_material_change_ply",
+        "defender_count_dropped": "first_defender_drop_ply",
+        "new_en_prise_piece": "first_new_en_prise_ply",
+        "new_pin": "first_new_pin_ply",
+        "slider_line_opened": "first_slider_line_opened_ply",
+        "strategic_control_lost": "first_strategic_control_loss_ply",
+        "king_ring_pressure_changed": "first_king_pressure_change_ply",
+    }
+    for step in steps:
+        ply = step.get("ply")
+        flags = step.get("causal_flags", [])
+        if not isinstance(ply, int) or not isinstance(flags, list):
+            continue
+        for flag, key in flag_to_key.items():
+            if anchors[key] is None and flag in flags:
+                anchors[key] = ply
+    return anchors
 
 
 def build_causal_position_trace(
@@ -266,6 +345,7 @@ def build_causal_position_trace(
     return {
         "mechanism": "causal_position_delta_trace",
         "steps": steps,
+        "transition_anchors": _transition_anchors(steps),
         "pv_plies_available": len(pv_uci),
         "plies_traced": len(steps),
         "termination_reason": termination_reason,
@@ -315,6 +395,10 @@ def apply_causal_position_trace(
         signatures.append("FORCED_LINE_NEW_EN_PRISE_PIECE")
     if any("new_pin" in step["causal_flags"] for step in steps):
         signatures.append("FORCED_LINE_NEW_PIN")
+    if any("slider_line_opened" in step["causal_flags"] for step in steps):
+        signatures.append("FORCED_LINE_SLIDER_LINE_OPENED")
+    if any("strategic_control_lost" in step["causal_flags"] for step in steps):
+        signatures.append("FORCED_LINE_STRATEGIC_CONTROL_LOST")
 
     upgraded = evidence.model_copy(
         update={
