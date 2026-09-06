@@ -113,6 +113,7 @@ async def test_forensic_stability_researches_error_and_records_changed_classific
     assert stability["verification_converged"] is True
     assert stability["verification_depth"] == 26
     assert stability["stable"] is False
+    assert stability["verification_uses_cached_rule_aware_evaluator"] is False
     assert [depth for _turn, depth in pool.calls] == [24, 24, 26, 26]
 
 
@@ -136,3 +137,55 @@ async def test_forensic_stability_does_not_spend_extra_search_on_best_move() -> 
     assert stability["verification_status"] == "low_coaching_priority_class"
     assert stability["initial_class"] == "best"
     assert pool.calls == []
+
+
+@pytest.mark.asyncio
+async def test_forensic_stability_prefers_injected_cached_rule_aware_evaluator() -> None:
+    result, board, move = _forensic_result(move_class=MoveClass.MISTAKE)
+
+    class _RawPoolMustNotRun:
+        async def evaluate(self, board: chess.Board, *, depth: int):
+            raise AssertionError("raw pool.evaluate must not be used when cached evaluator is injected")
+
+    calls: list[tuple[bool, int, str]] = []
+
+    async def cached_eval(
+        position: chess.Board,
+        depth: int,
+        pool,
+        *,
+        requested_depth: int,
+        history_complete: str,
+    ):
+        del pool
+        calls.append((position.turn, depth, history_complete))
+        best_move = "e2e4" if position.turn == chess.WHITE else "e7e5"
+        return (
+            MCPEval(
+                cp=0,
+                best_move=best_move,
+                pv=[best_move],
+                depth=depth,
+                searched_depth=depth,
+                requested_depth=requested_depth,
+                wdl=(340, 340, 320),
+            ),
+            False,
+        )
+
+    verified = await verify_forensic_classification_stability(
+        result,
+        board,
+        played_move=move,
+        pool=_RawPoolMustNotRun(),
+        depth=20,
+        history_complete="complete",
+        evaluate_position=cached_eval,
+    )
+
+    assert verified.forensics is not None
+    stability = verified.forensics.stability
+    assert stability["verification_uses_cached_rule_aware_evaluator"] is True
+    assert stability["verification_status"] == "escalated"
+    assert [depth for _turn, depth, _history in calls] == [24, 24, 26, 26]
+    assert all(history == "complete" for _turn, _depth, history in calls)
