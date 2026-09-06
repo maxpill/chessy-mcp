@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import chess
 
+from mcp_server.analysis.position_integrity import build_rich_tactical_snapshot
+from mcp_server.analysis.tactical_snapshot_extensions import extend_tactical_snapshot
 from mcp_server.analysis.threat_forensics import (
     opponent_forcing_threat_update,
     relative_pin_candidates,
@@ -33,6 +35,31 @@ def test_naked_fen_does_not_fabricate_previous_move_threat_evidence() -> None:
     assert evidence["history_available"] is False
     assert evidence["pass_probe_available"] is False
     assert evidence["reason"] == "no_previous_move_history"
+
+
+def test_rich_snapshot_exposes_opponent_forcing_threats_if_side_passes() -> None:
+    board = chess.Board("3q2k1/8/8/8/8/8/8/6K1 w - - 0 1")
+
+    snapshot = extend_tactical_snapshot(board, build_rich_tactical_snapshot(board))
+
+    assert snapshot.threat_probe_available is True
+    assert snapshot.threat_probe_reason is None
+    assert snapshot.threat_probe_scope is not None
+    assert any(
+        item.uci == "d8d1" and item.is_check
+        for item in snapshot.opponent_forcing_threats_if_pass
+    )
+
+
+def test_rich_snapshot_does_not_use_illegal_pass_while_in_check() -> None:
+    board = chess.Board("3q2k1/8/8/8/8/8/8/3K4 w - - 0 1")
+    assert board.is_check()
+
+    snapshot = extend_tactical_snapshot(board, build_rich_tactical_snapshot(board))
+
+    assert snapshot.threat_probe_available is False
+    assert snapshot.threat_probe_reason == "side_to_move_in_check_pass_illegal"
+    assert snapshot.opponent_forcing_threats_if_pass == []
 
 
 def test_capture_with_recapture_and_intermediate_check_is_zwischenzug_candidate() -> None:
