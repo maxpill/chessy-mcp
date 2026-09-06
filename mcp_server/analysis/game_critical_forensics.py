@@ -10,6 +10,7 @@ engine search:
 * a bounded per-ply position-delta trace over the already returned post-move PV;
 * transition anchors for when material, defender, pin, line, square-control or
   king-pressure changes first appear;
+* strongest-reply materialization timing over the already returned PV;
 * normalized evidence categories that can be aggregated across games without
   turning one position into a psychological diagnosis.
 
@@ -30,6 +31,7 @@ from mcp_server.analysis.mate_forensics import (
     mate_in_one_moves,
     mate_in_one_threats_if_pass,
 )
+from mcp_server.analysis.reply_materialization import build_reply_materialization_trace
 from mcp_server.models import MCPEval
 from mcp_server.models.game_coaching import (
     FailureCorpusBucket,
@@ -45,6 +47,8 @@ SIGNATURE_CATEGORY_MAP: dict[str, FailureEvidenceCategory] = {
     "FAILED_MATE_THREAT_UPDATE_CANDIDATE": "immediate_mate_threat_update_failure_candidate",
     "MISSED_MATE_IN_ONE_CANDIDATE": "mate_in_one_miss_candidate",
     "MISSED_FORCING_REPLY_CANDIDATE": "missed_forcing_reply_candidate",
+    "FORCING_REPLY_MATERIAL_LOSS_IMMEDIATE": "missed_forcing_reply_candidate",
+    "DELAYED_MATERIALIZATION_AFTER_FORCING_REPLY": "missed_forcing_reply_candidate",
     "NEW_EN_PRISE_PIECE_AFTER_MOVE": "new_en_prise_piece_after_move",
     "NEW_TACTICALLY_HANGING_CANDIDATE_AFTER_MOVE": (
         "new_tactically_hanging_candidate_after_move"
@@ -91,6 +95,54 @@ def _trace_signatures(trace: dict[str, Any]) -> list[str]:
     }
     signatures.extend(value for key, value in mapping.items() if key in flags)
     return signatures
+
+
+def _reply_materialization_evidence(
+    board_after: chess.Board,
+    pv: list[str],
+    *,
+    mover: chess.Color,
+    strongest_reply_uci: str | None,
+    strongest_reply_forcing: bool,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Return bounded material timing aligned with the verified strongest reply.
+
+    Deeper materialization is trusted only when the scan/cached PV actually
+    starts with the verified strongest reply. On mismatch we analyze only that
+    immediate legal reply and emit an alignment warning instead of stitching
+    together unrelated engine lines.
+    """
+    if not strongest_reply_uci:
+        return None, []
+    try:
+        reply = chess.Move.from_uci(strongest_reply_uci.lower())
+    except (ValueError, chess.InvalidMoveError):
+        return None, []
+    if reply not in board_after.legal_moves:
+        return None, []
+
+    aligned = bool(pv and str(pv[0]).lower() == reply.uci())
+    line = list(pv) if aligned else [reply.uci()]
+    materialization = build_reply_materialization_trace(
+        board_after,
+        line,
+        mover=mover,
+    )
+    materialization = {
+        **materialization,
+        "returned_pv_starts_with_strongest_reply": aligned,
+    }
+
+    signatures: list[str] = []
+    first_loss = materialization.get("first_material_loss_ply_for_mover")
+    if strongest_reply_forcing and isinstance(first_loss, int):
+        if first_loss == 1:
+            signatures.append("FORCING_REPLY_MATERIAL_LOSS_IMMEDIATE")
+        elif first_loss > 1 and aligned:
+            signatures.append("DELAYED_MATERIALIZATION_AFTER_FORCING_REPLY")
+    if not aligned:
+        signatures.append("REPLY_PV_ALIGNMENT_UNAVAILABLE")
+    return materialization, signatures
 
 
 def _failure_categories(signatures: list[str]) -> list[FailureEvidenceCategory]:
@@ -202,7 +254,20 @@ def enrich_game_critical_forensics(
                 "source": "scan_or_cached_post_move_principal_variation",
             }
 
+        reply_materialization, reply_materialization_signatures = _reply_materialization_evidence(
+            board_after,
+            pv,
+            mover=board_before.turn,
+            strongest_reply_uci=moment.strongest_reply_uci,
+            strongest_reply_forcing=bool(
+                moment.strongest_reply_is_check or moment.strongest_reply_is_capture
+            ),
+        )
+        if trace is not None and reply_materialization is not None:
+            trace = {**trace, "strongest_reply_materialization": reply_materialization}
+
         signatures = list(moment.evidence_signatures)
+        signatures.extend(reply_materialization_signatures)
         if mate_before:
             signatures.append("MATE_IN_ONE_AVAILABLE_BEFORE_MOVE")
             if not played_was_mate:
