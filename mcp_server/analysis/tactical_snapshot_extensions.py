@@ -160,7 +160,9 @@ def _local_exchange_minimax(
 
     Both sides may decline another capture. The root side maximizes its material
     balance change; the opponent minimizes it. ``complete`` is true only when no
-    explored frontier was truncated by ``MAX_LOCAL_EXCHANGE_PLIES``.
+    explored frontier was truncated by ``MAX_LOCAL_EXCHANGE_PLIES``. Equal-value
+    branches prefer a longer concrete continuation so the returned line explains
+    why a nominal recapture still fails instead of stopping at the first capture.
     """
     key = (board.fen(), plies_left)
     cached = memo.get(key)
@@ -198,9 +200,11 @@ def _local_exchange_minimax(
         branches.append((gain, [move.uci(), *child_uci], [san, *child_san], complete))
 
     if board.turn == root_color:
-        chosen = max(branches, key=lambda item: (item[0], tuple(item[1])))
+        best_gain = max(item[0] for item in branches)
     else:
-        chosen = min(branches, key=lambda item: (item[0], tuple(item[1])))
+        best_gain = min(item[0] for item in branches)
+    tied = [item for item in branches if item[0] == best_gain]
+    chosen = max(tied, key=lambda item: (len(item[1]), tuple(item[1])))
     result = (chosen[0], chosen[1], chosen[2], all_complete)
     memo[key] = result
     return result
