@@ -220,6 +220,8 @@ def strongest_reply_followup_evidence(
             "pass_hypothesis_available": False,
             "reason": "terminal_after_reply",
             "forcing_followups_if_opponent_passes": [],
+            "forcing_followup_count": 0,
+            "new_followup_count": 0,
             "proof_scope": "The game is terminal after the strongest reply.",
         }
     if after_reply.is_check():
@@ -230,6 +232,8 @@ def strongest_reply_followup_evidence(
             "pass_hypothesis_available": False,
             "reason": "opponent_in_check_after_reply",
             "forcing_followups_if_opponent_passes": [],
+            "forcing_followup_count": 0,
+            "new_followup_count": 0,
             "proof_scope": (
                 "A null-move threat probe is intentionally not performed while the opponent "
                 "is in check because passing would be illegal."
@@ -238,9 +242,11 @@ def strongest_reply_followup_evidence(
 
     passed = after_reply.copy(stack=True)
     passed.push(chess.Move.null())
-    followups = _forcing_moves(passed)[:MAX_FORCING_FOLLOWUPS]
+    followups_all = _forcing_moves(passed)
     before_uci = {item["uci"] for item in before_forcing}
-    new_followups = [item for item in followups if item["uci"] not in before_uci]
+    new_followups_all = [item for item in followups_all if item["uci"] not in before_uci]
+    followups = followups_all[:MAX_FORCING_FOLLOWUPS]
+    new_followups = new_followups_all[:MAX_FORCING_FOLLOWUPS]
     return {
         "mechanism": "strongest_reply_forcing_followup_if_pass",
         "reply": san,
@@ -248,12 +254,19 @@ def strongest_reply_followup_evidence(
         "pass_hypothesis_available": True,
         "forcing_followups_if_opponent_passes": followups,
         "new_followups_vs_pre_reply": new_followups,
-        "has_forcing_followup_if_pass": bool(followups),
-        "has_new_forcing_followup_if_pass": bool(new_followups),
+        "has_forcing_followup_if_pass": bool(followups_all),
+        "has_new_forcing_followup_if_pass": bool(new_followups_all),
+        "forcing_followup_count": len(followups_all),
+        "new_followup_count": len(new_followups_all),
+        "presentation_truncated": {
+            "followups": len(followups_all) > MAX_FORCING_FOLLOWUPS,
+            "new_followups": len(new_followups_all) > MAX_FORCING_FOLLOWUPS,
+        },
         "proof_scope": (
             "Hypothetical null-move probe only. A forcing continuation that exists after a "
             "pass is evidence of a threat candidate, not proof that the threat survives the "
-            "opponent's best legal defense."
+            "opponent's best legal defense. Novelty/existence is computed on the complete legal "
+            "forcing set before the returned lists are presentation-capped."
         ),
     }
 
