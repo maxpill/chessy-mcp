@@ -22,6 +22,8 @@ from mcp.types import ToolAnnotations
 from core.engines.pool import AnalyzerPool
 
 from mcp_server._mcp import mcp
+from mcp_server.analysis.causal_trace import apply_causal_position_trace
+from mcp_server.analysis.classification_stability import verify_forensic_classification_stability
 from mcp_server.analysis.classify_helpers import (
     ActionType,
     best_san_for_score,
@@ -30,10 +32,20 @@ from mcp_server.analysis.classify_helpers import (
     build_classification,
     played_continuation_san,
 )
+from mcp_server.analysis.forensic_integration import upgrade_move_forensics
 from mcp_server.analysis.forensics import enrich_move_analysis
+from mcp_server.analysis.mate_forensics import apply_mate_forensics
 from mcp_server.analysis.move_classifier import MoveClassifier, validate_classify_input
+from mcp_server.analysis.practical_equivalence import apply_practical_equivalence
+from mcp_server.analysis.reply_materialization import apply_reply_materialization_evidence
+from mcp_server.analysis.threat_forensics import apply_threat_forensics
 from mcp_server.cache import classify_cache_key
-from mcp_server.engine import _cache, _get_analyzer_pool, _single_flight
+from mcp_server.engine import (
+    _cache,
+    _evaluate_game_position_cached,
+    _get_analyzer_pool,
+    _single_flight,
+)
 from mcp_server.metrics import metrics
 from mcp_server.models import MCPMoveAnalysis
 from mcp_server.models.forensics import ForensicMoveAnalysis
@@ -64,8 +76,41 @@ async def classify_move(
     fingerprints, CCT-style tactical snapshots, strongest-reply metadata,
     position deltas and the principal continuation without extra verification
     searches. ``detail='forensic'`` additionally evaluates the strongest reply
-    one step deeper and compares the played move, engine-best move and any
-    explicitly requested ``compare_moves`` by their resulting positions.
+    one step deeper, compares the played move, engine-best move and any
+    explicitly requested ``compare_moves`` by their resulting positions, and
+    selectively re-searches pedagogically important non-good classifications at
+    higher depth to report whether the classification itself is stable.
+
+    Rich modes also expose practical-equivalence evidence separately from
+    ``is_engine_best``. The policy prefers WDL loss when available, uses cp only
+    as a fallback, and refuses to call a move practically equivalent when mate
+    status, rule outcome or concrete forcing-punishment evidence deteriorates.
+    It is a coaching-priority heuristic and never rewrites the engine grade.
+
+    Rich move analysis also reconstructs a bounded per-ply causal position-delta
+    trace over the returned continuation. It records material, defender,
+    en-prise, pin, activity, strategic-square, file, pawn-structure and king-ring
+    changes after each ply up to the adaptive forcing-resolution point. This is
+    deterministic board evidence for a coaching causal chain, not a claim that a
+    particular changed feature caused the engine-evaluation swing.
+
+    For the strongest returned reply, rich mode also walks the already returned
+    PV and records exactly when a concrete material loss first appears from the
+    played side's perspective. This can distinguish immediate punishment from a
+    loss that materializes several plies later without claiming what the player
+    did or did not calculate.
+
+    Rich move analysis also performs an exhaustive legal mate-in-one scan in the
+    concrete position before the move and after the played move. This makes
+    missed immediate mates and newly allowed immediate mates explicit board
+    facts, without inferring why the player did or did not see them.
+
+    Rich modes also add bounded threat/update evidence when previous-move
+    history exists: newly enabled opponent checks/captures/promotions under a
+    hypothetical pass, exact-threat persistence after the played move,
+    zwischenzug candidates after a capturing strongest reply, and relative-pin
+    geometry created by the move or reply. These are board facts/candidates, not
+    claims about the player's thought process.
 
     ``compare_moves`` accepts SAN or UCI and is capped at eight candidates.
     Supplying it automatically upgrades ``standard`` to ``forensic`` because a
@@ -175,12 +220,8 @@ async def classify_move(
             best_san = best_san_for_score(
                 outcome.board, score, eval_before, played_san, outcome.chess_move
             )
-            best_line_san = (
-                outcome.board.san(outcome.chess_move)
-                if (eval_before.pv and outcome.chess_move is not None and not eval_before.pv)
-                else None
-            )
-            if not best_line_san and eval_before.pv:
+            best_line_san = None
+            if eval_before.pv:
                 from core.engines.analyzer import pv_to_san
 
                 best_line_san = pv_to_san(outcome.board, eval_before.pv)
@@ -250,7 +291,7 @@ async def _finish_result(
     evidence_detail: Literal["coach", "forensic"] = (
         "forensic" if detail == "forensic" else "coach"
     )
-    return await enrich_move_analysis(
+    enriched = await enrich_move_analysis(
         result,
         board_before=outcome.board,
         played_move=outcome.chess_move,
@@ -258,6 +299,45 @@ async def _finish_result(
         depth=depth,
         detail=evidence_detail,
         compare_moves=compare_moves,
+    )
+    integrated = upgrade_move_forensics(
+        enriched,
+        outcome.board,
+        played_move=outcome.chess_move,
+    )
+    threat_enriched = apply_threat_forensics(
+        integrated,
+        outcome.board,
+        played_move=outcome.chess_move,
+    )
+    causal_enriched = apply_causal_position_trace(
+        threat_enriched,
+        outcome.board,
+        played_move=outcome.chess_move,
+    )
+    mate_enriched = apply_mate_forensics(
+        causal_enriched,
+        outcome.board,
+        played_move=outcome.chess_move,
+    )
+    reply_enriched = apply_reply_materialization_evidence(
+        mate_enriched,
+        outcome.board,
+        played_move=outcome.chess_move,
+    )
+    if evidence_detail == "forensic":
+        reply_enriched = await verify_forensic_classification_stability(
+            reply_enriched,
+            outcome.board,
+            played_move=outcome.chess_move,
+            pool=pool,
+            depth=depth,
+            history_complete=outcome.history_complete,
+            evaluate_position=_evaluate_game_position_cached,
+        )
+    return apply_practical_equivalence(
+        reply_enriched,
+        mover=outcome.board.turn,
     )
 
 

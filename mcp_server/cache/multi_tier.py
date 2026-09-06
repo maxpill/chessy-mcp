@@ -7,6 +7,13 @@ L2 only when L1 was cold before the write — under bursty ``SingleFlight``
 coalescing or ``analyze_game`` fan-out, the first writer persists to L2 and
 every subsequent redundant ``set`` is L1-only. That saves the tmpfs WAL write
 + ``asyncio.to_thread`` spawn per redundant call.
+
+A read that misses L1 can overlap a concurrent writer while it awaits the L2
+lookup. Therefore every L2 miss (or unusable L2 value) rechecks L1 before
+returning a miss. Without that second L1 check, a late reader can observe a
+stale two-tier miss after another request already populated L1, then arrive at
+SingleFlight after the producer has completed and start a redundant engine
+search.
 """
 
 from __future__ import annotations
@@ -40,7 +47,10 @@ class MultiTierCache:
                 return val
             except Exception:
                 pass
-        return None
+        # The L2 await may have raced a writer that populated L1 after our
+        # first L1 miss. Recheck before exposing a stale cache miss upstream.
+        v = await self._l1.get(key)
+        return v if isinstance(v, MCPEval) else None
 
     async def set_eval(self, key: str, val: MCPEval) -> None:
         was_cold = await self._l1.get(key) is None
@@ -61,7 +71,8 @@ class MultiTierCache:
                 return vals
             except Exception:
                 pass
-        return None
+        v = await self._l1.get(key)
+        return cast(list[MCPEval], v) if isinstance(v, list) else None
 
     async def set_top_moves(self, key: str, vals: list[MCPEval]) -> None:
         was_cold = await self._l1.get(key) is None
@@ -82,7 +93,8 @@ class MultiTierCache:
                 return val
             except Exception:
                 pass
-        return None
+        v = await self._l1.get(key)
+        return v if isinstance(v, MCPMoveAnalysis) else None
 
     async def set_classify(self, key: str, val: MCPMoveAnalysis) -> None:
         was_cold = await self._l1.get(key) is None

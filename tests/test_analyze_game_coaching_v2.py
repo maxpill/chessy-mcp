@@ -105,6 +105,9 @@ async def test_coach_mode_builds_story_comment_and_root_cause_without_extra_sear
     assert evidence.verification_depth is None
     assert evidence.game_segments[0].state == "approximately_equal"
     assert evidence.game_segments[-1].state == "decisively_worse"
+    assert evidence.game_segments[-1].transition_cause_ply == 5
+    assert evidence.game_segments[-1].transition_confirmed_ply == 5
+    assert evidence.game_segments[-1].eval_trough_effective_cp == -900
 
     qxe5 = next(moment for moment in evidence.critical_moments if moment.san == "Qxe5+")
     assert qxe5.move_class in {"mistake", "blunder"}
@@ -168,8 +171,14 @@ async def test_forensic_mode_selectively_verifies_and_surfaces_forcing_reply() -
     assert qxe5.classification_stable is True
     assert qxe5.strongest_reply_san == "Nxe5"
     assert qxe5.strongest_reply_is_capture is True
+    assert qxe5.played_piece == "queen"
+    assert qxe5.only_move_missed_candidate is True
+    assert qxe5.newly_en_prise_user_pieces == ["white_queen@e5"]
     assert "FORCING_CAPTURE_REPLY" in qxe5.evidence_signatures
     assert "MISSED_FORCING_REPLY_CANDIDATE" in qxe5.evidence_signatures
+    assert "NEW_EN_PRISE_PIECE_AFTER_MOVE" in qxe5.evidence_signatures
+    assert "ONLY_MOVE_MISSED_CANDIDATE" in qxe5.evidence_signatures
+    assert "PLAYER_SELF_REPORT_WITH_FORCING_REPLY" in qxe5.evidence_signatures
     assert qxe5.candidate_gap_effective_cp == 200
     assert qxe5.resource_uniqueness == "high"
 

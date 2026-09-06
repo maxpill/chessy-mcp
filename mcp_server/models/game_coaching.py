@@ -12,17 +12,48 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from mcp_server.models.forensics import ForcingMoveEvidence
 from mcp_server.models.legacy import GameAnalysisResult
+
+
+FailureEvidenceCategory = Literal[
+    "failed_forcing_threat_update_candidate",
+    "failed_position_update_candidate",
+    "immediate_mate_threat_update_failure_candidate",
+    "mate_in_one_miss_candidate",
+    "missed_forcing_reply_candidate",
+    "new_en_prise_piece_after_move",
+    "new_tactically_hanging_candidate_after_move",
+    "only_move_missed_candidate",
+    "pawn_move_forcing_punishment",
+]
 
 
 class GameSegment(BaseModel):
     start_ply: int
     end_ply: int
     perspective: Literal["white", "black"]
-    state: str
+    state: Literal[
+        "decisively_better",
+        "better",
+        "slightly_better",
+        "approximately_equal",
+        "slightly_worse",
+        "worse",
+        "decisively_worse",
+    ]
     eval_start_effective_cp: int
     eval_end_effective_cp: int
+    eval_peak_effective_cp: int | None = None
+    eval_trough_effective_cp: int | None = None
     transition_cause_ply: int | None = None
+    transition_confirmed_ply: int | None = None
+    stability: Literal["high", "medium", "low"] = "high"
+    raw_state_change_count: int = 0
+    inference_boundary: str = (
+        "Segment states use a small persistence filter so one-ply threshold noise does not "
+        "automatically become a new game phase. Large/decisive state jumps remain immediate."
+    )
 
 
 class AdvantageEvent(BaseModel):
@@ -67,7 +98,38 @@ class CriticalMoment(BaseModel):
     strongest_reply_san: str | None = None
     strongest_reply_is_check: bool | None = None
     strongest_reply_is_capture: bool | None = None
+    played_piece: str | None = None
+    only_move_missed_candidate: bool | None = None
+    newly_en_prise_user_pieces: list[str] = Field(default_factory=list)
+    newly_tactically_hanging_user_targets: list[str] = Field(default_factory=list)
+    opponent_forcing_threat_baseline_available: bool | None = None
+    opponent_forcing_moves_after_played: list[ForcingMoveEvidence] = Field(default_factory=list)
+    newly_enabled_opponent_forcing_moves_after_played: list[ForcingMoveEvidence] = Field(
+        default_factory=list
+    )
+    resolved_opponent_forcing_threat_candidates: list[ForcingMoveEvidence] = Field(
+        default_factory=list
+    )
+    mate_in_one_moves_before: list[dict[str, Any]] = Field(default_factory=list)
+    played_move_was_mate_in_one: bool | None = None
+    opponent_mate_in_one_threats_if_pass_before: list[dict[str, Any]] = Field(default_factory=list)
+    mate_threat_pass_probe_available: bool | None = None
+    mate_threat_pass_probe_reason: str | None = None
+    played_move_addresses_immediate_mate_threat: bool | None = None
+    opponent_mate_in_one_moves_after_played: list[dict[str, Any]] = Field(default_factory=list)
+    strongest_reply_is_mate_in_one: bool | None = None
+    causal_trace: dict[str, Any] | None = None
     evidence_signatures: list[str] = Field(default_factory=list)
+    failure_evidence_categories: list[FailureEvidenceCategory] = Field(default_factory=list)
+    inference_boundary: str = (
+        "Signatures describe engine/board evidence. Terms such as ONLY_MOVE_MISSED_CANDIDATE "
+        "or PAWN_MOVE_FORCING_PUNISHMENT are coaching evidence, not proof of the player's "
+        "actual calculation process. Opponent forcing-threat deltas compare the real post-move "
+        "position with a pre-move hypothetical-pass baseline when that baseline is legal. "
+        "Mate-in-one fields are exhaustive immediate-mate scans; mate-threat pass fields are "
+        "bounded hypothetical-pass evidence; causal_trace is a bounded principal-variation "
+        "board-delta trace and does not establish psychological causation."
+    )
 
 
 class PositiveMoment(BaseModel):
@@ -118,6 +180,76 @@ class FinalPositionAssessment(BaseModel):
     verification_depth: int | None = None
 
 
+class GameTerminationAssessment(BaseModel):
+    """Evidence-bounded interpretation of how a recorded game ended.
+
+    A decisive PGN result with a non-terminal final board is deliberately only
+    a resignation *candidate*: without a Termination header it could also be a
+    timeout, adjudication, or another external ending. The MCP never turns a
+    large negative centipawn score into "resignation was forced".
+    """
+
+    pgn_result: str
+    termination_header: str | None = None
+    decisive_result: bool = False
+    winner_side: Literal["white", "black"] | None = None
+    loser_side: Literal["white", "black"] | None = None
+    status: Literal[
+        "explicit_resignation",
+        "candidate_nonterminal_decisive_result",
+        "board_checkmate",
+        "other_terminal_result",
+        "ongoing_or_unknown",
+    ] = "ongoing_or_unknown"
+    confidence: Literal["high", "medium", "low"] = "low"
+    final_board_terminal: bool = False
+    final_board_checkmate: bool = False
+    continued_play_was_legal: bool = False
+    forced_mate_against_loser: bool | None = None
+    objectively_forced: bool | None = None
+    mate_distance_white_pov: int | None = None
+    eval_for_loser_effective_cp: int | None = None
+    best_defensive_move_uci: str | None = None
+    best_defensive_move_san: str | None = None
+    legal_resource_count: int = 0
+    reasonable_resource_count: int | None = None
+    defensive_resources_exist: bool = False
+    inference_boundary: str = (
+        "Only an explicit resignation-style Termination header is treated as confirmed "
+        "resignation. A decisive result on a non-terminal board is merely a candidate. "
+        "objectively_forced refers to forced mate/rules termination, never to a cp threshold."
+    )
+
+
+class FailureCorpusBucket(BaseModel):
+    """One stable, machine-aggregatable evidence category from critical moments."""
+
+    category: FailureEvidenceCategory
+    count: int
+    plies: list[int] = Field(default_factory=list)
+    self_report_overlap_count: int = 0
+    self_reported_plies: list[int] = Field(default_factory=list)
+    supporting_signatures: list[str] = Field(default_factory=list)
+    inference_boundary: str = (
+        "The category summarizes repeated board/engine evidence. It is not a diagnosis of the "
+        "player's thought process. self_report_overlap_count only records that the same critical "
+        "ply also contained a player comment."
+    )
+
+
+class GameFailureCorpusSummary(BaseModel):
+    """Per-game normalized evidence ready for aggregation across many games."""
+
+    major_error_critical_moments: int = 0
+    categorized_critical_moments: int = 0
+    buckets: list[FailureCorpusBucket] = Field(default_factory=list)
+    uncategorized_major_error_plies: list[int] = Field(default_factory=list)
+    inference_boundary: str = (
+        "This is a stateless per-game evidence summary. Cross-game consumers may aggregate the "
+        "stable categories, but should not infer a durable cognitive weakness from one game."
+    )
+
+
 class GameCoachingEvidence(BaseModel):
     detail: Literal["coach", "forensic"]
     perspective: Literal["white", "black"]
@@ -127,6 +259,11 @@ class GameCoachingEvidence(BaseModel):
     positive_moments: list[PositiveMoment] = Field(default_factory=list)
     root_cause_links: list[RootCauseLink] = Field(default_factory=list)
     final_position: FinalPositionAssessment
+    termination: GameTerminationAssessment | None = None
+    critical_evidence_signature_counts: dict[str, int] = Field(default_factory=dict)
+    critical_reason_counts: dict[str, int] = Field(default_factory=dict)
+    self_reported_critical_plies: list[int] = Field(default_factory=list)
+    failure_corpus: GameFailureCorpusSummary | None = None
     scan_depth: int
     verification_depth: int | None = None
     adaptive_escalation_depth: int | None = None
