@@ -85,6 +85,9 @@ def _selected_evidence(
     )
     if not isinstance(wdl_loss, (int, float)):
         wdl_loss = _wdl_loss_percentage_points(result, mover)
+    normalized_wdl_loss = (
+        round(float(wdl_loss), 3) if isinstance(wdl_loss, (int, float)) else None
+    )
 
     effective_loss = (
         stability.get("verified_effective_loss")
@@ -109,7 +112,7 @@ def _selected_evidence(
 
     return {
         "basis": "verified" if verified else "initial",
-        "wdl_loss_percentage_points": float(wdl_loss) if isinstance(wdl_loss, (int, float)) else None,
+        "wdl_loss_percentage_points": normalized_wdl_loss,
         "effective_loss_cp": effective_loss,
         "move_class": move_class,
         "mate_before": mate_before,
