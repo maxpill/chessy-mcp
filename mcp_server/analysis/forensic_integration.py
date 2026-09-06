@@ -98,12 +98,29 @@ def _mechanism_labels(candidate: CandidateEvidence) -> set[str]:
     }
 
 
-def _threat_labels(candidate: CandidateEvidence) -> set[str]:
+def _forcing_label(item: object) -> str:
+    uci = str(getattr(item, "uci", ""))
+    san = str(getattr(item, "san", ""))
+    is_check = int(bool(getattr(item, "is_check", False)))
+    is_capture = int(bool(getattr(item, "is_capture", False)))
+    promotion = str(getattr(item, "promotion", None) or "-")
+    return (
+        f"{uci}:{san}:check={is_check}:capture={is_capture}:"
+        f"promotion={promotion}"
+    )
+
+
+def _immediate_reply_forcing_labels(candidate: CandidateEvidence) -> set[str]:
+    snapshot = candidate.tactical_snapshot_after
+    by_uci: dict[str, object] = {}
+    for item in [*snapshot.checks, *snapshot.captures]:
+        by_uci[item.uci] = item
+    return {_forcing_label(item) for item in by_uci.values()}
+
+
+def _root_threat_labels_if_reply_passes(candidate: CandidateEvidence) -> set[str]:
     return {
-        (
-            f"{item.uci}:{item.san}:check={int(item.is_check)}:"
-            f"capture={int(item.is_capture)}:promotion={item.promotion or '-'}"
-        )
+        _forcing_label(item)
         for item in candidate.tactical_snapshot_after.opponent_forcing_threats_if_pass
     }
 
@@ -196,9 +213,9 @@ def build_candidate_differences(
     The engine-best move should normally be supplied as ``reference_uci``. If it
     is absent from the candidate list, the first candidate becomes the reference.
     This makes questions such as "why g4 instead of gxh4?" directly answerable
-    from feature deltas after both moves, including safety, piece activity,
-    strategic-square control, opponent forcing-threat candidates and typed
-    tactical geometry.
+    from feature deltas after both moves, including immediate reply forcing moves,
+    root-side threats if the reply side passes, safety, activity, control and
+    typed tactical geometry.
     """
     items = list(candidates)
     if len(items) < 2:
@@ -215,7 +232,8 @@ def build_candidate_differences(
     reference_mobility = _piece_mobility_labels(reference_delta)
     reference_control = _square_control_labels(reference_delta)
     reference_mechanisms = _mechanism_labels(reference)
-    reference_threats = _threat_labels(reference)
+    reference_immediate = _immediate_reply_forcing_labels(reference)
+    reference_root_threats = _root_threat_labels_if_reply_passes(reference)
     reference_irreversible = _root_irreversible_reasons(board, reference)
 
     out: list[CandidatePositionDifference] = []
@@ -235,7 +253,8 @@ def build_candidate_differences(
         candidate_mobility = _piece_mobility_labels(delta)
         candidate_control = _square_control_labels(delta)
         candidate_mechanisms = _mechanism_labels(candidate)
-        candidate_threats = _threat_labels(candidate)
+        candidate_immediate = _immediate_reply_forcing_labels(candidate)
+        candidate_root_threats = _root_threat_labels_if_reply_passes(candidate)
         candidate_irreversible = _root_irreversible_reasons(board, candidate)
 
         out.append(
@@ -315,11 +334,17 @@ def build_candidate_differences(
                 only_candidate_mechanism_candidates=sorted(
                     candidate_mechanisms - reference_mechanisms
                 ),
-                only_reference_opponent_forcing_threats_if_pass=sorted(
-                    reference_threats - candidate_threats
+                only_reference_immediate_reply_forcing_moves=sorted(
+                    reference_immediate - candidate_immediate
                 ),
-                only_candidate_opponent_forcing_threats_if_pass=sorted(
-                    candidate_threats - reference_threats
+                only_candidate_immediate_reply_forcing_moves=sorted(
+                    candidate_immediate - reference_immediate
+                ),
+                only_reference_root_forcing_threats_if_reply_passes=sorted(
+                    reference_root_threats - candidate_root_threats
+                ),
+                only_candidate_root_forcing_threats_if_reply_passes=sorted(
+                    candidate_root_threats - reference_root_threats
                 ),
                 king_ring_attack_delta_difference_white=(
                     delta.king_ring_attack_delta_white
