@@ -1,12 +1,13 @@
-"""Deterministic mate-in-one evidence for rich ``classify_move`` output.
+"""Deterministic immediate-mate evidence for rich ``classify_move`` output.
 
 A common coaching failure mode is not an evaluation nuance but simply missing a
-legal mate or allowing one. Stockfish evaluations can encode that fact, but a
-coach benefits from an explicit board-grounded answer: which mating moves exist,
-whether the played move used one, and whether the opponent now has one.
+legal mate, allowing one, or failing to answer an immediate mating threat.
+Stockfish evaluations can encode those facts, but a coach benefits from an
+explicit board-grounded answer.
 
-This module performs only legal move generation and checkmate verification. It
-adds no engine search and makes no claim about why a player missed the move.
+This module performs only legal move generation, checkmate verification and a
+bounded hypothetical null-move probe. It adds no engine search and makes no
+claim about why a player missed the move.
 """
 
 from __future__ import annotations
@@ -81,6 +82,25 @@ def mate_in_one_moves(board: chess.Board) -> list[dict[str, Any]]:
     return out[:MAX_MATE_IN_ONE_MOVES]
 
 
+def mate_in_one_threats_if_pass(
+    board: chess.Board,
+) -> tuple[list[dict[str, Any]], bool, str | None]:
+    """Return opponent mate-in-one candidates after a hypothetical legal pass.
+
+    Passing is never used while the side to move is in check or after a terminal
+    position. The result therefore answers the bounded coaching question "if I
+    do nothing, does the opponent have mate in one?" It does not prove that the
+    threat cannot be met by a legal move.
+    """
+    if board.is_game_over(claim_draw=False):
+        return [], False, "terminal_position"
+    if board.is_check():
+        return [], False, "side_to_move_in_check_pass_illegal"
+    passed = board.copy(stack=True)
+    passed.push(chess.Move.null())
+    return mate_in_one_moves(passed), True, None
+
+
 def apply_mate_forensics(
     result: ForensicMoveAnalysis,
     board_before: chess.Board,
@@ -97,6 +117,9 @@ def apply_mate_forensics(
     before_mates = mate_in_one_moves(board_before)
     before_mate_ucis = {item["uci"] for item in before_mates}
     played_was_mate = played_move.uci() in before_mate_ucis
+    mate_threats, threat_probe_available, threat_probe_reason = mate_in_one_threats_if_pass(
+        board_before
+    )
 
     board_after = board_before.copy(stack=True)
     board_after.push(played_move)
@@ -107,18 +130,27 @@ def apply_mate_forensics(
         evidence.strongest_reply is not None
         and evidence.strongest_reply.uci in opponent_mate_ucis
     )
+    addresses_mate_threat: bool | None = None
+    if mate_threats:
+        addresses_mate_threat = not opponent_mates
 
     mechanism = {
         "mechanism": "mate_in_one_scan",
         "side_to_move_before": _color_name(board_before.turn),
         "mate_in_one_moves_before": before_mates,
         "played_move_was_mate_in_one": played_was_mate,
+        "opponent_mate_in_one_threats_if_pass_before": mate_threats,
+        "mate_threat_pass_probe_available": threat_probe_available,
+        "mate_threat_pass_probe_reason": threat_probe_reason,
+        "played_move_addresses_immediate_mate_threat": addresses_mate_threat,
         "opponent_mate_in_one_moves_after_played": opponent_mates,
         "strongest_reply_is_mate_in_one": strongest_reply_is_mate,
         "proof_scope": (
-            "Exhaustive legal mate-in-one scan of the concrete before/after positions. "
-            "It proves only immediate checkmate availability and does not infer why a player "
-            "did or did not see the move, nor whether a longer mating net exists."
+            "The before/after mate-in-one scans are exhaustive legal immediate-mate scans. "
+            "The threat list uses a hypothetical null move only when passing is legal, so it "
+            "answers what mate-in-one the opponent would have if the mover did nothing. It "
+            "does not prove that a legal defense cannot answer the threat and does not infer "
+            "why a player did or did not see it."
         ),
     }
 
@@ -132,11 +164,20 @@ def apply_mate_forensics(
             signatures.append("MISSED_MATE_IN_ONE_CANDIDATE")
     if played_was_mate:
         signatures.append("PLAYED_MATE_IN_ONE")
+    if mate_threats:
+        signatures.append("OPPONENT_MATE_IN_ONE_THREAT_IF_PASS")
+        if addresses_mate_threat is False:
+            signatures.append("FAILED_MATE_THREAT_UPDATE_CANDIDATE")
+        elif addresses_mate_threat is True:
+            signatures.append("IMMEDIATE_MATE_THREAT_ADDRESSED")
     if opponent_mates:
         signatures.append("OPPONENT_MATE_IN_ONE_AFTER_MOVE")
     if strongest_reply_is_mate:
         signatures.append("STRONGEST_REPLY_IS_MATE_IN_ONE")
-    if any(item["back_rank_geometry"] for item in [*before_mates, *opponent_mates]):
+    if any(
+        item["back_rank_geometry"]
+        for item in [*before_mates, *mate_threats, *opponent_mates]
+    ):
         signatures.append("BACK_RANK_MATE_GEOMETRY_CANDIDATE")
 
     upgraded = evidence.model_copy(
