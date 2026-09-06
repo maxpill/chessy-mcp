@@ -93,3 +93,16 @@ def test_relative_pin_geometry_distinguishes_front_and_rear_value() -> None:
         and item["rear_target"] == "black_queen@g7"
         for item in candidates
     )
+
+
+def test_relative_pin_geometry_is_typed_in_rich_tactical_snapshot() -> None:
+    board = chess.Board("7k/6q1/8/8/3n4/8/8/BK6 w - - 0 1")
+
+    snapshot = extend_tactical_snapshot(board, build_rich_tactical_snapshot(board))
+
+    assert any(
+        item.mechanism == "relative_pin_candidate"
+        and item.actor == "white_bishop@a1"
+        and item.targets == ["black_knight@d4", "black_queen@g7"]
+        for item in snapshot.mechanism_candidates
+    )
