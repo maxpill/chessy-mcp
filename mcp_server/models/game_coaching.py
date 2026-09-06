@@ -97,12 +97,19 @@ class CriticalMoment(BaseModel):
     resolved_opponent_forcing_threat_candidates: list[ForcingMoveEvidence] = Field(
         default_factory=list
     )
+    mate_in_one_moves_before: list[dict[str, Any]] = Field(default_factory=list)
+    played_move_was_mate_in_one: bool | None = None
+    opponent_mate_in_one_moves_after_played: list[dict[str, Any]] = Field(default_factory=list)
+    strongest_reply_is_mate_in_one: bool | None = None
+    causal_trace: dict[str, Any] | None = None
     evidence_signatures: list[str] = Field(default_factory=list)
     inference_boundary: str = (
         "Signatures describe engine/board evidence. Terms such as ONLY_MOVE_MISSED_CANDIDATE "
         "or PAWN_MOVE_FORCING_PUNISHMENT are coaching evidence, not proof of the player's "
         "actual calculation process. Opponent forcing-threat deltas compare the real post-move "
-        "position with a pre-move hypothetical-pass baseline when that baseline is legal."
+        "position with a pre-move hypothetical-pass baseline when that baseline is legal. "
+        "Mate-in-one fields are exhaustive immediate-mate scans; causal_trace is a bounded "
+        "principal-variation board-delta trace and does not establish psychological causation."
     )
 
 
