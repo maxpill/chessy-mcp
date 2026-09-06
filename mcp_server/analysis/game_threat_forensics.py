@@ -9,9 +9,11 @@ compares two concrete states around the player's move:
 * after the played move, what checks/captures/promotions the opponent actually
   has as legal replies.
 
-The comparison is exact-UCI only. It is useful evidence for position-update
-failures, but it is not proof that a threat is objectively decisive or that the
-player failed to notice it.
+Exact-UCI comparisons are performed on the complete legal forcing-move sets.
+Only the response lists are capped for wire size. This avoids false new/resolved
+threat classifications when a position has more forcing moves than the display
+limit. The result remains evidence, not proof that a threat is objectively
+decisive or that the player failed to notice it.
 """
 
 from __future__ import annotations
@@ -45,8 +47,16 @@ def _captured_piece(board: chess.Board, move: chess.Move) -> tuple[chess.Piece |
     return board.piece_at(square), square
 
 
-def forcing_move_evidence(board: chess.Board) -> list[ForcingMoveEvidence]:
-    """Enumerate legal checks, captures and promotions in deterministic order."""
+def forcing_move_evidence(
+    board: chess.Board,
+    *,
+    limit: int | None = MAX_FORCING_FACTS,
+) -> list[ForcingMoveEvidence]:
+    """Enumerate legal checks, captures and promotions in deterministic order.
+
+    ``limit=None`` returns the complete legal forcing set and must be used for
+    semantic set comparisons. A numeric limit is presentation-only.
+    """
     facts: list[ForcingMoveEvidence] = []
     for move in board.legal_moves:
         is_check = board.gives_check(move)
@@ -73,7 +83,26 @@ def forcing_move_evidence(board: chess.Board) -> list[ForcingMoveEvidence]:
             item.uci,
         )
     )
-    return facts[:MAX_FORCING_FACTS]
+    if limit is None:
+        return facts
+    return facts[: max(0, limit)]
+
+
+def _compare_forcing_lists(
+    baseline: list[ForcingMoveEvidence],
+    after: list[ForcingMoveEvidence],
+) -> tuple[list[ForcingMoveEvidence], list[ForcingMoveEvidence], list[ForcingMoveEvidence]]:
+    """Return new, resolved and persistent forcing moves using complete UCI sets."""
+    baseline_by_uci = {item.uci: item for item in baseline}
+    after_by_uci = {item.uci: item for item in after}
+    newly = [item for item in after if item.uci not in baseline_by_uci]
+    resolved = [item for item in baseline if item.uci not in after_by_uci]
+    unresolved = [item for item in after if item.uci in baseline_by_uci]
+    return newly, resolved, unresolved
+
+
+def _wire(items: list[ForcingMoveEvidence]) -> list[ForcingMoveEvidence]:
+    return items[:MAX_FORCING_FACTS]
 
 
 def critical_forcing_threat_delta(
@@ -88,11 +117,15 @@ def critical_forcing_threat_delta(
     Actual post-move forcing replies are always enumerated when the resulting
     position is non-terminal.
     """
-    after = [] if board_after.is_game_over(claim_draw=False) else forcing_move_evidence(board_after)
+    after_all = (
+        []
+        if board_after.is_game_over(claim_draw=False)
+        else forcing_move_evidence(board_after, limit=None)
+    )
 
     baseline_available = True
     baseline_reason: str | None = None
-    baseline: list[ForcingMoveEvidence] = []
+    baseline_all: list[ForcingMoveEvidence] = []
     if board_before.is_game_over(claim_draw=False):
         baseline_available = False
         baseline_reason = "terminal_position_before_move"
@@ -102,42 +135,63 @@ def critical_forcing_threat_delta(
     else:
         passed = board_before.copy(stack=True)
         passed.push(chess.Move.null())
-        baseline = forcing_move_evidence(passed)
+        baseline_all = forcing_move_evidence(passed, limit=None)
 
-    newly: list[ForcingMoveEvidence] = []
-    resolved: list[ForcingMoveEvidence] = []
-    unresolved: list[ForcingMoveEvidence] = []
+    newly_all: list[ForcingMoveEvidence] = []
+    resolved_all: list[ForcingMoveEvidence] = []
+    unresolved_all: list[ForcingMoveEvidence] = []
     if baseline_available:
-        baseline_by_uci = {item.uci: item for item in baseline}
-        after_by_uci = {item.uci: item for item in after}
-        newly = [item for item in after if item.uci not in baseline_by_uci]
-        resolved = [item for item in baseline if item.uci not in after_by_uci]
-        unresolved = [item for item in after if item.uci in baseline_by_uci]
+        newly_all, resolved_all, unresolved_all = _compare_forcing_lists(
+            baseline_all,
+            after_all,
+        )
 
     signatures: list[str] = []
-    if baseline_available and baseline:
+    if baseline_available and baseline_all:
         signatures.append("OPPONENT_FORCING_THREAT_BASELINE_PRESENT")
-    if after:
+    if after_all:
         signatures.append("OPPONENT_FORCING_REPLY_AFTER_MOVE")
-    if newly:
+    if newly_all:
         signatures.append("NEW_OPPONENT_FORCING_REPLY_AFTER_MOVE")
-        if any(item.is_check for item in newly):
+        if any(item.is_check for item in newly_all):
             signatures.append("NEW_OPPONENT_CHECK_AFTER_MOVE")
-        if any(item.is_capture for item in newly):
+        if any(item.is_capture for item in newly_all):
             signatures.append("NEW_OPPONENT_CAPTURE_AFTER_MOVE")
-        if any(item.promotion is not None for item in newly):
+        if any(item.promotion is not None for item in newly_all):
             signatures.append("NEW_OPPONENT_PROMOTION_AFTER_MOVE")
-    if resolved:
+    if resolved_all:
         signatures.append("RESOLVED_OPPONENT_FORCING_THREAT_CANDIDATE")
-    if baseline_available and baseline and unresolved:
+    if baseline_available and baseline_all and unresolved_all:
         signatures.append("FAILED_FORCING_THREAT_UPDATE_CANDIDATE")
+
+    baseline = _wire(baseline_all)
+    after = _wire(after_all)
+    newly = _wire(newly_all)
+    resolved = _wire(resolved_all)
+    unresolved = _wire(unresolved_all)
+    counts = {
+        "baseline_total": len(baseline_all),
+        "after_total": len(after_all),
+        "new_total": len(newly_all),
+        "resolved_total": len(resolved_all),
+        "persistent_total": len(unresolved_all),
+    }
+    truncated = {
+        "baseline": len(baseline_all) > MAX_FORCING_FACTS,
+        "after": len(after_all) > MAX_FORCING_FACTS,
+        "new": len(newly_all) > MAX_FORCING_FACTS,
+        "resolved": len(resolved_all) > MAX_FORCING_FACTS,
+        "persistent": len(unresolved_all) > MAX_FORCING_FACTS,
+    }
 
     scope = (
         "The pre-move baseline is a hypothetical null-move probe and is unavailable while "
         "the player is in check or the position is terminal. Post-move forcing replies are "
-        "real legal checks, captures and promotions. New/resolved/persistent comparisons use "
-        "exact UCI only and do not prove that a threat is objectively decisive or that the "
-        "player noticed or missed it."
+        "real legal checks, captures and promotions. New/resolved/persistent classifications "
+        "use the complete legal exact-UCI sets before presentation truncation. Returned lists "
+        "are capped for wire size and accompanied by total counts/truncation flags. The delta "
+        "does not prove that a threat is objectively decisive or that the player noticed or "
+        "missed it."
     )
     return {
         "baseline_available": baseline_available,
@@ -147,6 +201,8 @@ def critical_forcing_threat_delta(
         "newly_enabled_opponent_forcing_moves_after_played": newly,
         "resolved_opponent_forcing_threat_candidates": resolved,
         "unresolved_exact_opponent_forcing_threat_candidates": unresolved,
+        "forcing_move_counts": counts,
+        "presentation_truncated": truncated,
         "signatures": sorted(set(signatures)),
         "proof_scope": scope,
         "trace": {
@@ -165,6 +221,8 @@ def critical_forcing_threat_delta(
             "unresolved_exact_opponent_forcing_threat_candidates": [
                 item.model_dump() for item in unresolved
             ],
+            "forcing_move_counts": counts,
+            "presentation_truncated": truncated,
             "proof_scope": scope,
         },
     }
