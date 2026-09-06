@@ -1,16 +1,17 @@
 """Board-grounded forensic enrichment for selected game critical moments.
 
 ``build_game_coaching_evidence`` already selects the pedagogically important
-plies and optionally verifies them more deeply.  This module adds deterministic
+plies and optionally verifies them more deeply. This module adds deterministic
 facts that are especially useful for explaining those moments without another
 engine search:
 
 * exhaustive mate-in-one availability before and after the played move;
+* bounded immediate mate-threat evidence under a hypothetical legal pass;
 * a bounded per-ply position-delta trace over the already returned post-move PV;
 * transition anchors for when material, defender, pin, line, square-control or
   king-pressure changes first appear.
 
-The result remains evidence.  It does not diagnose the player's thought process
+The result remains evidence. It does not diagnose the player's thought process
 and the principal-variation trace is not a proof that the line is forced.
 """
 
@@ -22,7 +23,10 @@ import chess
 
 from mcp_server.analysis.causal_trace import build_causal_position_trace
 from mcp_server.analysis.forensic_extensions import build_adaptive_forcing_resolution
-from mcp_server.analysis.mate_forensics import mate_in_one_moves
+from mcp_server.analysis.mate_forensics import (
+    mate_in_one_moves,
+    mate_in_one_threats_if_pass,
+)
 from mcp_server.models import MCPEval
 from mcp_server.models.game_coaching import GameCoachingEvidence
 
@@ -86,6 +90,9 @@ def enrich_game_critical_forensics(
         board_after = positions[moment.ply]
         mate_before = mate_in_one_moves(board_before)
         mate_after = mate_in_one_moves(board_after)
+        mate_threats, threat_probe_available, threat_probe_reason = mate_in_one_threats_if_pass(
+            board_before
+        )
         before_mate_ucis = {item["uci"] for item in mate_before}
         after_mate_ucis = {item["uci"] for item in mate_after}
         played_was_mate = moment.uci in before_mate_ucis
@@ -93,6 +100,9 @@ def enrich_game_critical_forensics(
             moment.strongest_reply_uci
             and moment.strongest_reply_uci in after_mate_ucis
         )
+        addresses_mate_threat: bool | None = None
+        if mate_threats:
+            addresses_mate_threat = not mate_after
 
         pv = list(evals[moment.ply].pv)
         trace: dict[str, Any] | None = None
@@ -116,11 +126,17 @@ def enrich_game_critical_forensics(
                 signatures.append("MISSED_MATE_IN_ONE_CANDIDATE")
         if played_was_mate:
             signatures.append("PLAYED_MATE_IN_ONE")
+        if mate_threats:
+            signatures.append("OPPONENT_MATE_IN_ONE_THREAT_IF_PASS")
+            if addresses_mate_threat is False:
+                signatures.append("FAILED_MATE_THREAT_UPDATE_CANDIDATE")
+            elif addresses_mate_threat is True:
+                signatures.append("IMMEDIATE_MATE_THREAT_ADDRESSED")
         if mate_after:
             signatures.append("OPPONENT_MATE_IN_ONE_AFTER_MOVE")
         if strongest_reply_is_mate:
             signatures.append("STRONGEST_REPLY_IS_MATE_IN_ONE")
-        if any(item["back_rank_geometry"] for item in [*mate_before, *mate_after]):
+        if any(item["back_rank_geometry"] for item in [*mate_before, *mate_threats, *mate_after]):
             signatures.append("BACK_RANK_MATE_GEOMETRY_CANDIDATE")
         if trace is not None:
             signatures.extend(_trace_signatures(trace))
@@ -130,6 +146,10 @@ def enrich_game_critical_forensics(
                 update={
                     "mate_in_one_moves_before": mate_before,
                     "played_move_was_mate_in_one": played_was_mate,
+                    "opponent_mate_in_one_threats_if_pass_before": mate_threats,
+                    "mate_threat_pass_probe_available": threat_probe_available,
+                    "mate_threat_pass_probe_reason": threat_probe_reason,
+                    "played_move_addresses_immediate_mate_threat": addresses_mate_threat,
                     "opponent_mate_in_one_moves_after_played": mate_after,
                     "strongest_reply_is_mate_in_one": strongest_reply_is_mate,
                     "causal_trace": trace,
