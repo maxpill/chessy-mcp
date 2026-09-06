@@ -107,6 +107,10 @@ class TacticalSnapshot(BaseModel):
     attacked_defenders: list[DefenderLoadEvidence] = Field(default_factory=list)
     overloaded_defender_candidates: list[DefenderLoadEvidence] = Field(default_factory=list)
     mechanism_candidates: list[MechanismCandidateEvidence] = Field(default_factory=list)
+    opponent_forcing_threats_if_pass: list[ForcingMoveEvidence] = Field(default_factory=list)
+    threat_probe_available: bool = False
+    threat_probe_reason: str | None = None
+    threat_probe_scope: str | None = None
 
 
 class StrongestReplyEvidence(BaseModel):
