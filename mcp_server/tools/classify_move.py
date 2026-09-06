@@ -79,9 +79,9 @@ async def classify_move(
     higher depth to report whether the classification itself is stable.
 
     Rich move analysis also reconstructs a bounded per-ply causal position-delta
-    trace over the returned continuation.  It records material, defender,
+    trace over the returned continuation. It records material, defender,
     en-prise, pin, activity, strategic-square, file, pawn-structure and king-ring
-    changes after each ply up to the adaptive forcing-resolution point.  This is
+    changes after each ply up to the adaptive forcing-resolution point. This is
     deterministic board evidence for a coaching causal chain, not a claim that a
     particular changed feature caused the engine-evaluation swing.
 
