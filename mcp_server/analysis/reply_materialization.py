@@ -13,6 +13,7 @@ from typing import Any
 import chess
 
 from mcp_server.analysis.forensics import PIECE_NAMES, PIECE_VALUES
+from mcp_server.analysis.position_update_forensics import apply_position_update_correction
 from mcp_server.models.forensics import ForensicMoveAnalysis
 
 
@@ -132,6 +133,11 @@ def apply_reply_materialization_evidence(
     played_move: chess.Move | None,
 ) -> ForensicMoveAnalysis:
     """Attach exact materialization timing to existing reply-failure evidence."""
+    result = apply_position_update_correction(
+        result,
+        board_before,
+        played_move=played_move,
+    )
     evidence = result.forensics
     if evidence is None or evidence.strongest_reply is None:
         return result
