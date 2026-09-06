@@ -159,11 +159,13 @@ def _local_exchange_minimax(
 ) -> tuple[int, list[str], list[str], bool]:
     """Solve the legal capture-only subtree on one square with a stop option.
 
-    Both sides may decline another capture. The root side maximizes its material
-    balance change; the opponent minimizes it. ``complete`` is true only when no
-    explored frontier was truncated by the ply or node budget. Equal-value
-    branches prefer a longer concrete continuation so the returned line explains
-    why a nominal recapture still fails instead of stopping at the first capture.
+    Outside check, either side may decline another capture. While in check,
+    passing is not legal: if any legal evasion leaves the local target-square
+    capture tree, the proof fails closed as incomplete. The root side maximizes
+    its material balance change and the opponent minimizes it. ``complete`` is
+    true only when no explored frontier was truncated by the ply/node budget or
+    by an unmodelled off-square check evasion. Equal-value branches prefer a
+    longer concrete continuation so the returned line explains the mechanism.
     """
     key = (board.fen(), plies_left)
     cached = memo.get(key)
@@ -174,9 +176,27 @@ def _local_exchange_minimax(
     if len(memo) >= MAX_LOCAL_EXCHANGE_NODES:
         return current_gain, [], [], False
 
-    captures = _captures_to_square(board, square)
-    if not captures:
+    legal_moves = list(board.legal_moves)
+    captures = sorted(
+        (
+            move
+            for move in legal_moves
+            if board.is_capture(move) and move.to_square == square
+        ),
+        key=lambda move: move.uci(),
+    )
+    if not legal_moves:
         result = (current_gain, [], [], True)
+        memo[key] = result
+        return result
+
+    in_check = board.is_check()
+    if in_check and any(move not in captures for move in legal_moves):
+        # The local exchange model cannot claim completeness when the checked
+        # side has a legal king move, block, capture elsewhere, or other evasion.
+        return current_gain, [], [], False
+    if not captures:
+        result = (current_gain, [], [], not in_check)
         memo[key] = result
         return result
     if plies_left <= 0:
@@ -184,9 +204,11 @@ def _local_exchange_minimax(
         memo[key] = result
         return result
 
-    branches: list[tuple[int, list[str], list[str], bool]] = [
-        (current_gain, [], [], True)
-    ]
+    branches: list[tuple[int, list[str], list[str], bool]] = []
+    if not in_check:
+        # Declining another local capture is legal when the side is not in check.
+        branches.append((current_gain, [], [], True))
+
     all_complete = True
     for move in captures:
         san = board.san(move)
@@ -267,10 +289,11 @@ def _local_exchange_hanging_candidates(board: chess.Board) -> list[TacticalHangi
                 local_exchange_tree_complete=True,
                 proof_scope=(
                     "Exhaustive legal capture-only minimax on the original target square, with "
-                    "either side allowed to stop exchanging, bounded to eight capture plies and "
-                    "1024 memoized local states. The reported material gain is emitted only when "
-                    "that bounded tree completes. Off-square checks, zwischenzugs, quiet resources "
-                    "and broader positional consequences are not part of this proof."
+                    "either side allowed to stop exchanging only when not in check, bounded to "
+                    "eight capture plies and 1024 memoized local states. The reported material "
+                    "gain is emitted only when that bounded tree completes. Any off-square check "
+                    "evasion makes the proof incomplete. Off-square zwischenzugs, quiet resources "
+                    "and broader positional consequences remain outside this local proof."
                 ),
             )
         )
