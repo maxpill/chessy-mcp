@@ -31,6 +31,7 @@ from mcp_server.models.forensics import (
 MAX_EXTENDED_MECHANISM_CANDIDATES = 32
 MAX_THREAT_PROBE_MOVES = 24
 MAX_LOCAL_EXCHANGE_PLIES = 8
+MAX_LOCAL_EXCHANGE_NODES = 1024
 
 
 def _candidate_from_raw(raw: dict[str, Any]) -> MechanismCandidateEvidence:
@@ -160,7 +161,7 @@ def _local_exchange_minimax(
 
     Both sides may decline another capture. The root side maximizes its material
     balance change; the opponent minimizes it. ``complete`` is true only when no
-    explored frontier was truncated by ``MAX_LOCAL_EXCHANGE_PLIES``. Equal-value
+    explored frontier was truncated by the ply or node budget. Equal-value
     branches prefer a longer concrete continuation so the returned line explains
     why a nominal recapture still fails instead of stopping at the first capture.
     """
@@ -170,6 +171,9 @@ def _local_exchange_minimax(
         return cached
 
     current_gain = _material_balance(board, root_color) - baseline_material
+    if len(memo) >= MAX_LOCAL_EXCHANGE_NODES:
+        return current_gain, [], [], False
+
     captures = _captures_to_square(board, square)
     if not captures:
         result = (current_gain, [], [], True)
@@ -263,10 +267,10 @@ def _local_exchange_hanging_candidates(board: chess.Board) -> list[TacticalHangi
                 local_exchange_tree_complete=True,
                 proof_scope=(
                     "Exhaustive legal capture-only minimax on the original target square, with "
-                    "either side allowed to stop exchanging, up to eight capture plies. The "
-                    "reported material gain is guaranteed only inside that local exchange tree. "
-                    "Off-square checks, zwischenzugs, quiet resources and broader positional "
-                    "consequences are not part of this proof."
+                    "either side allowed to stop exchanging, bounded to eight capture plies and "
+                    "1024 memoized local states. The reported material gain is emitted only when "
+                    "that bounded tree completes. Off-square checks, zwischenzugs, quiet resources "
+                    "and broader positional consequences are not part of this proof."
                 ),
             )
         )
