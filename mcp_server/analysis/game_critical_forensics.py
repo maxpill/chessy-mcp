@@ -9,7 +9,9 @@ engine search:
 * bounded immediate mate-threat evidence under a hypothetical legal pass;
 * a bounded per-ply position-delta trace over the already returned post-move PV;
 * transition anchors for when material, defender, pin, line, square-control or
-  king-pressure changes first appear.
+  king-pressure changes first appear;
+* normalized evidence categories that can be aggregated across games without
+  turning one position into a psychological diagnosis.
 
 The result remains evidence. It does not diagnose the player's thought process
 and the principal-variation trace is not a proof that the line is forced.
@@ -17,6 +19,7 @@ and the principal-variation trace is not a proof that the line is forced.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 import chess
@@ -28,7 +31,27 @@ from mcp_server.analysis.mate_forensics import (
     mate_in_one_threats_if_pass,
 )
 from mcp_server.models import MCPEval
-from mcp_server.models.game_coaching import GameCoachingEvidence
+from mcp_server.models.game_coaching import (
+    FailureCorpusBucket,
+    FailureEvidenceCategory,
+    GameCoachingEvidence,
+    GameFailureCorpusSummary,
+)
+
+
+SIGNATURE_CATEGORY_MAP: dict[str, FailureEvidenceCategory] = {
+    "FAILED_FORCING_THREAT_UPDATE_CANDIDATE": "failed_forcing_threat_update_candidate",
+    "FAILED_POSITION_UPDATE_CANDIDATE": "failed_position_update_candidate",
+    "FAILED_MATE_THREAT_UPDATE_CANDIDATE": "immediate_mate_threat_update_failure_candidate",
+    "MISSED_MATE_IN_ONE_CANDIDATE": "mate_in_one_miss_candidate",
+    "MISSED_FORCING_REPLY_CANDIDATE": "missed_forcing_reply_candidate",
+    "NEW_EN_PRISE_PIECE_AFTER_MOVE": "new_en_prise_piece_after_move",
+    "NEW_TACTICALLY_HANGING_CANDIDATE_AFTER_MOVE": (
+        "new_tactically_hanging_candidate_after_move"
+    ),
+    "ONLY_MOVE_MISSED_CANDIDATE": "only_move_missed_candidate",
+    "PAWN_MOVE_FORCING_PUNISHMENT": "pawn_move_forcing_punishment",
+}
 
 
 def _adaptive_limit(
@@ -70,6 +93,65 @@ def _trace_signatures(trace: dict[str, Any]) -> list[str]:
     return signatures
 
 
+def _failure_categories(signatures: list[str]) -> list[FailureEvidenceCategory]:
+    return sorted(
+        {SIGNATURE_CATEGORY_MAP[item] for item in signatures if item in SIGNATURE_CATEGORY_MAP}
+    )
+
+
+def _is_major_error(moment: Any) -> bool:
+    loss = moment.verified_effective_loss
+    if loss is None:
+        loss = moment.effective_loss
+    if loss is None:
+        loss = moment.centipawn_loss
+    grade = moment.verified_move_class or moment.move_class
+    return bool((loss or 0) >= 100 or grade in {"mistake", "blunder"})
+
+
+def _failure_corpus(moments: list[Any]) -> GameFailureCorpusSummary:
+    plies_by_category: dict[FailureEvidenceCategory, list[int]] = defaultdict(list)
+    self_report_by_category: dict[FailureEvidenceCategory, list[int]] = defaultdict(list)
+    signatures_by_category: dict[FailureEvidenceCategory, set[str]] = defaultdict(set)
+    major_error_plies: list[int] = []
+    categorized_critical_plies: set[int] = set()
+
+    for moment in moments:
+        categories = list(moment.failure_evidence_categories)
+        if _is_major_error(moment):
+            major_error_plies.append(moment.ply)
+        if categories:
+            categorized_critical_plies.add(moment.ply)
+        for category in categories:
+            plies_by_category[category].append(moment.ply)
+            if moment.user_comment_raw:
+                self_report_by_category[category].append(moment.ply)
+            signatures_by_category[category].update(
+                signature
+                for signature in moment.evidence_signatures
+                if SIGNATURE_CATEGORY_MAP.get(signature) == category
+            )
+
+    buckets = [
+        FailureCorpusBucket(
+            category=category,
+            count=len(plies_by_category[category]),
+            plies=sorted(plies_by_category[category]),
+            self_report_overlap_count=len(self_report_by_category[category]),
+            self_reported_plies=sorted(self_report_by_category[category]),
+            supporting_signatures=sorted(signatures_by_category[category]),
+        )
+        for category in sorted(plies_by_category)
+    ]
+    uncategorized = sorted(set(major_error_plies) - categorized_critical_plies)
+    return GameFailureCorpusSummary(
+        major_error_critical_moments=len(set(major_error_plies)),
+        categorized_critical_moments=len(categorized_critical_plies),
+        buckets=buckets,
+        uncategorized_major_error_plies=uncategorized,
+    )
+
+
 def enrich_game_critical_forensics(
     coaching: GameCoachingEvidence,
     *,
@@ -78,12 +160,13 @@ def enrich_game_critical_forensics(
 ) -> GameCoachingEvidence:
     """Enrich selected critical moments using existing boards and scan PVs only."""
     if not coaching.critical_moments:
-        return coaching
+        return coaching.model_copy(update={"failure_corpus": GameFailureCorpusSummary()})
 
     enriched = []
     for moment in coaching.critical_moments:
         if moment.ply <= 0 or moment.ply >= len(positions) or moment.ply >= len(evals):
-            enriched.append(moment)
+            categories = _failure_categories(list(moment.evidence_signatures))
+            enriched.append(moment.model_copy(update={"failure_evidence_categories": categories}))
             continue
 
         board_before = positions[moment.ply - 1]
@@ -141,6 +224,8 @@ def enrich_game_critical_forensics(
         if trace is not None:
             signatures.extend(_trace_signatures(trace))
 
+        signatures = sorted(set(signatures))
+        categories = _failure_categories(signatures)
         enriched.append(
             moment.model_copy(
                 update={
@@ -153,9 +238,16 @@ def enrich_game_critical_forensics(
                     "opponent_mate_in_one_moves_after_played": mate_after,
                     "strongest_reply_is_mate_in_one": strongest_reply_is_mate,
                     "causal_trace": trace,
-                    "evidence_signatures": sorted(set(signatures)),
+                    "evidence_signatures": signatures,
+                    "failure_evidence_categories": categories,
                 }
             )
         )
 
-    return coaching.model_copy(update={"critical_moments": enriched})
+    corpus = _failure_corpus(enriched)
+    return coaching.model_copy(
+        update={
+            "critical_moments": enriched,
+            "failure_corpus": corpus,
+        }
+    )
