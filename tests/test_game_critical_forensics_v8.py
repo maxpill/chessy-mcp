@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import chess
 
+from mcp_server.analysis.game_analyzer import _finalize_coaching_evidence
 from mcp_server.analysis.game_critical_forensics import enrich_game_critical_forensics
 from mcp_server.models import MCPEval
 from mcp_server.models.game_coaching import (
@@ -114,3 +115,40 @@ def test_critical_move_can_record_missed_mate_without_psychological_claim() -> N
     assert "MATE_IN_ONE_AVAILABLE_BEFORE_MOVE" in critical.evidence_signatures
     assert "MISSED_MATE_IN_ONE_CANDIDATE" in critical.evidence_signatures
     assert "proof" not in " ".join(critical.evidence_signatures).lower()
+
+
+def test_finalization_aggregates_new_critical_signatures_for_cross_game_corpus() -> None:
+    positions, moves = _line("f3", "e5", "g4")
+    final_board = positions[-1]
+    moment = CriticalMoment(
+        ply=3,
+        san="g4",
+        uci=moves[2].uci(),
+        side="white",
+        move_class="blunder",
+        effective_loss=1000,
+        eval_before_effective_cp=0,
+        eval_after_effective_cp=-100000,
+        strongest_reply_uci="d8h4",
+        strongest_reply_san="Qh4#",
+        strongest_reply_is_check=True,
+    )
+    evals = [MCPEval(cp=0) for _ in positions]
+    evals[3] = MCPEval(mate=-1, best_move="d8h4", pv=["d8h4"])
+    enriched = enrich_game_critical_forensics(
+        _coaching(moment, final_board),
+        positions=positions,
+        evals=evals,
+    )
+
+    finalized = _finalize_coaching_evidence(
+        "[Result \"*\"]\n\n1. f3 e5 2. g4 *",
+        enriched,
+    )
+
+    assert finalized.critical_evidence_signature_counts[
+        "OPPONENT_MATE_IN_ONE_AFTER_MOVE"
+    ] == 1
+    assert finalized.critical_evidence_signature_counts[
+        "CRITICAL_CAUSAL_POSITION_DELTA_TRACE_AVAILABLE"
+    ] == 1
