@@ -1,9 +1,9 @@
 """Extend rich tactical snapshots with additional evidence-bounded motifs.
 
 The base position-integrity layer already exposes pins, forks, overloaded
-pieces and defender-removal candidates. This module adds two more deterministic
-geometry classes that are especially useful when explaining tactical lines:
-discovered checks and skewers. No engine search is performed here.
+pieces and defender-removal candidates. This module adds deterministic geometry
+for discovered checks and skewers plus a bounded opponent-threat probe. No
+engine search is performed here.
 """
 
 from __future__ import annotations
@@ -16,13 +16,16 @@ from mcp_server.analysis.forensic_extensions import (
     _discovered_check_evidence,
     _skewer_evidence,
 )
+from mcp_server.analysis.forensics import PIECE_NAMES
 from mcp_server.models.forensics import (
     ForensicEval,
+    ForcingMoveEvidence,
     MechanismCandidateEvidence,
     TacticalSnapshot,
 )
 
 MAX_EXTENDED_MECHANISM_CANDIDATES = 32
+MAX_THREAT_PROBE_MOVES = 24
 
 
 def _candidate_from_raw(raw: dict[str, Any]) -> MechanismCandidateEvidence:
@@ -67,8 +70,62 @@ def _candidate_from_raw(raw: dict[str, Any]) -> MechanismCandidateEvidence:
     )
 
 
+def _captured_piece(board: chess.Board, move: chess.Move) -> chess.Piece | None:
+    if board.is_en_passant(move):
+        offset = -8 if board.turn == chess.WHITE else 8
+        return board.piece_at(move.to_square + offset)
+    return board.piece_at(move.to_square)
+
+
+def _threat_probe(board: chess.Board) -> tuple[list[ForcingMoveEvidence], bool, str | None, str]:
+    """List opponent forcing moves after a hypothetical pass by side to move.
+
+    The probe is intentionally unavailable while the side to move is in check or
+    the board is terminal. Otherwise it uses a legal python-chess null move to
+    give the opponent the turn and enumerates checks, captures and promotions.
+    This is threat-candidate evidence only, not an engine proof that the move
+    survives best defense.
+    """
+    scope = (
+        "Hypothetical null-move probe. Returned checks, captures and promotions are "
+        "opponent forcing-threat candidates if the side to move does nothing. The probe "
+        "does not establish that any candidate survives the best legal defense."
+    )
+    if board.is_game_over(claim_draw=False):
+        return [], False, "terminal_position", scope
+    if board.is_check():
+        return [], False, "side_to_move_in_check_pass_illegal", scope
+
+    passed = board.copy(stack=True)
+    passed.push(chess.Move.null())
+    threats: list[ForcingMoveEvidence] = []
+    for move in passed.legal_moves:
+        is_check = passed.gives_check(move)
+        is_capture = passed.is_capture(move)
+        if not (is_check or is_capture or move.promotion is not None):
+            continue
+        captured = _captured_piece(passed, move)
+        threats.append(
+            ForcingMoveEvidence(
+                uci=move.uci(),
+                san=passed.san(move),
+                is_check=is_check,
+                is_capture=is_capture,
+                captured_piece=(
+                    f"{'white' if captured.color == chess.WHITE else 'black'}_"
+                    f"{PIECE_NAMES[captured.piece_type]}"
+                    if captured is not None
+                    else None
+                ),
+                promotion=PIECE_NAMES.get(move.promotion) if move.promotion else None,
+            )
+        )
+    threats.sort(key=lambda item: (not item.is_check, not item.is_capture, item.san))
+    return threats[:MAX_THREAT_PROBE_MOVES], True, None, scope
+
+
 def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> TacticalSnapshot:
-    """Append discovered-check/skewer geometry for all legal root moves.
+    """Append extended geometry and bounded opponent forcing-threat evidence.
 
     Candidates are deduplicated and globally sorted before the output cap is
     applied. This keeps the wire result deterministic even when python-chess's
@@ -108,13 +165,20 @@ def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> 
             tuple(item.targets),
         )
     )
+    threats, probe_available, probe_reason, probe_scope = _threat_probe(board)
     return snapshot.model_copy(
-        update={"mechanism_candidates": candidates[:MAX_EXTENDED_MECHANISM_CANDIDATES]}
+        update={
+            "mechanism_candidates": candidates[:MAX_EXTENDED_MECHANISM_CANDIDATES],
+            "opponent_forcing_threats_if_pass": threats,
+            "threat_probe_available": probe_available,
+            "threat_probe_reason": probe_reason,
+            "threat_probe_scope": probe_scope,
+        }
     )
 
 
 def extend_position_eval(result: ForensicEval, board: chess.Board) -> ForensicEval:
-    """Propagate extended motif geometry through evaluate_position rich evidence."""
+    """Propagate extended motif/threat geometry through evaluate_position evidence."""
     evidence = result.forensics
     if evidence is None:
         return result
