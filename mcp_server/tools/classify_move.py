@@ -33,6 +33,7 @@ from mcp_server.analysis.classify_helpers import (
 from mcp_server.analysis.forensic_integration import upgrade_move_forensics
 from mcp_server.analysis.forensics import enrich_move_analysis
 from mcp_server.analysis.move_classifier import MoveClassifier, validate_classify_input
+from mcp_server.analysis.threat_forensics import apply_threat_forensics
 from mcp_server.cache import classify_cache_key
 from mcp_server.engine import _cache, _get_analyzer_pool, _single_flight
 from mcp_server.metrics import metrics
@@ -67,6 +68,13 @@ async def classify_move(
     searches. ``detail='forensic'`` additionally evaluates the strongest reply
     one step deeper and compares the played move, engine-best move and any
     explicitly requested ``compare_moves`` by their resulting positions.
+
+    Rich modes also add bounded threat/update evidence when previous-move
+    history exists: newly enabled opponent checks/captures/promotions under a
+    hypothetical pass, exact-threat persistence after the played move,
+    zwischenzug candidates after a capturing strongest reply, and relative-pin
+    geometry created by the move or reply. These are board facts/candidates, not
+    claims about the player's thought process.
 
     ``compare_moves`` accepts SAN or UCI and is capped at eight candidates.
     Supplying it automatically upgrades ``standard`` to ``forensic`` because a
@@ -256,8 +264,13 @@ async def _finish_result(
         detail=evidence_detail,
         compare_moves=compare_moves,
     )
-    return upgrade_move_forensics(
+    integrated = upgrade_move_forensics(
         enriched,
+        outcome.board,
+        played_move=outcome.chess_move,
+    )
+    return apply_threat_forensics(
+        integrated,
         outcome.board,
         played_move=outcome.chess_move,
     )
