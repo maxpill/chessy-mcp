@@ -137,6 +137,29 @@ def test_candidate_difference_flips_engine_gap_for_black_root_mover() -> None:
     assert differences[0].eval_gap_candidate_minus_reference_for_mover_cp == -50
 
 
+def test_candidate_difference_separates_reply_forcing_moves_from_root_pass_threats() -> None:
+    board = chess.Board("6k1/8/8/8/1b6/2N5/P7/6K1 w - - 0 1")
+    reference = enrich_candidate_geometry(board, _candidate(board, "c3b5", cp=20))
+    alternative = enrich_candidate_geometry(board, _candidate(board, "a2a3", cp=-40))
+
+    diff = build_candidate_differences(
+        board,
+        [reference, alternative],
+        reference_uci="c3b5",
+    )[0]
+
+    # After a3 it is Black to move and ...Bxc3 is immediately legal.
+    assert any(
+        "b4c3" in item and "capture=1" in item
+        for item in diff.only_candidate_immediate_reply_forcing_moves
+    )
+    # A pass by Black would instead hand White the move, where axb4 is available.
+    assert any(
+        "a3b4" in item and "capture=1" in item
+        for item in diff.only_candidate_root_forcing_threats_if_reply_passes
+    )
+
+
 class _PVPool:
     async def evaluate(self, board: chess.Board, *, depth: int):
         assert board.turn == chess.BLACK
