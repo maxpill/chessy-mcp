@@ -63,8 +63,10 @@ def test_rich_snapshot_does_not_use_illegal_pass_while_in_check() -> None:
 
 
 def test_capture_with_recapture_and_intermediate_check_is_zwischenzug_candidate() -> None:
+    # Kh2 keeps Re1 free to choose between the immediate recapture Rxd1 and
+    # the intermediate forcing move Rxe7+ after ...Qxd1.
     board_after_played = chess.Board(
-        "4k3/4n3/8/3q4/8/8/8/3QR1K1 b - - 0 1"
+        "4k3/4n3/8/3q4/8/8/7K/3QR3 b - - 0 1"
     )
     reply = chess.Move.from_uci("d5d1")
     assert reply in board_after_played.legal_moves
