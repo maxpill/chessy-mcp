@@ -59,7 +59,21 @@ def estimate_mcp_request_cost(body: bytes) -> float:
                 # move, engine-best move and each explicit comparison.
                 explicit = min(len(compare_moves), 8)
                 candidate_searches = min(2 + explicit, 8)
-                return base + (depth * (1 + candidate_searches)) / 14.0
+                forensic_cost = base + (depth * (1 + candidate_searches)) / 14.0
+
+                # Rich classification stability now selectively re-searches the
+                # before/after pair for pedagogically important errors. Admission
+                # control cannot know the eventual move class before the request
+                # runs, so reserve the conservative worst-case pair at d+4 (at
+                # least d24) and one additional pair at d+6 when the first result
+                # disagrees. The actual tool skips these searches for best/good
+                # moves and at the depth cap.
+                verification_depth = min(max(depth + 4, 24), 30)
+                forensic_cost += (2 * verification_depth) / 14.0
+                if verification_depth < 30:
+                    escalation_depth = min(verification_depth + 2, 30)
+                    forensic_cost += (2 * escalation_depth) / 14.0
+                return forensic_cost
             return base
         if tool_name == "analyze_game":
             pgn = str(args.get("pgn", ""))
