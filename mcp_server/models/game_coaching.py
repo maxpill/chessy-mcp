@@ -99,6 +99,10 @@ class CriticalMoment(BaseModel):
     )
     mate_in_one_moves_before: list[dict[str, Any]] = Field(default_factory=list)
     played_move_was_mate_in_one: bool | None = None
+    opponent_mate_in_one_threats_if_pass_before: list[dict[str, Any]] = Field(default_factory=list)
+    mate_threat_pass_probe_available: bool | None = None
+    mate_threat_pass_probe_reason: str | None = None
+    played_move_addresses_immediate_mate_threat: bool | None = None
     opponent_mate_in_one_moves_after_played: list[dict[str, Any]] = Field(default_factory=list)
     strongest_reply_is_mate_in_one: bool | None = None
     causal_trace: dict[str, Any] | None = None
@@ -108,8 +112,9 @@ class CriticalMoment(BaseModel):
         "or PAWN_MOVE_FORCING_PUNISHMENT are coaching evidence, not proof of the player's "
         "actual calculation process. Opponent forcing-threat deltas compare the real post-move "
         "position with a pre-move hypothetical-pass baseline when that baseline is legal. "
-        "Mate-in-one fields are exhaustive immediate-mate scans; causal_trace is a bounded "
-        "principal-variation board-delta trace and does not establish psychological causation."
+        "Mate-in-one fields are exhaustive immediate-mate scans; mate-threat pass fields are "
+        "bounded hypothetical-pass evidence; causal_trace is a bounded principal-variation "
+        "board-delta trace and does not establish psychological causation."
     )
 
 
