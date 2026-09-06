@@ -75,6 +75,7 @@ def build_reply_materialization_trace(
             termination_reason = "invalid_pv_move"
             break
 
+        moving_side = "white" if work.turn == chess.WHITE else "black"
         before = _material_balance(work, mover)
         san = work.san(move)
         captured_piece = _captured_piece_label(work, move)
@@ -91,7 +92,7 @@ def build_reply_materialization_trace(
         steps.append(
             {
                 "ply": ply,
-                "side": "white" if not work.turn == chess.WHITE else "black",
+                "side": moving_side,
                 "uci": move.uci(),
                 "san": san,
                 "is_check": is_check,
@@ -178,6 +179,7 @@ def apply_reply_materialization_evidence(
         "loss_realized_within_plies": trace["loss_realized_within_plies"],
         "first_material_loss_cp": trace["first_material_loss_cp"],
         "final_material_change_for_mover_cp": trace["final_material_change_for_mover_cp"],
+        "returned_line_plies_walked": trace["returned_line_plies_walked"],
         "material_trajectory_complete": trace["returned_line_complete"],
         "material_trajectory_termination_reason": trace["termination_reason"],
         "materialization_proof_scope": trace["proof_scope"],
