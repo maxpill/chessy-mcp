@@ -86,13 +86,16 @@ class MechanismCandidateEvidence(BaseModel):
     mechanism: Literal[
         "absolute_pin",
         "check_capture",
+        "discovered_attack_candidate",
         "discovered_check",
         "fork_candidate",
+        "interference_candidate",
         "overloaded_defender_candidate",
         "promotion_tactic",
         "relative_pin_candidate",
         "removal_of_defender_candidate",
         "skewer_candidate",
+        "trapped_piece_candidate",
     ]
     trigger_uci: str | None = None
     trigger_san: str | None = None
