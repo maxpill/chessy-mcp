@@ -7,6 +7,7 @@ engine search:
 
 * exhaustive mate-in-one availability before and after the played move;
 * bounded immediate mate-threat evidence under a hypothetical legal pass;
+* concrete opponent forcing-reply deltas around the played move;
 * a bounded per-ply position-delta trace over the already returned post-move PV;
 * transition anchors for when material, defender, pin, line, square-control or
   king-pressure changes first appear;
@@ -28,6 +29,7 @@ import chess
 
 from mcp_server.analysis.causal_trace import build_causal_position_trace
 from mcp_server.analysis.forensic_extensions import build_adaptive_forcing_resolution
+from mcp_server.analysis.game_threat_forensics import critical_forcing_threat_delta
 from mcp_server.analysis.mate_forensics import (
     mate_in_one_moves,
     mate_in_one_threats_if_pass,
@@ -106,13 +108,6 @@ def _reply_materialization_evidence(
     strongest_reply_uci: str | None,
     strongest_reply_forcing: bool,
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    """Return bounded material timing aligned with the verified strongest reply.
-
-    Deeper materialization is trusted only when the scan/cached PV actually
-    starts with the verified strongest reply. On mismatch we analyze only that
-    immediate legal reply and emit an alignment warning instead of stitching
-    together unrelated engine lines.
-    """
     if not strongest_reply_uci:
         return None, []
     try:
@@ -151,14 +146,6 @@ def _actual_game_materialization_link(
     *,
     root_ply: int,
 ) -> dict[str, Any] | None:
-    """Expose the existing actual-game materialization heuristic beside PV evidence.
-
-    ``root_cause_links`` historically names the selected critical ply a root
-    cause when the actual game suffers its first adverse material-balance change
-    within six plies. That is useful temporal evidence but not a proof of causal
-    necessity, so this helper carries the original basis and a strict inference
-    boundary into the per-critical-moment trace.
-    """
     link = next(
         (item for item in coaching.root_cause_links if item.root_cause_ply == root_ply),
         None,
@@ -261,6 +248,7 @@ def enrich_game_critical_forensics(
 
         board_before = positions[moment.ply - 1]
         board_after = positions[moment.ply]
+        forcing_delta = critical_forcing_threat_delta(board_before, board_after)
         mate_before = mate_in_one_moves(board_before)
         mate_after = mate_in_one_moves(board_after)
         mate_threats, threat_probe_available, threat_probe_reason = mate_in_one_threats_if_pass(
@@ -321,8 +309,21 @@ def enrich_game_critical_forensics(
                     "actual_game_materialization_link": actual_materialization,
                 }
 
+        if trace is None:
+            trace = {
+                "steps": [],
+                "source": "critical_forcing_threat_delta_only",
+                "opponent_forcing_threat_delta": forcing_delta["trace"],
+            }
+        else:
+            trace = {
+                **trace,
+                "opponent_forcing_threat_delta": forcing_delta["trace"],
+            }
+
         signatures = list(moment.evidence_signatures)
         signatures.extend(reply_materialization_signatures)
+        signatures.extend(forcing_delta["signatures"])
         if actual_materialization is not None:
             signatures.append("ACTUAL_GAME_MATERIALIZATION_LINK_AVAILABLE")
             if actual_materialization["plies_later"] == 1:
@@ -345,14 +346,25 @@ def enrich_game_critical_forensics(
             signatures.append("STRONGEST_REPLY_IS_MATE_IN_ONE")
         if any(item["back_rank_geometry"] for item in [*mate_before, *mate_threats, *mate_after]):
             signatures.append("BACK_RANK_MATE_GEOMETRY_CANDIDATE")
-        if trace is not None:
-            signatures.extend(_trace_signatures(trace))
+        signatures.extend(_trace_signatures(trace))
 
         signatures = sorted(set(signatures))
         categories = _failure_categories(signatures)
         enriched.append(
             moment.model_copy(
                 update={
+                    "opponent_forcing_threat_baseline_available": forcing_delta[
+                        "baseline_available"
+                    ],
+                    "opponent_forcing_moves_after_played": forcing_delta[
+                        "opponent_forcing_moves_after_played"
+                    ],
+                    "newly_enabled_opponent_forcing_moves_after_played": forcing_delta[
+                        "newly_enabled_opponent_forcing_moves_after_played"
+                    ],
+                    "resolved_opponent_forcing_threat_candidates": forcing_delta[
+                        "resolved_opponent_forcing_threat_candidates"
+                    ],
                     "mate_in_one_moves_before": mate_before,
                     "played_move_was_mate_in_one": played_was_mate,
                     "opponent_mate_in_one_threats_if_pass_before": mate_threats,
