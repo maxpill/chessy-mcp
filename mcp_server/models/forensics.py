@@ -85,6 +85,7 @@ class MechanismCandidateEvidence(BaseModel):
         "fork_candidate",
         "overloaded_defender_candidate",
         "promotion_tactic",
+        "relative_pin_candidate",
         "removal_of_defender_candidate",
         "skewer_candidate",
     ]
@@ -181,6 +182,16 @@ class CandidateEvidence(BaseModel):
     searched_depth: int | None = None
     opponent_best_reply: StrongestReplyEvidence | None = None
     tactical_snapshot_after: TacticalSnapshot
+    continuation_uci: list[str] = Field(default_factory=list)
+    continuation_san: list[str] = Field(default_factory=list)
+    continuation_termination_reason: Literal[
+        "terminal_position",
+        "pv_exhausted",
+        "invalid_pv_move",
+        "no_pv",
+    ] = "no_pv"
+    continuation_tactical_sequence_resolved: bool = False
+    continuation_proof_status: Literal["principal_variation_only"] = "principal_variation_only"
     position_after: PositionFingerprint | None = None
     position_delta: PositionDelta | None = None
     position_after_reply: PositionFingerprint | None = None
@@ -201,10 +212,16 @@ class CandidatePositionDifference(BaseModel):
     reference_san: str
     candidate_uci: str
     candidate_san: str
+    first_divergence_ply: int = 1
+    first_divergence: dict[str, str] = Field(default_factory=dict)
     eval_gap_candidate_minus_reference_for_mover_cp: int | None = None
     material_effect_difference_for_mover_cp: int = 0
     reference_reply_is_forcing: bool | None = None
     candidate_reply_is_forcing: bool | None = None
+    reference_root_move_irreversible: bool = False
+    candidate_root_move_irreversible: bool = False
+    reference_root_irreversible_reasons: list[str] = Field(default_factory=list)
+    candidate_root_irreversible_reasons: list[str] = Field(default_factory=list)
     only_reference_newly_en_prise: list[str] = Field(default_factory=list)
     only_candidate_newly_en_prise: list[str] = Field(default_factory=list)
     only_reference_newly_pinned: list[str] = Field(default_factory=list)
@@ -221,6 +238,8 @@ class CandidatePositionDifference(BaseModel):
     only_candidate_strategic_square_control_changes: list[str] = Field(default_factory=list)
     only_reference_mechanism_candidates: list[str] = Field(default_factory=list)
     only_candidate_mechanism_candidates: list[str] = Field(default_factory=list)
+    only_reference_opponent_forcing_threats_if_pass: list[str] = Field(default_factory=list)
+    only_candidate_opponent_forcing_threats_if_pass: list[str] = Field(default_factory=list)
     king_ring_attack_delta_difference_white: int = 0
     king_ring_attack_delta_difference_black: int = 0
     proof_scope: str = (
