@@ -142,3 +142,54 @@ def test_failure_corpus_normalizes_signatures_without_diagnosing_process() -> No
     assert forcing.plies == [12]
     assert forcing.self_report_overlap_count == 1
     assert "not a diagnosis" in forcing.inference_boundary
+
+
+def test_delayed_forcing_reply_materialization_is_preserved_in_failure_corpus() -> None:
+    board_before = chess.Board("3q2k1/8/8/8/8/8/PP6/6K1 w - - 0 1")
+    played = chess.Move.from_uci("a2a3")
+    board_after = board_before.copy(stack=True)
+    board_after.push(played)
+    moment = CriticalMoment(
+        ply=1,
+        san="a3",
+        uci=played.uci(),
+        side="white",
+        move_class="blunder",
+        effective_loss=300,
+        eval_before_effective_cp=0,
+        eval_after_effective_cp=-300,
+        strongest_reply_uci="d8b6",
+        strongest_reply_san="Qb6+",
+        strongest_reply_is_check=True,
+        strongest_reply_is_capture=False,
+    )
+    evals = [
+        MCPEval(cp=0),
+        MCPEval(
+            cp=-300,
+            best_move="d8b6",
+            pv=["d8b6", "g1h1", "b6b2"],
+        ),
+    ]
+
+    enriched = enrich_game_critical_forensics(
+        _coaching(moment, board_after, perspective="white"),
+        positions=[board_before, board_after],
+        evals=evals,
+    )
+
+    critical = enriched.critical_moments[0]
+    assert "DELAYED_MATERIALIZATION_AFTER_FORCING_REPLY" in critical.evidence_signatures
+    assert "missed_forcing_reply_candidate" in critical.failure_evidence_categories
+    assert critical.causal_trace is not None
+    materialization = critical.causal_trace["strongest_reply_materialization"]
+    assert materialization["returned_pv_starts_with_strongest_reply"] is True
+    assert materialization["loss_realized_within_plies"] == 3
+    assert materialization["first_material_loss_cp"] == -100
+    assert enriched.failure_corpus is not None
+    bucket = next(
+        item
+        for item in enriched.failure_corpus.buckets
+        if item.category == "missed_forcing_reply_candidate"
+    )
+    assert "DELAYED_MATERIALIZATION_AFTER_FORCING_REPLY" in bucket.supporting_signatures
