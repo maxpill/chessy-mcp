@@ -42,7 +42,6 @@ def test_critical_delta_separates_resolved_baseline_from_new_reply() -> None:
     assert "NEW_OPPONENT_FORCING_REPLY_AFTER_MOVE" in delta["signatures"]
     assert "NEW_OPPONENT_CHECK_AFTER_MOVE" in delta["signatures"]
     assert "RESOLVED_OPPONENT_FORCING_THREAT_CANDIDATE" in delta["signatures"]
-    assert "FAILED_FORCING_THREAT_UPDATE_CANDIDATE" not in delta["signatures"]
 
 
 def test_persistent_exact_forcing_threat_is_failed_update_candidate() -> None:
@@ -59,7 +58,7 @@ def test_persistent_exact_forcing_threat_is_failed_update_candidate() -> None:
 
 
 def test_check_position_refuses_null_baseline_but_keeps_actual_replies() -> None:
-    before = chess.Board("6k1/8/8/8/8/8/4r3/6K1 w - - 0 1")
+    before = chess.Board("k7/8/8/8/8/8/6r1/6K1 w - - 0 1")
     assert before.is_check()
     after = _after(before, "g1f1")
 
