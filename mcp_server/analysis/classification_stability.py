@@ -2,22 +2,28 @@
 
 The ordinary move classifier already has a narrow consistency check for the
 special case where the played move is reported as engine-best but still grades
-as a large error.  Coaching needs a different question: does the pedagogically
+as a large error. Coaching needs a different question: does the pedagogically
 important classification itself survive a deeper search?
 
 This module performs that verification only for ``forensic`` move analysis and
-only for inaccuracy/mistake/blunder results.  It re-searches the position before
+only for inaccuracy/mistake/blunder results. It re-searches the position before
 and after the played move at a higher depth, recomputes the normal move grade,
-and escalates once more when the first verification disagrees.  Standard and
+and escalates once more when the first verification disagrees. Standard and
 coach modes keep their existing cost.
 
-The output is evidence, not a new grading policy.  The original wire-level
+Production callers can inject the repository's cached/rule-aware evaluator, so
+these extra searches retain the same history, terminal and SingleFlight/cache
+semantics as the rest of the MCP. Tests and isolated callers may fall back to a
+minimal raw-pool adapter.
+
+The output is evidence, not a new grading policy. The original wire-level
 classification is left untouched; the richer ``forensics.stability`` block says
 whether deeper searches agree and what changed.
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 import chess
@@ -27,6 +33,7 @@ from mcp_server.models.forensics import ForensicMoveAnalysis
 from mcp_server.move_grading import score_played_move
 
 _REVERIFY_CLASSES = {"inaccuracy", "mistake", "blunder"}
+CachedEvaluator = Callable[..., Awaitable[tuple[MCPEval, bool]]]
 
 
 def _class_name(value: Any) -> str:
@@ -79,6 +86,27 @@ def _as_mcpeval(
     )
 
 
+async def _evaluate_one(
+    pool: Any,
+    board: chess.Board,
+    *,
+    depth: int,
+    history_complete: str,
+    evaluate_position: CachedEvaluator | None,
+) -> MCPEval:
+    if evaluate_position is not None:
+        evaluated, _cache_hit = await evaluate_position(
+            board,
+            depth,
+            pool,
+            requested_depth=depth,
+            history_complete=history_complete,
+        )
+        return evaluated
+    raw = await pool.evaluate(board, depth=depth)
+    return _as_mcpeval(raw, board, depth=depth, history_complete=history_complete)
+
+
 async def _evaluate_pair(
     pool: Any,
     board_before: chess.Board,
@@ -86,12 +114,23 @@ async def _evaluate_pair(
     *,
     depth: int,
     history_complete: str,
+    evaluate_position: CachedEvaluator | None,
 ) -> tuple[MCPEval, MCPEval]:
-    raw_before = await pool.evaluate(board_before, depth=depth)
-    raw_after = await pool.evaluate(board_after, depth=depth)
     return (
-        _as_mcpeval(raw_before, board_before, depth=depth, history_complete=history_complete),
-        _as_mcpeval(raw_after, board_after, depth=depth, history_complete=history_complete),
+        await _evaluate_one(
+            pool,
+            board_before,
+            depth=depth,
+            history_complete=history_complete,
+            evaluate_position=evaluate_position,
+        ),
+        await _evaluate_one(
+            pool,
+            board_after,
+            depth=depth,
+            history_complete=history_complete,
+            evaluate_position=evaluate_position,
+        ),
     )
 
 
@@ -158,10 +197,11 @@ async def verify_forensic_classification_stability(
     pool: Any,
     depth: int,
     history_complete: str,
+    evaluate_position: CachedEvaluator | None = None,
 ) -> ForensicMoveAnalysis:
     """Attach real higher-depth classification stability to forensic evidence.
 
-    The helper is deliberately best-effort.  If the extra verification search
+    The helper is deliberately best-effort. If the extra verification search
     fails, the already-computed move analysis is returned with a status marker
     rather than converting an optional coaching check into a tool failure.
     """
@@ -191,6 +231,7 @@ async def verify_forensic_classification_stability(
             "escalation_depth": None,
             "verification_converged": None,
             "stable": None,
+            "verification_uses_cached_rule_aware_evaluator": evaluate_position is not None,
             "proof_scope": (
                 "Selective multi-depth engine re-search of the same before/after positions. "
                 "It tests classification stability, not whether the engine has solved the "
@@ -231,6 +272,7 @@ async def verify_forensic_classification_stability(
             board_after,
             depth=verification_depth,
             history_complete=history_complete,
+            evaluate_position=evaluate_position,
         )
         verified_score = _score_at_depth(
             result,
@@ -270,6 +312,7 @@ async def verify_forensic_classification_stability(
                 board_after,
                 depth=escalation_depth,
                 history_complete=history_complete,
+                evaluate_position=evaluate_position,
             )
             escalated_score = _score_at_depth(
                 result,
