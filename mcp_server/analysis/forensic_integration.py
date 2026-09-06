@@ -13,6 +13,10 @@ from collections.abc import Iterable
 
 import chess
 
+from mcp_server.analysis.candidate_continuation import (
+    attach_candidate_continuation_endpoint,
+    build_candidate_endpoint_difference,
+)
 from mcp_server.analysis.forensic_extensions import apply_move_forensic_extensions
 from mcp_server.analysis.forensics import build_position_fingerprint
 from mcp_server.analysis.position_integrity import (
@@ -26,6 +30,7 @@ from mcp_server.models.forensics import (
     ForensicMoveAnalysis,
     ForensicTopMovesResult,
     PositionDelta,
+    TacticalSnapshot,
 )
 
 MATE_VALUE = 100_000
@@ -149,18 +154,27 @@ def _root_irreversible_reasons(board: chess.Board, candidate: CandidateEvidence)
     return reasons
 
 
-def enrich_candidate_geometry(board: chess.Board, candidate: CandidateEvidence) -> CandidateEvidence:
-    """Attach resulting-position and reply geometry to one candidate.
+def enrich_candidate_geometry(
+    board: chess.Board,
+    candidate: CandidateEvidence,
+    *,
+    root_snapshot: TacticalSnapshot | None = None,
+) -> CandidateEvidence:
+    """Attach root, reply and continuation-endpoint geometry to one candidate.
 
-    The candidate's engine evaluation already exists. This function only
+    The candidate's engine evaluation and PV already exist. This function only
     reconstructs legal board states so a coaching client can compare what the
-    candidates *leave on the board*, not merely their first-move engine score.
+    candidates leave on the board immediately and at evidence-bounded returned
+    continuation endpoints, rather than merely comparing first-move scores.
     """
     move = _legal_uci(board, candidate.uci)
     if move is None:
         return candidate
 
-    root_snapshot = extend_tactical_snapshot(board, build_rich_tactical_snapshot(board))
+    root_snapshot = root_snapshot or extend_tactical_snapshot(
+        board,
+        build_rich_tactical_snapshot(board),
+    )
     post = board.copy(stack=True)
     post.push(move)
     post_snapshot = extend_tactical_snapshot(post, build_rich_tactical_snapshot(post))
@@ -199,7 +213,12 @@ def enrich_candidate_geometry(board: chess.Board, candidate: CandidateEvidence) 
                 }
             )
 
-    return candidate.model_copy(update=updates)
+    enriched = candidate.model_copy(update=updates)
+    return attach_candidate_continuation_endpoint(
+        board,
+        enriched,
+        root_snapshot=root_snapshot,
+    )
 
 
 def build_candidate_differences(
@@ -208,14 +227,13 @@ def build_candidate_differences(
     *,
     reference_uci: str | None,
 ) -> list[CandidatePositionDifference]:
-    """Compare every candidate with one explicit reference resulting position.
+    """Compare every candidate with one explicit engine-reference candidate.
 
-    The engine-best move should normally be supplied as ``reference_uci``. If it
-    is absent from the candidate list, the first candidate becomes the reference.
-    This makes questions such as "why g4 instead of gxh4?" directly answerable
-    from feature deltas after both moves, including immediate reply forcing moves,
-    root-side threats if the reply side passes, safety, activity, control and
-    typed tactical geometry.
+    Immediate resulting positions remain available for low-horizon explanations.
+    ``continuation_endpoint_difference`` additionally compares each candidate's
+    evidence-bounded returned-PV endpoint. The endpoint records unequal horizons
+    and termination reasons explicitly, so it is useful evidence rather than a
+    false claim that two PV endpoints form a controlled causal experiment.
     """
     items = list(candidates)
     if len(items) < 2:
@@ -354,6 +372,11 @@ def build_candidate_differences(
                     delta.king_ring_attack_delta_black
                     - reference_delta.king_ring_attack_delta_black
                 ),
+                continuation_endpoint_difference=build_candidate_endpoint_difference(
+                    board,
+                    reference,
+                    candidate,
+                ),
             )
         )
     return out
@@ -417,7 +440,11 @@ def upgrade_move_forensics(
             )
 
     candidates = [
-        enrich_candidate_geometry(board_before, item)
+        enrich_candidate_geometry(
+            board_before,
+            item,
+            root_snapshot=tactical_before,
+        )
         for item in evidence.candidate_comparisons
     ]
     reference_move = _legal_uci(board_before, result.eval_before.best_move)
@@ -441,19 +468,24 @@ def upgrade_top_moves_forensics(
     result: ForensicTopMovesResult,
     board: chess.Board,
 ) -> ForensicTopMovesResult:
-    """Attach rich resulting-position differences to top_moves candidates."""
+    """Attach rich immediate and returned-continuation candidate differences."""
     evidence = result.forensics
     if evidence is None:
         return result
 
+    root_snapshot = extend_tactical_snapshot(board, evidence.tactical_snapshot)
     candidates = [
-        enrich_candidate_geometry(board, item)
+        enrich_candidate_geometry(
+            board,
+            item,
+            root_snapshot=root_snapshot,
+        )
         for item in evidence.candidate_comparisons
     ]
     reference_uci = candidates[0].uci if candidates else None
     upgraded = evidence.model_copy(
         update={
-            "tactical_snapshot": extend_tactical_snapshot(board, evidence.tactical_snapshot),
+            "tactical_snapshot": root_snapshot,
             "candidate_comparisons": candidates,
             "candidate_differences": build_candidate_differences(
                 board,
