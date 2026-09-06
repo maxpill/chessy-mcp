@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from mcp_server.models.forensics import ForcingMoveEvidence
 from mcp_server.models.legacy import GameAnalysisResult
 
 
@@ -88,11 +89,20 @@ class CriticalMoment(BaseModel):
     only_move_missed_candidate: bool | None = None
     newly_en_prise_user_pieces: list[str] = Field(default_factory=list)
     newly_tactically_hanging_user_targets: list[str] = Field(default_factory=list)
+    opponent_forcing_threat_baseline_available: bool | None = None
+    opponent_forcing_moves_after_played: list[ForcingMoveEvidence] = Field(default_factory=list)
+    newly_enabled_opponent_forcing_moves_after_played: list[ForcingMoveEvidence] = Field(
+        default_factory=list
+    )
+    resolved_opponent_forcing_threat_candidates: list[ForcingMoveEvidence] = Field(
+        default_factory=list
+    )
     evidence_signatures: list[str] = Field(default_factory=list)
     inference_boundary: str = (
         "Signatures describe engine/board evidence. Terms such as ONLY_MOVE_MISSED_CANDIDATE "
         "or PAWN_MOVE_FORCING_PUNISHMENT are coaching evidence, not proof of the player's "
-        "actual calculation process."
+        "actual calculation process. Opponent forcing-threat deltas compare the real post-move "
+        "position with a pre-move hypothetical-pass baseline when that baseline is legal."
     )
 
 
