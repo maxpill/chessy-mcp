@@ -36,6 +36,7 @@ from mcp_server.analysis.forensic_integration import upgrade_move_forensics
 from mcp_server.analysis.forensics import enrich_move_analysis
 from mcp_server.analysis.mate_forensics import apply_mate_forensics
 from mcp_server.analysis.move_classifier import MoveClassifier, validate_classify_input
+from mcp_server.analysis.reply_materialization import apply_reply_materialization_evidence
 from mcp_server.analysis.threat_forensics import apply_threat_forensics
 from mcp_server.cache import classify_cache_key
 from mcp_server.engine import (
@@ -85,6 +86,12 @@ async def classify_move(
     changes after each ply up to the adaptive forcing-resolution point. This is
     deterministic board evidence for a coaching causal chain, not a claim that a
     particular changed feature caused the engine-evaluation swing.
+
+    For the strongest returned reply, rich mode also walks the already returned
+    PV and records exactly when a concrete material loss first appears from the
+    played side's perspective. This can distinguish immediate punishment from a
+    loss that materializes several plies later without claiming what the player
+    did or did not calculate.
 
     Rich move analysis also performs an exhaustive legal mate-in-one scan in the
     concrete position before the move and after the played move. This makes
@@ -306,9 +313,14 @@ async def _finish_result(
         outcome.board,
         played_move=outcome.chess_move,
     )
+    reply_enriched = apply_reply_materialization_evidence(
+        mate_enriched,
+        outcome.board,
+        played_move=outcome.chess_move,
+    )
     if evidence_detail == "forensic":
-        mate_enriched = await verify_forensic_classification_stability(
-            mate_enriched,
+        reply_enriched = await verify_forensic_classification_stability(
+            reply_enriched,
             outcome.board,
             played_move=outcome.chess_move,
             pool=pool,
@@ -316,7 +328,7 @@ async def _finish_result(
             history_complete=outcome.history_complete,
             evaluate_position=_evaluate_game_position_cached,
         )
-    return mate_enriched
+    return reply_enriched
 
 
 def _uses_pool_classify_fast_path(pool: Any, outcome: Any) -> bool:
