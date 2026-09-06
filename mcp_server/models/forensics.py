@@ -180,6 +180,66 @@ class PositionDelta(BaseModel):
     check_state_changed: bool = False
 
 
+CandidateContinuationTermination = Literal[
+    "invalid_candidate_move",
+    "forced_mate_in_returned_pv",
+    "terminal_position",
+    "material_resolution",
+    "quiet_position",
+    "invalid_pv_move",
+    "pv_exhausted",
+    "no_pv",
+]
+
+
+class CandidateContinuationEndpointEvidence(BaseModel):
+    """Board state reached by walking one candidate's already returned PV."""
+
+    plies_from_candidate: int = 0
+    plies_from_root: int = 0
+    termination_reason: CandidateContinuationTermination
+    tactical_sequence_resolved: bool = False
+    returned_pv_plies_available: int = 0
+    endpoint_fen: str | None = None
+    endpoint_position: PositionFingerprint | None = None
+    endpoint_tactical_snapshot: TacticalSnapshot | None = None
+    root_to_endpoint_delta: PositionDelta | None = None
+    irreversible_events: list[dict[str, Any]] = Field(default_factory=list)
+    proof_scope: str
+
+
+class CandidateContinuationEndpointDifference(BaseModel):
+    """Difference between two evidence-bounded candidate PV endpoints."""
+
+    available: bool
+    reason: str | None = None
+    reference_endpoint_fen: str | None = None
+    candidate_endpoint_fen: str | None = None
+    reference_plies_from_root: int | None = None
+    candidate_plies_from_root: int | None = None
+    reference_termination_reason: CandidateContinuationTermination | None = None
+    candidate_termination_reason: CandidateContinuationTermination | None = None
+    reference_tactical_sequence_resolved: bool | None = None
+    candidate_tactical_sequence_resolved: bool | None = None
+    material_effect_difference_for_mover_cp: int | None = None
+    only_reference_newly_en_prise: list[str] = Field(default_factory=list)
+    only_candidate_newly_en_prise: list[str] = Field(default_factory=list)
+    only_reference_newly_pinned: list[str] = Field(default_factory=list)
+    only_candidate_newly_pinned: list[str] = Field(default_factory=list)
+    only_reference_opened_files: list[str] = Field(default_factory=list)
+    only_candidate_opened_files: list[str] = Field(default_factory=list)
+    only_reference_pawn_structure_changes: list[str] = Field(default_factory=list)
+    only_candidate_pawn_structure_changes: list[str] = Field(default_factory=list)
+    king_ring_attack_delta_difference_white: int = 0
+    king_ring_attack_delta_difference_black: int = 0
+    reference_irreversible_events: list[str] = Field(default_factory=list)
+    candidate_irreversible_events: list[str] = Field(default_factory=list)
+    proof_scope: str = (
+        "Compares evidence-bounded principal-variation endpoints. Unequal continuation "
+        "lengths or termination reasons are not a controlled causal experiment."
+    )
+
+
 class CandidateEvidence(BaseModel):
     requested: str
     uci: str
@@ -205,7 +265,7 @@ class CandidateEvidence(BaseModel):
     position_after_reply: PositionFingerprint | None = None
     tactical_after_reply: TacticalSnapshot | None = None
     reply_delta: PositionDelta | None = None
-    continuation_endpoint: dict[str, Any] | None = None
+    continuation_endpoint: CandidateContinuationEndpointEvidence | None = None
 
 
 class CandidatePositionDifference(BaseModel):
@@ -253,7 +313,7 @@ class CandidatePositionDifference(BaseModel):
     only_candidate_root_forcing_threats_if_reply_passes: list[str] = Field(default_factory=list)
     king_ring_attack_delta_difference_white: int = 0
     king_ring_attack_delta_difference_black: int = 0
-    continuation_endpoint_difference: dict[str, Any] = Field(default_factory=dict)
+    continuation_endpoint_difference: CandidateContinuationEndpointDifference | None = None
     proof_scope: str = (
         "Resulting-position comparison only. Feature differences are deterministic; "
         "they do not by themselves prove which feature caused the engine-evaluation gap."
