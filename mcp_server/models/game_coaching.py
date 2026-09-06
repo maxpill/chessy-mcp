@@ -16,6 +16,19 @@ from mcp_server.models.forensics import ForcingMoveEvidence
 from mcp_server.models.legacy import GameAnalysisResult
 
 
+FailureEvidenceCategory = Literal[
+    "failed_forcing_threat_update_candidate",
+    "failed_position_update_candidate",
+    "immediate_mate_threat_update_failure_candidate",
+    "mate_in_one_miss_candidate",
+    "missed_forcing_reply_candidate",
+    "new_en_prise_piece_after_move",
+    "new_tactically_hanging_candidate_after_move",
+    "only_move_missed_candidate",
+    "pawn_move_forcing_punishment",
+]
+
+
 class GameSegment(BaseModel):
     start_ply: int
     end_ply: int
@@ -107,6 +120,7 @@ class CriticalMoment(BaseModel):
     strongest_reply_is_mate_in_one: bool | None = None
     causal_trace: dict[str, Any] | None = None
     evidence_signatures: list[str] = Field(default_factory=list)
+    failure_evidence_categories: list[FailureEvidenceCategory] = Field(default_factory=list)
     inference_boundary: str = (
         "Signatures describe engine/board evidence. Terms such as ONLY_MOVE_MISSED_CANDIDATE "
         "or PAWN_MOVE_FORCING_PUNISHMENT are coaching evidence, not proof of the player's "
@@ -207,6 +221,35 @@ class GameTerminationAssessment(BaseModel):
     )
 
 
+class FailureCorpusBucket(BaseModel):
+    """One stable, machine-aggregatable evidence category from critical moments."""
+
+    category: FailureEvidenceCategory
+    count: int
+    plies: list[int] = Field(default_factory=list)
+    self_report_overlap_count: int = 0
+    self_reported_plies: list[int] = Field(default_factory=list)
+    supporting_signatures: list[str] = Field(default_factory=list)
+    inference_boundary: str = (
+        "The category summarizes repeated board/engine evidence. It is not a diagnosis of the "
+        "player's thought process. self_report_overlap_count only records that the same critical "
+        "ply also contained a player comment."
+    )
+
+
+class GameFailureCorpusSummary(BaseModel):
+    """Per-game normalized evidence ready for aggregation across many games."""
+
+    major_error_critical_moments: int = 0
+    categorized_critical_moments: int = 0
+    buckets: list[FailureCorpusBucket] = Field(default_factory=list)
+    uncategorized_major_error_plies: list[int] = Field(default_factory=list)
+    inference_boundary: str = (
+        "This is a stateless per-game evidence summary. Cross-game consumers may aggregate the "
+        "stable categories, but should not infer a durable cognitive weakness from one game."
+    )
+
+
 class GameCoachingEvidence(BaseModel):
     detail: Literal["coach", "forensic"]
     perspective: Literal["white", "black"]
@@ -220,6 +263,7 @@ class GameCoachingEvidence(BaseModel):
     critical_evidence_signature_counts: dict[str, int] = Field(default_factory=dict)
     critical_reason_counts: dict[str, int] = Field(default_factory=dict)
     self_reported_critical_plies: list[int] = Field(default_factory=list)
+    failure_corpus: GameFailureCorpusSummary | None = None
     scan_depth: int
     verification_depth: int | None = None
     adaptive_escalation_depth: int | None = None
