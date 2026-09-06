@@ -22,7 +22,13 @@ from mcp_server.analysis.position_integrity import (
     build_rich_tactical_snapshot,
 )
 from mcp_server.analysis.tactical_snapshot_extensions import extend_tactical_snapshot
-from mcp_server.models.forensics import CandidateEvidence, PositionDelta, TacticalSnapshot
+from mcp_server.models.forensics import (
+    CandidateContinuationEndpointDifference,
+    CandidateContinuationEndpointEvidence,
+    CandidateEvidence,
+    PositionDelta,
+    TacticalSnapshot,
+)
 
 
 def _legal_uci(board: chess.Board, raw: str | None) -> chess.Move | None:
@@ -205,17 +211,14 @@ def attach_candidate_continuation_endpoint(
     """Attach the endpoint reached by the candidate's already returned PV."""
     endpoint, meta, events = _walk_endpoint(root, candidate)
     if meta["termination_reason"] == "invalid_candidate_move":
-        return candidate.model_copy(
-            update={
-                "continuation_endpoint": {
-                    **meta,
-                    "proof_scope": (
-                        "Candidate root move was not legal in the supplied root board; no "
-                        "continuation endpoint was reconstructed."
-                    ),
-                }
-            }
+        typed = CandidateContinuationEndpointEvidence(
+            **meta,
+            proof_scope=(
+                "Candidate root move was not legal in the supplied root board; no "
+                "continuation endpoint was reconstructed."
+            ),
         )
+        return candidate.model_copy(update={"continuation_endpoint": typed})
 
     root_snapshot = root_snapshot or extend_tactical_snapshot(
         root,
@@ -231,35 +234,29 @@ def attach_candidate_continuation_endpoint(
         before_snapshot=root_snapshot,
         after_snapshot=endpoint_snapshot,
     )
-    payload = {
+    typed = CandidateContinuationEndpointEvidence(
         **meta,
-        "endpoint_fen": endpoint.fen(),
-        "endpoint_position": build_position_fingerprint(endpoint).model_dump(),
-        "endpoint_tactical_snapshot": endpoint_snapshot.model_dump(),
-        "root_to_endpoint_delta": delta.model_dump(),
-        "irreversible_events": events,
-        "proof_scope": (
+        endpoint_fen=endpoint.fen(),
+        endpoint_position=build_position_fingerprint(endpoint),
+        endpoint_tactical_snapshot=endpoint_snapshot,
+        root_to_endpoint_delta=delta,
+        irreversible_events=events,
+        proof_scope=(
             "Endpoint uses only the candidate move and its already returned principal "
             "variation. It may stop early after a forcing sequence reaches a local state "
             "with no legal check, capture or promotion. This is principal-variation evidence, "
             "not proof that the line is forced. A pv_exhausted endpoint is only the end of the "
             "available PV and must not be described as a quiet position."
         ),
-    }
-    return candidate.model_copy(update={"continuation_endpoint": payload})
+    )
+    return candidate.model_copy(update={"continuation_endpoint": typed})
 
 
 def _delta_from_endpoint(candidate: CandidateEvidence) -> PositionDelta | None:
     endpoint = candidate.continuation_endpoint
-    if not isinstance(endpoint, dict):
+    if endpoint is None:
         return None
-    raw = endpoint.get("root_to_endpoint_delta")
-    if not isinstance(raw, dict):
-        return None
-    try:
-        return PositionDelta.model_validate(raw)
-    except Exception:
-        return None
+    return endpoint.root_to_endpoint_delta
 
 
 def _material_effect(delta: PositionDelta, mover: chess.Color) -> int:
@@ -269,15 +266,10 @@ def _material_effect(delta: PositionDelta, mover: chess.Color) -> int:
 
 def _event_labels(candidate: CandidateEvidence) -> list[str]:
     endpoint = candidate.continuation_endpoint
-    if not isinstance(endpoint, dict):
-        return []
-    raw_events = endpoint.get("irreversible_events")
-    if not isinstance(raw_events, list):
+    if endpoint is None:
         return []
     labels: list[str] = []
-    for raw in raw_events:
-        if not isinstance(raw, dict):
-            continue
+    for raw in endpoint.irreversible_events:
         reasons = raw.get("reasons")
         reason_text = ",".join(str(item) for item in reasons) if isinstance(reasons, list) else ""
         labels.append(
@@ -290,71 +282,71 @@ def build_candidate_endpoint_difference(
     root: chess.Board,
     reference: CandidateEvidence,
     candidate: CandidateEvidence,
-) -> dict[str, Any]:
+) -> CandidateContinuationEndpointDifference:
     """Compare two candidate continuation endpoints from the root mover's POV."""
     ref_endpoint = reference.continuation_endpoint
     cand_endpoint = candidate.continuation_endpoint
     ref_delta = _delta_from_endpoint(reference)
     cand_delta = _delta_from_endpoint(candidate)
-    if not isinstance(ref_endpoint, dict) or not isinstance(cand_endpoint, dict):
-        return {
-            "available": False,
-            "reason": "continuation_endpoint_missing",
-        }
+    if ref_endpoint is None or cand_endpoint is None:
+        return CandidateContinuationEndpointDifference(
+            available=False,
+            reason="continuation_endpoint_missing",
+        )
     if ref_delta is None or cand_delta is None:
-        return {
-            "available": False,
-            "reason": "endpoint_delta_missing_or_invalid",
-        }
+        return CandidateContinuationEndpointDifference(
+            available=False,
+            reason="endpoint_delta_missing_or_invalid",
+        )
 
-    return {
-        "available": True,
-        "reference_endpoint_fen": ref_endpoint.get("endpoint_fen"),
-        "candidate_endpoint_fen": cand_endpoint.get("endpoint_fen"),
-        "reference_plies_from_root": ref_endpoint.get("plies_from_root"),
-        "candidate_plies_from_root": cand_endpoint.get("plies_from_root"),
-        "reference_termination_reason": ref_endpoint.get("termination_reason"),
-        "candidate_termination_reason": cand_endpoint.get("termination_reason"),
-        "reference_tactical_sequence_resolved": ref_endpoint.get("tactical_sequence_resolved"),
-        "candidate_tactical_sequence_resolved": cand_endpoint.get("tactical_sequence_resolved"),
-        "material_effect_difference_for_mover_cp": (
+    return CandidateContinuationEndpointDifference(
+        available=True,
+        reference_endpoint_fen=ref_endpoint.endpoint_fen,
+        candidate_endpoint_fen=cand_endpoint.endpoint_fen,
+        reference_plies_from_root=ref_endpoint.plies_from_root,
+        candidate_plies_from_root=cand_endpoint.plies_from_root,
+        reference_termination_reason=ref_endpoint.termination_reason,
+        candidate_termination_reason=cand_endpoint.termination_reason,
+        reference_tactical_sequence_resolved=ref_endpoint.tactical_sequence_resolved,
+        candidate_tactical_sequence_resolved=cand_endpoint.tactical_sequence_resolved,
+        material_effect_difference_for_mover_cp=(
             _material_effect(cand_delta, root.turn) - _material_effect(ref_delta, root.turn)
         ),
-        "only_reference_newly_en_prise": sorted(
+        only_reference_newly_en_prise=sorted(
             set(ref_delta.newly_en_prise_pieces) - set(cand_delta.newly_en_prise_pieces)
         ),
-        "only_candidate_newly_en_prise": sorted(
+        only_candidate_newly_en_prise=sorted(
             set(cand_delta.newly_en_prise_pieces) - set(ref_delta.newly_en_prise_pieces)
         ),
-        "only_reference_newly_pinned": sorted(
+        only_reference_newly_pinned=sorted(
             set(ref_delta.newly_pinned_pieces) - set(cand_delta.newly_pinned_pieces)
         ),
-        "only_candidate_newly_pinned": sorted(
+        only_candidate_newly_pinned=sorted(
             set(cand_delta.newly_pinned_pieces) - set(ref_delta.newly_pinned_pieces)
         ),
-        "only_reference_opened_files": sorted(
+        only_reference_opened_files=sorted(
             set(ref_delta.opened_files) - set(cand_delta.opened_files)
         ),
-        "only_candidate_opened_files": sorted(
+        only_candidate_opened_files=sorted(
             set(cand_delta.opened_files) - set(ref_delta.opened_files)
         ),
-        "only_reference_pawn_structure_changes": sorted(
+        only_reference_pawn_structure_changes=sorted(
             set(ref_delta.pawn_structure_changes) - set(cand_delta.pawn_structure_changes)
         ),
-        "only_candidate_pawn_structure_changes": sorted(
+        only_candidate_pawn_structure_changes=sorted(
             set(cand_delta.pawn_structure_changes) - set(ref_delta.pawn_structure_changes)
         ),
-        "king_ring_attack_delta_difference_white": (
+        king_ring_attack_delta_difference_white=(
             cand_delta.king_ring_attack_delta_white - ref_delta.king_ring_attack_delta_white
         ),
-        "king_ring_attack_delta_difference_black": (
+        king_ring_attack_delta_difference_black=(
             cand_delta.king_ring_attack_delta_black - ref_delta.king_ring_attack_delta_black
         ),
-        "reference_irreversible_events": _event_labels(reference),
-        "candidate_irreversible_events": _event_labels(candidate),
-        "proof_scope": (
+        reference_irreversible_events=_event_labels(reference),
+        candidate_irreversible_events=_event_labels(candidate),
+        proof_scope=(
             "Compares the two evidence-bounded principal-variation endpoints. Different "
             "termination reasons or continuation lengths are reported explicitly, so the "
             "consumer must not treat unequal PV horizons as a controlled causal experiment."
         ),
-    }
+    )
