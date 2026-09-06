@@ -212,10 +212,8 @@ def build_practical_equivalence_evidence(
     elif mate_deterioration or not same_rule_outcome or tactical_punishment:
         coach_priority = "high"
     elif (
-        isinstance(wdl_loss, float)
-        and wdl_loss >= 15.0
-        or isinstance(effective_loss, int)
-        and effective_loss >= 200
+        (isinstance(wdl_loss, float) and wdl_loss >= 15.0)
+        or (isinstance(effective_loss, int) and effective_loss >= 200)
     ):
         coach_priority = "high"
     elif practical_equivalent is False:
