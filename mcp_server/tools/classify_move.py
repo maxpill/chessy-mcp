@@ -22,6 +22,7 @@ from mcp.types import ToolAnnotations
 from core.engines.pool import AnalyzerPool
 
 from mcp_server._mcp import mcp
+from mcp_server.analysis.classification_stability import verify_forensic_classification_stability
 from mcp_server.analysis.classify_helpers import (
     ActionType,
     best_san_for_score,
@@ -66,8 +67,10 @@ async def classify_move(
     fingerprints, CCT-style tactical snapshots, strongest-reply metadata,
     position deltas and the principal continuation without extra verification
     searches. ``detail='forensic'`` additionally evaluates the strongest reply
-    one step deeper and compares the played move, engine-best move and any
-    explicitly requested ``compare_moves`` by their resulting positions.
+    one step deeper, compares the played move, engine-best move and any
+    explicitly requested ``compare_moves`` by their resulting positions, and
+    selectively re-searches pedagogically important non-good classifications at
+    higher depth to report whether the classification itself is stable.
 
     Rich modes also add bounded threat/update evidence when previous-move
     history exists: newly enabled opponent checks/captures/promotions under a
@@ -269,11 +272,21 @@ async def _finish_result(
         outcome.board,
         played_move=outcome.chess_move,
     )
-    return apply_threat_forensics(
+    threat_enriched = apply_threat_forensics(
         integrated,
         outcome.board,
         played_move=outcome.chess_move,
     )
+    if evidence_detail == "forensic":
+        threat_enriched = await verify_forensic_classification_stability(
+            threat_enriched,
+            outcome.board,
+            played_move=outcome.chess_move,
+            pool=pool,
+            depth=depth,
+            history_complete=outcome.history_complete,
+        )
+    return threat_enriched
 
 
 def _uses_pool_classify_fast_path(pool: Any, outcome: Any) -> bool:
