@@ -61,9 +61,14 @@ class TacticalHangingEvidence(BaseModel):
     capture: ForcingMoveEvidence
     nominal_defenders: int
     legal_immediate_recaptures: list[str] = Field(default_factory=list)
-    reason: Literal["defended_but_no_legal_immediate_recapture"] = (
-        "defended_but_no_legal_immediate_recapture"
-    )
+    reason: Literal[
+        "defended_but_no_legal_immediate_recapture",
+        "local_capture_exchange_profitable",
+    ] = "defended_but_no_legal_immediate_recapture"
+    local_exchange_gain_cp: int | None = None
+    local_exchange_line_uci: list[str] = Field(default_factory=list)
+    local_exchange_line_san: list[str] = Field(default_factory=list)
+    local_exchange_tree_complete: bool | None = None
     proof_scope: str = (
         "Immediate recapture legality only. This is a tactical-hanging candidate, "
         "not a full exchange-sequence or SEE proof."
