@@ -1,11 +1,11 @@
 """Deterministic mate-in-one evidence for rich ``classify_move`` output.
 
 A common coaching failure mode is not an evaluation nuance but simply missing a
-legal mate or allowing one.  Stockfish evaluations can encode that fact, but a
+legal mate or allowing one. Stockfish evaluations can encode that fact, but a
 coach benefits from an explicit board-grounded answer: which mating moves exist,
 whether the played move used one, and whether the opponent now has one.
 
-This module performs only legal move generation and checkmate verification.  It
+This module performs only legal move generation and checkmate verification. It
 adds no engine search and makes no claim about why a player missed the move.
 """
 
@@ -46,8 +46,8 @@ def _back_rank_geometry(
     if king_square is None:
         return False
     king_rank = chess.square_rank(king_square)
-    home_rank = 0 if not mover == chess.WHITE else 7
-    if king_rank != home_rank:
+    enemy_home_rank = 0 if mover == chess.BLACK else 7
+    if king_rank != enemy_home_rank:
         return False
     return chess.square_rank(move.to_square) == king_rank
 
