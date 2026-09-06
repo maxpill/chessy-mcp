@@ -36,7 +36,12 @@ from mcp_server.analysis.forensics import enrich_move_analysis
 from mcp_server.analysis.move_classifier import MoveClassifier, validate_classify_input
 from mcp_server.analysis.threat_forensics import apply_threat_forensics
 from mcp_server.cache import classify_cache_key
-from mcp_server.engine import _cache, _get_analyzer_pool, _single_flight
+from mcp_server.engine import (
+    _cache,
+    _evaluate_game_position_cached,
+    _get_analyzer_pool,
+    _single_flight,
+)
 from mcp_server.metrics import metrics
 from mcp_server.models import MCPMoveAnalysis
 from mcp_server.models.forensics import ForensicMoveAnalysis
@@ -285,6 +290,7 @@ async def _finish_result(
             pool=pool,
             depth=depth,
             history_complete=outcome.history_complete,
+            evaluate_position=_evaluate_game_position_cached,
         )
     return threat_enriched
 
