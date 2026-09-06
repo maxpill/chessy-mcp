@@ -9,6 +9,7 @@ from mcp_server.models.game_coaching import (
     CriticalMoment,
     FinalPositionAssessment,
     GameCoachingEvidence,
+    RootCauseLink,
 )
 
 
@@ -115,6 +116,54 @@ def test_critical_move_can_record_missed_mate_without_psychological_claim() -> N
     assert "MATE_IN_ONE_AVAILABLE_BEFORE_MOVE" in critical.evidence_signatures
     assert "MISSED_MATE_IN_ONE_CANDIDATE" in critical.evidence_signatures
     assert "proof" not in " ".join(critical.evidence_signatures).lower()
+
+
+def test_actual_game_materialization_link_is_kept_separate_from_engine_pv() -> None:
+    positions, moves = _line("e4", "d5", "exd5", "Qxd5")
+    final_board = positions[-1]
+    moment = CriticalMoment(
+        ply=3,
+        san="exd5",
+        uci=moves[2].uci(),
+        side="white",
+        move_class="mistake",
+        effective_loss=180,
+        eval_before_effective_cp=0,
+        eval_after_effective_cp=-180,
+        strongest_reply_uci="d8d5",
+        strongest_reply_san="Qxd5",
+        strongest_reply_is_check=False,
+        strongest_reply_is_capture=True,
+    )
+    link = RootCauseLink(
+        root_cause_ply=3,
+        materialization_ply=4,
+        root_cause_san="exd5",
+        materialization_san="Qxd5",
+        affected_side="white",
+        material_swing_cp=100,
+        plies_later=1,
+    )
+    coaching = _coaching(moment, final_board).model_copy(update={"root_cause_links": [link]})
+    evals = [MCPEval(cp=0) for _ in positions]
+    evals[3] = MCPEval(cp=-180, best_move="d8d5", pv=["d8d5"])
+
+    enriched = enrich_game_critical_forensics(
+        coaching,
+        positions=positions,
+        evals=evals,
+    )
+
+    critical = enriched.critical_moments[0]
+    assert critical.causal_trace is not None
+    actual = critical.causal_trace["actual_game_materialization_link"]
+    assert actual["root_cause_ply"] == 3
+    assert actual["materialization_ply"] == 4
+    assert actual["materialization_san"] == "Qxd5"
+    assert actual["source"] == "actual_game_mainline_material_balance"
+    assert "must not be merged" in actual["proof_scope"]
+    assert "ACTUAL_GAME_MATERIALIZATION_LINK_AVAILABLE" in critical.evidence_signatures
+    assert "ACTUAL_GAME_MATERIALIZATION_NEXT_PLY" in critical.evidence_signatures
 
 
 def test_finalization_aggregates_new_critical_signatures_for_cross_game_corpus() -> None:
