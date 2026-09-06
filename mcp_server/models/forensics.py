@@ -238,8 +238,10 @@ class CandidatePositionDifference(BaseModel):
     only_candidate_strategic_square_control_changes: list[str] = Field(default_factory=list)
     only_reference_mechanism_candidates: list[str] = Field(default_factory=list)
     only_candidate_mechanism_candidates: list[str] = Field(default_factory=list)
-    only_reference_opponent_forcing_threats_if_pass: list[str] = Field(default_factory=list)
-    only_candidate_opponent_forcing_threats_if_pass: list[str] = Field(default_factory=list)
+    only_reference_immediate_reply_forcing_moves: list[str] = Field(default_factory=list)
+    only_candidate_immediate_reply_forcing_moves: list[str] = Field(default_factory=list)
+    only_reference_root_forcing_threats_if_reply_passes: list[str] = Field(default_factory=list)
+    only_candidate_root_forcing_threats_if_reply_passes: list[str] = Field(default_factory=list)
     king_ring_attack_delta_difference_white: int = 0
     king_ring_attack_delta_difference_black: int = 0
     proof_scope: str = (
