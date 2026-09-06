@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import chess
+import pytest
 
 from mcp_server.analysis.forensic_integration import (
     build_candidate_differences,
     enrich_candidate_geometry,
 )
+from mcp_server.analysis.forensics import _candidate_evidence
 from mcp_server.analysis.position_integrity import build_rich_tactical_snapshot
 from mcp_server.models.forensics import CandidateEvidence, StrongestReplyEvidence
 
@@ -89,9 +93,32 @@ def test_candidate_difference_uses_engine_reference_and_compares_resulting_posit
     diff = differences[0]
     assert diff.reference_uci == "e2e4"
     assert diff.candidate_uci == "e2e3"
+    assert diff.first_divergence_ply == 1
+    assert diff.first_divergence == {"reference": "e4", "candidate": "e3"}
     assert diff.eval_gap_candidate_minus_reference_for_mover_cp == -40
+    assert diff.reference_root_move_irreversible is True
+    assert diff.candidate_root_move_irreversible is True
+    assert "pawn_move" in diff.reference_root_irreversible_reasons
+    assert "pawn_move" in diff.candidate_root_irreversible_reasons
     assert "white_pawn_added@e4" in diff.only_reference_pawn_structure_changes
     assert "white_pawn_added@e3" in diff.only_candidate_pawn_structure_changes
+
+
+def test_candidate_difference_marks_pawn_move_vs_reversible_king_move() -> None:
+    board = chess.Board("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")
+    pawn = enrich_candidate_geometry(board, _candidate(board, "e2e4", cp=20))
+    king = enrich_candidate_geometry(board, _candidate(board, "e1f1", cp=10))
+
+    diff = build_candidate_differences(
+        board,
+        [pawn, king],
+        reference_uci="e2e4",
+    )[0]
+
+    assert diff.reference_root_move_irreversible is True
+    assert diff.reference_root_irreversible_reasons == ["pawn_move"]
+    assert diff.candidate_root_move_irreversible is False
+    assert diff.candidate_root_irreversible_reasons == []
 
 
 def test_candidate_difference_flips_engine_gap_for_black_root_mover() -> None:
@@ -108,3 +135,30 @@ def test_candidate_difference_flips_engine_gap_for_black_root_mover() -> None:
 
     assert len(differences) == 1
     assert differences[0].eval_gap_candidate_minus_reference_for_mover_cp == -50
+
+
+class _PVPool:
+    async def evaluate(self, board: chess.Board, *, depth: int):
+        assert board.turn == chess.BLACK
+        return SimpleNamespace(
+            cp=12,
+            mate=None,
+            depth=depth,
+            best_move="e7e5",
+            pv=["e7e5", "g1f3"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_candidate_evidence_retains_principal_continuation() -> None:
+    candidate = await _candidate_evidence(
+        chess.Board(),
+        "e4",
+        pool=_PVPool(),
+        depth=18,
+    )
+
+    assert candidate.continuation_uci == ["e7e5", "g1f3"]
+    assert candidate.continuation_san == ["e5", "Nf3"]
+    assert candidate.continuation_termination_reason == "pv_exhausted"
+    assert candidate.continuation_proof_status == "principal_variation_only"
