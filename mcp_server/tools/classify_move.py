@@ -36,6 +36,7 @@ from mcp_server.analysis.forensic_integration import upgrade_move_forensics
 from mcp_server.analysis.forensics import enrich_move_analysis
 from mcp_server.analysis.mate_forensics import apply_mate_forensics
 from mcp_server.analysis.move_classifier import MoveClassifier, validate_classify_input
+from mcp_server.analysis.practical_equivalence import apply_practical_equivalence
 from mcp_server.analysis.reply_materialization import apply_reply_materialization_evidence
 from mcp_server.analysis.threat_forensics import apply_threat_forensics
 from mcp_server.cache import classify_cache_key
@@ -79,6 +80,12 @@ async def classify_move(
     explicitly requested ``compare_moves`` by their resulting positions, and
     selectively re-searches pedagogically important non-good classifications at
     higher depth to report whether the classification itself is stable.
+
+    Rich modes also expose practical-equivalence evidence separately from
+    ``is_engine_best``. The policy prefers WDL loss when available, uses cp only
+    as a fallback, and refuses to call a move practically equivalent when mate
+    status, rule outcome or concrete forcing-punishment evidence deteriorates.
+    It is a coaching-priority heuristic and never rewrites the engine grade.
 
     Rich move analysis also reconstructs a bounded per-ply causal position-delta
     trace over the returned continuation. It records material, defender,
@@ -328,7 +335,10 @@ async def _finish_result(
             history_complete=outcome.history_complete,
             evaluate_position=_evaluate_game_position_cached,
         )
-    return reply_enriched
+    return apply_practical_equivalence(
+        reply_enriched,
+        mover=outcome.board.turn,
+    )
 
 
 def _uses_pool_classify_fast_path(pool: Any, outcome: Any) -> bool:
