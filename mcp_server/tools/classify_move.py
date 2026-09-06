@@ -22,6 +22,7 @@ from mcp.types import ToolAnnotations
 from core.engines.pool import AnalyzerPool
 
 from mcp_server._mcp import mcp
+from mcp_server.analysis.causal_trace import apply_causal_position_trace
 from mcp_server.analysis.classification_stability import verify_forensic_classification_stability
 from mcp_server.analysis.classify_helpers import (
     ActionType,
@@ -76,6 +77,13 @@ async def classify_move(
     explicitly requested ``compare_moves`` by their resulting positions, and
     selectively re-searches pedagogically important non-good classifications at
     higher depth to report whether the classification itself is stable.
+
+    Rich move analysis also reconstructs a bounded per-ply causal position-delta
+    trace over the returned continuation.  It records material, defender,
+    en-prise, pin, activity, strategic-square, file, pawn-structure and king-ring
+    changes after each ply up to the adaptive forcing-resolution point.  This is
+    deterministic board evidence for a coaching causal chain, not a claim that a
+    particular changed feature caused the engine-evaluation swing.
 
     Rich modes also add bounded threat/update evidence when previous-move
     history exists: newly enabled opponent checks/captures/promotions under a
@@ -282,9 +290,14 @@ async def _finish_result(
         outcome.board,
         played_move=outcome.chess_move,
     )
+    causal_enriched = apply_causal_position_trace(
+        threat_enriched,
+        outcome.board,
+        played_move=outcome.chess_move,
+    )
     if evidence_detail == "forensic":
-        threat_enriched = await verify_forensic_classification_stability(
-            threat_enriched,
+        causal_enriched = await verify_forensic_classification_stability(
+            causal_enriched,
             outcome.board,
             played_move=outcome.chess_move,
             pool=pool,
@@ -292,7 +305,7 @@ async def _finish_result(
             history_complete=outcome.history_complete,
             evaluate_position=_evaluate_game_position_cached,
         )
-    return threat_enriched
+    return causal_enriched
 
 
 def _uses_pool_classify_fast_path(pool: Any, outcome: Any) -> bool:
