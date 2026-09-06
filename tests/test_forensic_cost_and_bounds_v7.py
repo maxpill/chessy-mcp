@@ -61,3 +61,28 @@ def test_local_exchange_node_budget_fails_closed(monkeypatch) -> None:
         item.reason == "local_capture_exchange_profitable"
         for item in snapshot.tactically_hanging_candidates
     )
+
+
+def test_local_exchange_check_evasion_outside_target_tree_fails_closed() -> None:
+    # Black is checked by Qd5. ...cxd5 is one legal local recapture, but Black
+    # also has king evasions. A capture-only proof on d5 must not pretend those
+    # off-square legal replies do not exist.
+    board = chess.Board("8/8/2p1k3/3Q4/8/8/8/4K3 b - - 0 1")
+    assert board.is_check()
+    target = chess.D5
+    local = snapshot_extensions._captures_to_square(board, target)
+    legal = list(board.legal_moves)
+
+    assert chess.Move.from_uci("c6d5") in local
+    assert any(move not in local for move in legal)
+
+    _gain, _uci, _san, complete = snapshot_extensions._local_exchange_minimax(
+        board,
+        target,
+        root_color=chess.WHITE,
+        baseline_material=snapshot_extensions._material_balance(board, chess.WHITE),
+        plies_left=7,
+        memo={},
+    )
+
+    assert complete is False
