@@ -89,6 +89,7 @@ async def test_forcing_check_can_materialize_loss_three_plies_later() -> None:
     assert profile["first_material_loss_ply_for_mover"] == 3
     assert profile["loss_realized_within_plies"] == 3
     assert profile["first_material_loss_cp"] == -100
+    assert profile["returned_line_plies_walked"] == 3
     assert [
         step["cumulative_material_change_for_mover_cp"]
         for step in profile["material_trajectory_for_mover"]
@@ -119,6 +120,7 @@ async def test_forcing_capture_marks_material_loss_on_first_reply() -> None:
     )
     assert profile["first_material_loss_ply_for_mover"] == 1
     assert profile["loss_realized_within_plies"] == 1
+    assert profile["returned_line_plies_walked"] == 1
     assert profile["final_material_change_for_mover_cp"] == -900
     assert "FORCING_REPLY_MATERIAL_LOSS_IMMEDIATE" in enriched.forensics.evidence_signatures
     assert "DELAYED_MATERIALIZATION_AFTER_FORCING_REPLY" not in enriched.forensics.evidence_signatures
@@ -145,7 +147,7 @@ async def test_misaligned_returned_pv_does_not_invent_deeper_materialization() -
         if item.get("mechanism") == "reply_failure_profile"
     )
     assert profile["returned_pv_starts_with_strongest_reply"] is False
-    assert profile["returned_line_plies_walked"] if "returned_line_plies_walked" in profile else True
+    assert profile["returned_line_plies_walked"] == 1
     assert profile["first_material_loss_ply_for_mover"] is None
     assert len(profile["material_trajectory_for_mover"]) == 1
     assert profile["material_trajectory_for_mover"][0]["uci"] == "d8b6"
