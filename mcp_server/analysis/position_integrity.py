@@ -65,11 +65,22 @@ def _piece_evidence(board: chess.Board, square: chess.Square, piece: chess.Piece
     )
 
 
-def _captured_piece(board: chess.Board, move: chess.Move) -> chess.Piece | None:
+def _captured_piece_with_square(
+    board: chess.Board,
+    move: chess.Move,
+) -> tuple[chess.Piece | None, chess.Square | None]:
+    if not board.is_capture(move):
+        return None, None
     if board.is_en_passant(move):
         offset = -8 if board.turn == chess.WHITE else 8
-        return board.piece_at(move.to_square + offset)
-    return board.piece_at(move.to_square)
+        square = move.to_square + offset
+    else:
+        square = move.to_square
+    return board.piece_at(square), square
+
+
+def _captured_piece(board: chess.Board, move: chess.Move) -> chess.Piece | None:
+    return _captured_piece_with_square(board, move)[0]
 
 
 def _capture_evidence(board: chess.Board, move: chess.Move) -> ForcingMoveEvidence:
@@ -225,7 +236,7 @@ def _mechanism_candidates(
             continue
 
         if board.gives_check(move) and board.is_capture(move):
-            captured = _captured_piece(board, move)
+            captured, captured_square = _captured_piece_with_square(board, move)
             candidates.append(
                 MechanismCandidateEvidence(
                     mechanism="check_capture",
@@ -233,7 +244,9 @@ def _mechanism_candidates(
                     trigger_san=san,
                     actor=_piece_label(actor_before, move.from_square),
                     targets=(
-                        [_piece_label(captured, move.to_square)] if captured is not None else []
+                        [_piece_label(captured, captured_square)]
+                        if captured is not None and captured_square is not None
+                        else []
                     ),
                     evidence={"is_check": True, "is_capture": True},
                     proof_scope="Deterministic legal move that is simultaneously check and capture.",
