@@ -2474,17 +2474,28 @@ async def test_mcp_new_12_telemetry_cache_hit_tracking():
 
 @pytest.mark.asyncio
 async def test_mcp_new_13_no_duplicate_error_code_in_messages():
-    """MCP-NEW-13: Error messages must not duplicate error code prefixes."""
+    """MCP-NEW-13: Error messages must not duplicate error code prefixes.
+
+    2026-09-07 audit §8 update: ToolError must also surface the failing tool
+    name (and any extra context) so an LLM caller can identify which argument
+    tripped the error. The legacy "exact-string equality" assertion is
+    replaced with substring assertions that pin BOTH invariants: no duplicate
+    prefix AND structured context propagation.
+    """
     err = server_module._tool_error(
         "invalid_position", "INVALID_POSITION: Input 'foo' is invalid", "evaluate_position"
     )
-    assert str(err) == "[INVALID_POSITION] Input 'foo' is invalid"
-    assert "INVALID_POSITION: INVALID_POSITION:" not in str(err)
+    msg = str(err)
+    assert msg.startswith("[INVALID_POSITION] Input 'foo' is invalid"), msg
+    assert "INVALID_POSITION: INVALID_POSITION:" not in msg
+    assert "tool=evaluate_position" in msg, f"tool context missing: {msg!r}"
 
     err2 = server_module._tool_error(
         "illegal_move", "ILLEGAL_MOVE: Move 'e5' is not valid", "classify_move"
     )
-    assert str(err2) == "[ILLEGAL_MOVE] Move 'e5' is not valid"
+    msg2 = str(err2)
+    assert msg2.startswith("[ILLEGAL_MOVE] Move 'e5' is not valid"), msg2
+    assert "tool=classify_move" in msg2
 
 
 # ==============================================================================

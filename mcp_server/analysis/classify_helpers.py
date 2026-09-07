@@ -167,7 +167,7 @@ def build_classification(
         ),
         best_action_obj=(
             build_best_action(
-                recommended_action="play_move",
+                recommended_action=score.best_action,
                 rule_status=rule_status,
                 engine_eval=type(
                     "E",

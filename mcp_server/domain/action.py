@@ -80,6 +80,9 @@ class GameOverAction(BaseModel):
     type: Literal["game_over"] = "game_over"
     outcome: Literal["win", "loss", "draw"]
     reason: str
+    # 2026-09-07 audit §7: explicit perspective so consumers can disambiguate
+    # win-for-which-side. None for draws; otherwise the side that won.
+    outcome_perspective: Literal["white", "black", "draw"] | None = None
 
 
 GameAction = PlayMoveAction | ClaimDrawAction | ClaimDrawWithIntendedMoveAction | GameOverAction
@@ -122,8 +125,24 @@ def _build_claim_with_intended_dict(
     }
 
 
-def _build_game_over_dict(outcome: str, reason: str) -> dict[str, Any]:
-    return {"type": TypeOfAction.GAME_OVER.value, "outcome": outcome, "reason": reason}
+def _build_game_over_dict(
+    outcome: str,
+    reason: str,
+    outcome_perspective: str | None = None,
+) -> dict[str, Any]:
+    """Build a game_over action payload.
+
+    `outcome_perspective` is the side that won ("white"/"black") or None for
+    draws — populated by the caller from rule_status when possible.
+    """
+    payload: dict[str, Any] = {
+        "type": TypeOfAction.GAME_OVER.value,
+        "outcome": outcome,
+        "reason": reason,
+    }
+    if outcome_perspective is not None:
+        payload["outcome_perspective"] = outcome_perspective
+    return payload
 
 
 def build_played_action(
@@ -166,9 +185,14 @@ def build_best_action(
     if rule_status.terminal is not None:
         if rule_status.terminal == "checkmate":
             outcome = "win" if rule_status.winner == "white" else "loss"
+            # 2026-09-07 audit §7: explicit perspective. "win"+"white" means
+            # White won; "loss"+"black" means Black won. Both make the
+            # outcome_perspective contract testable and unambiguous.
+            outcome_perspective: str | None = rule_status.winner
         else:
             outcome = "draw"
-        return _build_game_over_dict(outcome, rule_status.terminal)
+            outcome_perspective = "draw"
+        return _build_game_over_dict(outcome, rule_status.terminal, outcome_perspective)
 
     if recommended_action == TypeOfAction.CLAIM_DRAW.value and rule_status.can_claim_now:
         reason = (
@@ -249,8 +273,12 @@ def build_legal_actions(
     if rule_status.terminal is not None:
         if rule_status.terminal == "checkmate":
             outcome = "win" if rule_status.winner == "white" else "loss"
+            outcome_perspective_legal: str | None = rule_status.winner
         else:
             outcome = "draw"
-        actions.append(_build_game_over_dict(outcome, rule_status.terminal))
+            outcome_perspective_legal = "draw"
+        actions.append(
+            _build_game_over_dict(outcome, rule_status.terminal, outcome_perspective_legal)
+        )
 
     return actions

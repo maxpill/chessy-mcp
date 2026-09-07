@@ -60,7 +60,7 @@ def score_standard_cp(
             win_loss=0.0,
             best_action=canonical_best_action,
             is_best_action=not is_claim_best,
-            action_equivalent=False,
+            action_equivalent=is_best_engine_move and canonical_best_action == action_type,
             missed_draw_claim=False,
             conceded_draw_claim=False,
             claim_reason=claim_r,

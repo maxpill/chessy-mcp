@@ -49,11 +49,31 @@ def _format_exception(exc: BaseException) -> str:
 
 
 def _tool_error(code: str, message: str | BaseException, tool: str, **kwargs: Any) -> ToolError:
-    """Create a clean human/agent-readable ToolError payload."""
+    """Create a clean human/agent-readable ToolError payload.
+
+    2026-09-07 audit §8: every ToolError must carry the failing tool name and
+    any caller-supplied parameter context (typically ``input=...``) so LLM
+    callers can identify which tool and which argument tripped the error.
+    The structure preserves the existing ``[CODE] message`` prefix that the
+    prior 700+ test regression suite asserts on; structured context is
+    appended in parentheses only when kwargs are present.
+    """
     raw = _format_exception(message) if isinstance(message, BaseException) else str(message)
     clean_msg = raw.strip()
     clean_msg = re.sub(r"^(?:\[[A-Za-z0-9_]+\]|[A-Za-z0-9_]+:)\s*", "", clean_msg).strip()
-    return ToolError(f"[{code.upper()}] {clean_msg}")
+    ctx_parts: list[str] = []
+    if tool:
+        ctx_parts.append(f"tool={tool}")
+    for key, value in kwargs.items():
+        if value is None:
+            continue
+        rendered = str(value)
+        if len(rendered) > 120:
+            rendered = rendered[:117] + "..."
+        ctx_parts.append(f"{key}={rendered!r}")
+    if not ctx_parts:
+        return ToolError(f"[{code.upper()}] {clean_msg}")
+    return ToolError(f"[{code.upper()}] {clean_msg} ({' '.join(ctx_parts)})")
 
 
 # Public, unprefixed aliases used internally. The underscore-prefixed originals

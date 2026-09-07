@@ -234,10 +234,23 @@ def score_optimal_claim_recommended(
             best_action=canonical_best_action,
             is_best_action=canonical_best_action == "play_move",
             action_equivalent=True,
+            # 2026-09-07 audit §4: literal definition of missed_draw_claim is
+            # "a policy-selected legal draw claim existed, but the caller chose
+            # a non-claim action". The previous is_down_material gate over-
+            # restricted the flag — drawn positions (K+R vs K at halfmove=100)
+            # silently dropped it. The exception for `claim_draw_with_intended_move
+            # + engine-best + raw_cpl==0` preserves the chess-rule semantics: when
+            # the policy's intended move equals the engine's best move and the
+            # player played that move at zero loss, the move IS the claim — no
+            # flag is appropriate.
             missed_draw_claim=bool(
-                is_down_material
-                and canonical_best_action in ("claim_draw", "claim_draw_with_intended_move")
+                canonical_best_action in ("claim_draw", "claim_draw_with_intended_move")
                 and action_type == "play_move"
+                and not (
+                    canonical_best_action == "claim_draw_with_intended_move"
+                    and is_best_engine_move
+                    and raw_cpl == 0
+                )
             ),
             conceded_draw_claim=False,
             claim_reason=claim_r,

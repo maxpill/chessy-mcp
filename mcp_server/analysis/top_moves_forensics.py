@@ -299,4 +299,4 @@ async def enrich_top_moves_result(
         candidate_comparisons=comparisons,
         proof=proof,
     )
-    return ForensicTopMovesResult(**result.model_dump(), forensics=forensic)
+    return ForensicTopMovesResult(**result.model_dump(exclude={"forensics"}), forensics=forensic)
