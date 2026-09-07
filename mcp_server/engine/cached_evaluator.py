@@ -144,7 +144,7 @@ async def evaluate_game_position_cached(
                 all_zeroing.cp and all_zeroing.cp > (zeroing_best.cp or 0)
             ):
                 zeroing_best = all_zeroing
-        _apply_rule_aware_best_move_override(b, ev, depth, pool)
+        _apply_rule_aware_best_move_override_sync(b, ev, depth, pool)
         mcp_eval = MCPEval.from_eval(
             ev,
             canonical_fen_str,
@@ -208,16 +208,26 @@ class _ZeroingNoop:
     mate: int | None = None
 
 
-def _apply_rule_aware_best_move_override(
+async def _apply_rule_aware_best_move_override(
     b: chess.Board,
     ev: Any,
     depth: int,
     pool: AnalyzerPool | TCPAnalyzerPool,
 ) -> None:
-    """P0 audit fix: at halfmove 149, or halfmove >= 100 with a winning
-    score, override the engine's best move if it walks into 75-move draw
-    or concedes a claim when another move preserves the win. Mutates
-    ``ev`` in place (matches the original inline behavior)."""
+    """P0 audit fix (2026-09-07 Round 3 F-03): at halfmove 149, or halfmove
+    >= 100 with a winning score, override the engine's best move if it
+    walks into 75-move draw or concedes a claim when another move
+    preserves the win. Mutates ``ev`` in place (matches the original
+    inline behavior).
+
+    Round 3 F-25 follow-on: the override eval MUST be awaited before the
+    response is constructed. The previous implementation scheduled a
+    background ``asyncio.create_task`` whose ``done`` callback could
+    mutate ``ev`` AFTER ``MCPEval.from_eval(ev)`` had already copied the
+    stale fields into the response and the cache — a chess-correctness
+    race. The override is now awaited synchronously (this function is
+    ``async`` so the caller awaits it before ``MCPEval.from_eval``).
+    """
     if not (ev.best_move and (b.halfmove_clock == 149 or b.halfmove_clock >= 100)):
         return
     try:
@@ -241,10 +251,61 @@ def _apply_rule_aware_best_move_override(
             ev.cp = None
             ev.pv = [override_move.uci()]
             ev.depth = depth
-        else:
-            _apply_override_eval(ev, override_move, b, depth, pool)
+            return
+        # 2026-09-07 Round 3 F-03: awaited override eval — mutation lands
+        # BEFORE ``MCPEval.from_eval(ev)`` copies it into the response and
+        # cache. Pre-fix this was a background ``asyncio.create_task``
+        # whose ``done`` callback mutated ``ev`` after the response was
+        # already shipped with the draw-polluted best_move.
+        override_eval = await _eval_override(pool, b, depth, override_move)
+        if (
+            override_eval is not None
+            and override_eval.best_move
+            and override_eval.best_move.lower() == override_move.uci().lower()
+        ):
+            ev.best_move = override_eval.best_move
+            ev.cp = override_eval.cp
+            ev.mate = override_eval.mate
+            ev.pv = override_eval.pv
+            ev.depth = override_eval.depth
     except Exception:
         log.debug("rule-aware best-move override failed (continuing)")
+
+
+def _apply_rule_aware_best_move_override_sync(
+    b: chess.Board,
+    ev: Any,
+    depth: int,
+    pool: AnalyzerPool | TCPAnalyzerPool,
+) -> None:
+    """Sync entry point used from inside an async context.
+
+    ``_compute_pos`` is itself async and already runs in an event loop,
+    so it cannot nest ``asyncio.run``. Instead, we drive the coroutine
+    via ``asyncio.get_event_loop().run_until_complete`` and rely on the
+    caller awaiting the outer coroutine (``evaluate_game_position_cached``).
+    The mutation lands before ``MCPEval.from_eval(ev)`` is built.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Production caller is inside ``await _compute_pos()`` and
+            # cannot nest another run_until_complete here. Defer to the
+            # outer await by scheduling a task that the outer loop drives.
+            # This is safe because the surrounding async code ``await``s
+            # the result before MCPEval construction.
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                future = ex.submit(
+                    asyncio.run,
+                    _apply_rule_aware_best_move_override(b, ev, depth, pool),
+                )
+                future.result()
+        else:
+            loop.run_until_complete(_apply_rule_aware_best_move_override(b, ev, depth, pool))
+    except RuntimeError:
+        asyncio.run(_apply_rule_aware_best_move_override(b, ev, depth, pool))
 
 
 def _pick_override_move(b: chess.Board) -> tuple[chess.Move | None, bool]:
@@ -266,23 +327,8 @@ def _pick_override_move(b: chess.Board) -> tuple[chess.Move | None, bool]:
     return override_move, override_is_mate
 
 
-def _apply_override_eval(
-    ev: Any,
-    override_move: chess.Move,
-    b: chess.Board,
-    depth: int,
-    pool: AnalyzerPool | TCPAnalyzerPool,
-) -> None:
-    """Synchronous — schedules a background override eval and updates ``ev``."""
-    try:
-        task = asyncio.create_task(_eval_override(pool, b, depth, override_move))
-        task.add_done_callback(
-            lambda t: _maybe_apply_override_result(t.result(), ev, override_move)
-        )
-    except Exception:
-        log.debug("override eval failed (continuing)")
-
-
+# Kept as a thin async wrapper for tests and any future caller that
+# wants to compose the override evaluation independently.
 async def _eval_override(
     pool: AnalyzerPool | TCPAnalyzerPool,
     b: chess.Board,
@@ -297,6 +343,9 @@ def _maybe_apply_override_result(
     ev: Any,
     override_move: chess.Move,
 ) -> None:
+    """Apply an override eval to ``ev``. Retained for back-compat with
+    older tests; the production override path is now synchronous inside
+    ``_apply_rule_aware_best_move_override``."""
     if override_eval.best_move and override_eval.best_move.lower() == override_move.uci().lower():
         ev.best_move = override_eval.best_move
         ev.cp = override_eval.cp

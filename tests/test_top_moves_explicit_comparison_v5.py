@@ -31,9 +31,12 @@ def test_explicit_compare_moves_cannot_be_displaced_by_long_top_n() -> None:
         include_moves=explicit,
     )
 
-    assert requested[0] == "Nf3"
+    # 2026-09-08 ultra-hard test notes §4: _comparison_requests returns
+    # (canonical_san, original_text) tuples so the candidate's `requested`
+    # field round-trips the user's exact spelling.
+    assert requested[0] == ("Nf3", "Nf3")
     assert len(requested) == 9
-    assert requested[1:] == explicit
+    assert [canonical for canonical, _ in requested[1:]] == explicit
 
 
 def test_explicit_uci_and_san_duplicates_are_canonicalized_once() -> None:
@@ -47,4 +50,4 @@ def test_explicit_uci_and_san_duplicates_are_canonicalized_once() -> None:
         include_moves=["e4", "e2e4", "d4", "d2d4"],
     )
 
-    assert requested == ["e4", "d4"]
+    assert [canonical for canonical, _ in requested] == ["e4", "d4"]

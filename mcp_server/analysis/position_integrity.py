@@ -99,7 +99,9 @@ def _capture_evidence(board: chess.Board, move: chess.Move) -> ForcingMoveEviden
     )
 
 
-def _defender_load(board: chess.Board, square: chess.Square, piece: chess.Piece) -> DefenderLoadEvidence:
+def _defender_load(
+    board: chess.Board, square: chess.Square, piece: chess.Piece
+) -> DefenderLoadEvidence:
     defended_targets: list[str] = []
     attacked_targets: list[str] = []
     sole_defense_targets: list[str] = []
@@ -299,7 +301,9 @@ def _mechanism_candidates(
                     trigger_uci=move.uci(),
                     trigger_san=san,
                     actor=(
-                        _piece_label(actor_after, move.to_square) if actor_after is not None else None
+                        _piece_label(actor_after, move.to_square)
+                        if actor_after is not None
+                        else None
                     ),
                     targets=fork_targets,
                     evidence={"attacked_valuable_targets": fork_targets},
@@ -414,7 +418,9 @@ def _piece_mobility_changes(before: chess.Board, after: chess.Board) -> list[Pie
                 target=_piece_label(before_piece, square),
                 mobility_before=len(before_attacks),
                 mobility_after=len(after_attacks),
-                gained_squares=sorted(chess.square_name(sq) for sq in after_attacks - before_attacks),
+                gained_squares=sorted(
+                    chess.square_name(sq) for sq in after_attacks - before_attacks
+                ),
                 lost_squares=sorted(chess.square_name(sq) for sq in before_attacks - after_attacks),
             )
         )
@@ -479,7 +485,9 @@ def build_rich_position_delta(
     for color, name in ((chess.WHITE, "white"), (chess.BLACK, "black")):
         before_pawns = _pawn_squares(before, color)
         after_pawns = _pawn_squares(after, color)
-        pawn_changes.extend(f"{name}_pawn_removed@{sq}" for sq in sorted(before_pawns - after_pawns))
+        pawn_changes.extend(
+            f"{name}_pawn_removed@{sq}" for sq in sorted(before_pawns - after_pawns)
+        )
         pawn_changes.extend(f"{name}_pawn_added@{sq}" for sq in sorted(after_pawns - before_pawns))
 
     return base.model_copy(
@@ -514,7 +522,7 @@ def enrich_position_eval(
         tactical_snapshot=snapshot,
     )
 
-    if detail == "forensic" and result.best_move and not board.is_game_over(claim_draw=False):
+    if result.best_move and not board.is_game_over(claim_draw=False):
         try:
             move = chess.Move.from_uci(result.best_move.lower())
         except (ValueError, chess.InvalidMoveError):

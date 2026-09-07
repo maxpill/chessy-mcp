@@ -72,8 +72,8 @@ def _root_move(result: TopMovesResult, board: chess.Board) -> chess.Move | None:
     return move if move in board.legal_moves else None
 
 
-def _canonical_candidate_san(board: chess.Board, text: str) -> str:
-    move = parse_candidate_move(board, text)
+def _canonical_candidate_san(board: chess.Board, text: str, *, strict: bool = False) -> str:
+    move = parse_candidate_move(board, text, strict=strict)
     return board.san(move)
 
 
@@ -97,8 +97,15 @@ def _comparison_requests(
     *,
     detail: Literal["coach", "forensic"],
     include_moves: list[str] | None,
-) -> list[str]:
-    """Return comparison candidates without changing coach-mode semantics.
+    strict: bool = False,
+) -> list[tuple[str, str]]:
+    """Return comparison candidates as ``(canonical_san, original_text)`` pairs.
+
+    The canonical SAN drives dedupe (so ``include_moves=['e2-e4', 'e4']``
+    counts once). The original text is what the caller typed — preserved
+    so the candidate's ``requested`` field round-trips the user's exact
+    spelling (2026-09-08 ultra-hard test notes §4) instead of silently
+    canonicalizing to ``e4``.
 
     ``coach`` preserves the original contract: explicit ``include_moves`` are
     analyzed exactly as requested and no engine reference is injected.
@@ -107,30 +114,45 @@ def _comparison_requests(
     caller can compare resulting positions against an explicit baseline. Up to
     eight caller-supplied alternatives remain guaranteed and additional engine
     candidates are appended only while space remains.
+
+    2026-09-08 ultra-hard test notes §3: when ``strict=True`` is threaded
+    from the top-level tool, non-canonical SAN (e.g. ``"e2-e4"``) raises
+    ``INVALID_COMPARE_MOVE`` symmetrically with how ``classify_move``
+    validates the played move under strict mode.
     """
     engine_sans = _engine_candidate_sans(result, board)
-    explicit = [_canonical_candidate_san(board, text) for text in include_moves or []]
-    explicit = list(dict.fromkeys(explicit))[:MAX_EXPLICIT_COMPARE_MOVES]
+    explicit_pairs: list[tuple[str, str]] = []
+    for text in include_moves or []:
+        san = _canonical_candidate_san(board, text, strict=strict)
+        if san not in {s for s, _ in explicit_pairs}:
+            explicit_pairs.append((san, text))
+    explicit_pairs = explicit_pairs[:MAX_EXPLICIT_COMPARE_MOVES]
 
-    if explicit and detail == "coach":
-        return explicit
+    if explicit_pairs and detail == "coach":
+        return explicit_pairs
 
-    if explicit:
-        requested: list[str] = []
+    if explicit_pairs:
+        seen: set[str] = set()
+        out: list[tuple[str, str]] = []
         if engine_sans:
-            requested.append(engine_sans[0])
-        for san in explicit:
-            if san not in requested:
-                requested.append(san)
+            out.append((engine_sans[0], engine_sans[0]))
+            seen.add(engine_sans[0])
+        for san, original in explicit_pairs:
+            if san in seen:
+                continue
+            out.append((san, original))
+            seen.add(san)
         for san in engine_sans[1:]:
-            if len(requested) >= MAX_TOTAL_COMPARE_MOVES:
+            if len(out) >= MAX_TOTAL_COMPARE_MOVES:
                 break
-            if san not in requested:
-                requested.append(san)
-        return requested[:MAX_TOTAL_COMPARE_MOVES]
+            if san in seen:
+                continue
+            out.append((san, san))
+            seen.add(san)
+        return out[:MAX_TOTAL_COMPARE_MOVES]
 
     if detail == "forensic":
-        return engine_sans[:MAX_AUTO_COMPARE_MOVES]
+        return [(san, san) for san in engine_sans[:MAX_AUTO_COMPARE_MOVES]]
     return []
 
 
@@ -279,8 +301,12 @@ async def enrich_top_moves_result(
     )
 
     comparisons: list[CandidateEvidence] = []
-    for text in requested:
-        comparisons.append(await _candidate_evidence(board, text, pool=pool, depth=depth))
+    for canonical_san, original_text in requested:
+        # 2026-09-08 ultra-hard test notes §4: pass the original user
+        # text (e.g. 'e2-e4') to _candidate_evidence so the response
+        # payload's `requested` field round-trips the user's spelling.
+        # Engine-derived requests fall back to canonical SAN.
+        comparisons.append(await _candidate_evidence(board, original_text, pool=pool, depth=depth))
 
     proof = None
     if proof_mode == "tactical":

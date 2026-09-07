@@ -45,9 +45,13 @@ _NOOP_RESULT = ZeroingOverrideResult(cp=None, mate=None, winning_uci=None)
 
 # Cap post-state depth so this doesn't dominate latency.
 MAX_POST_STATE_DEPTH = 6
-# Limit how many zeroing moves we evaluate in parallel — keeps the pool
-# responsive when the position has many captures.
-MAX_ZEROING_MOVES_TO_EVAL = 16
+# 2026-09-07 Round 3 F-04: concurrency cap, NOT a candidate cap. A
+# position can have more than 16 legal zeroing moves (each pawn capture
+# and pawn push counts, plus promotions). Limiting to the first 16
+# silently truncated correctness — the winning zeroing move could be
+# the 17th. Use a semaphore to bound simultaneous engine work without
+# skipping any legal zeroing move.
+MAX_ZEROING_CONCURRENCY = 4
 
 
 def _is_zeroing_move(board: chess.Board, move: chess.Move) -> bool:
@@ -120,31 +124,41 @@ async def evaluate_all_zeroing_post_states(
     eval_depth = min(depth, MAX_POST_STATE_DEPTH)
     mover_color = b.turn
 
-    work: list[tuple[str, asyncio.Future[tuple[int | None, int | None]]]] = []
-    for move in zeroing_moves[:MAX_ZEROING_MOVES_TO_EVAL]:
-        post = b.copy(stack=True)
-        post.push(move)
-        if post.is_game_over(claim_draw=False):
-            if post.is_checkmate():
-                fut: asyncio.Future[tuple[int | None, int | None]] = asyncio.Future()
-                fut.set_result((None, 1))
-                work.append((move.uci(), fut))
-                continue
-            fut2: asyncio.Future[tuple[int | None, int | None]] = asyncio.Future()
-            fut2.set_result((0, None))
-            work.append((move.uci(), fut2))
-            continue
-        coro = _eval_one_post_state(post, mover_color=mover_color, depth=eval_depth, pool=pool)
-        work.append((move.uci(), asyncio.ensure_future(coro)))
+    # 2026-09-07 Round 3 F-04: every legal zeroing move is considered.
+    # Concurrency is bounded by a semaphore so the pool stays responsive
+    # even when a position has many captures (e.g. late middlegame with
+    # both sides able to capture).
+    sem = asyncio.Semaphore(MAX_ZEROING_CONCURRENCY)
 
-    results = await asyncio.gather(*(w[1] for w in work), return_exceptions=True)
+    async def _bounded_eval(move: chess.Move) -> tuple[str, tuple[int | None, int | None]]:
+        async with sem:
+            post = b.copy(stack=True)
+            post.push(move)
+            if post.is_game_over(claim_draw=False):
+                if post.is_checkmate():
+                    return move.uci(), (None, 1)
+                return move.uci(), (0, None)
+            res = await _eval_one_post_state(
+                post, mover_color=mover_color, depth=eval_depth, pool=pool
+            )
+            return move.uci(), res
+
+    results = await asyncio.gather(
+        *(_bounded_eval(m) for m in zeroing_moves),
+        return_exceptions=True,
+    )
 
     best_cp: int | None = None
     best_mate: int | None = None
     best_uci: str | None = None
 
-    for (uci, _), res in zip(work, results, strict=True):
-        if isinstance(res, BaseException) or not isinstance(res, tuple):
+    for entry in results:
+        if isinstance(entry, BaseException):
+            continue
+        if not isinstance(entry, tuple) or len(entry) != 2:
+            continue
+        uci, res = entry
+        if not isinstance(res, tuple):
             continue
         cp, mate = res
         if cp is None and mate is None:
@@ -163,7 +177,6 @@ async def evaluate_all_zeroing_post_states(
         if cp is None or cp <= 0:
             continue
         if best_mate is not None:
-            # Mate already dominates; only switch to cp if mate is None
             continue
         if best_cp is None or cp > best_cp:
             best_cp = cp

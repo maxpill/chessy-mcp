@@ -221,6 +221,7 @@ def build_mcpeval_from_eval(
         lichess_url_reproduces_history=rule_status.fen_sufficient_for_status,
         requires_move_stack=rule_status.requires_move_stack,
         fen_sufficient_for_status=rule_status.fen_sufficient_for_status,
+        repetition_sufficient_without_history=rule_status.repetition_sufficient_without_history,
         history_completeness=rule_status.history_completeness,
         repetition_status=rule_status.repetition_status,
     )

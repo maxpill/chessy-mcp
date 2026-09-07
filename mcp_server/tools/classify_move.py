@@ -118,13 +118,16 @@ async def classify_move(
     """
     t0 = time.time()
     depth = _validate_requested_depth(depth, tool="classify_move")
-    raw_requested_depth = max(1, min(depth, 30))
+    raw_requested_depth = depth
+    depth = max(1, min(depth, 30))
     try:
         if detail not in {"standard", "coach", "forensic"}:
             raise ValueError(f"INVALID_DETAIL: {detail}")
         if compare_moves is not None and len(compare_moves) > 8:
             raise ValueError("INVALID_COMPARE_MOVES: at most 8 candidates are allowed")
-        effective_detail: DetailMode = "forensic" if compare_moves and detail == "standard" else detail
+        effective_detail: DetailMode = (
+            "forensic" if compare_moves and detail == "standard" else detail
+        )
 
         outcome = validate_classify_input(
             fen=fen,
@@ -186,6 +189,7 @@ async def classify_move(
                     outcome_rule_before=outcome.rule_before,
                     action_type=action_type,
                     syntax_warning=None,
+                    requested_depth=raw_requested_depth,
                 )
 
             eval_before, eval_after, score, _ = await _CLASSIFIER.compute(
@@ -288,9 +292,7 @@ async def _finish_result(
             exclude={"same_action_type", "same_outcome", "within_cp_threshold"}
         )
         return ForensicMoveAnalysis(**payload)
-    evidence_detail: Literal["coach", "forensic"] = (
-        "forensic" if detail == "forensic" else "coach"
-    )
+    evidence_detail: Literal["coach", "forensic"] = "forensic" if detail == "forensic" else "coach"
     enriched = await enrich_move_analysis(
         result,
         board_before=outcome.board,
@@ -299,6 +301,7 @@ async def _finish_result(
         depth=depth,
         detail=evidence_detail,
         compare_moves=compare_moves,
+        strict=strict,
     )
     integrated = upgrade_move_forensics(
         enriched,
@@ -358,12 +361,17 @@ def _build_from_pool_classify(
     outcome_rule_before: Any,
     action_type: ActionType,
     syntax_warning: str | None,
+    requested_depth: int | None = None,
 ) -> MCPMoveAnalysis:
     from mcp_server.models import MCPEval
     from mcp_server.move_grading import score_played_move
 
     eval_bef = MCPEval.from_eval(
-        ma.eval_before, board.fen(), board=board, history_complete=outcome_history_complete
+        ma.eval_before,
+        board.fen(),
+        board=board,
+        history_complete=outcome_history_complete,
+        requested_depth=requested_depth,
     )
     fen_after = board_after_fen_for_chess_move(board, chess_move)
     eval_aft = MCPEval.from_eval(
@@ -371,6 +379,7 @@ def _build_from_pool_classify(
         fen_after,
         board=board_after_for_chess_move(board, chess_move),
         history_complete=outcome_history_complete,
+        requested_depth=requested_depth,
     )
     board_after = board_after_for_chess_move(board, chess_move)
     score = score_played_move(

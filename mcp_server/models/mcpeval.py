@@ -101,6 +101,7 @@ class MCPEval(BaseModel):
     fen_sufficient_for_status: bool = True
     history_completeness: str = "incomplete"
     repetition_status: str = "none"
+    repetition_sufficient_without_history: bool = True
     input_fen: str | None = None
     canonical_fen: str | None = None
     fen_was_canonicalized: bool = False
@@ -192,6 +193,7 @@ class MCPEval(BaseModel):
                 "fen_sufficient_for_status",
                 "history_completeness",
                 "repetition_status",
+                "repetition_sufficient_without_history",
             ):
                 values.setdefault(field_name, getattr(history_block, field_name))
         policy_block = values.pop("policy", None)
@@ -287,6 +289,7 @@ class MCPEval(BaseModel):
             fen_sufficient_for_status=self.fen_sufficient_for_status,
             history_completeness=self.history_completeness,
             repetition_status=self.repetition_status,
+            repetition_sufficient_without_history=self.repetition_sufficient_without_history,
         )
 
     @computed_field  # type: ignore[misc]

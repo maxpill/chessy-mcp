@@ -145,6 +145,14 @@ def evaluate_rule_status(
         history_dependent_status=requires_stack,
         requires_move_stack=requires_stack,
         fen_sufficient_for_status=not requires_stack,
+        # 2026-09-08: when we know repetition is NOT a claim basis (no
+        # threefold), repetition-side status is FEN-sufficient regardless of
+        # history completeness. Only flag False when threefold is provably
+        # in play OR history was provided and we'd need it to detect
+        # fivefold. Mirrors the audit-flag value but splits the semantics.
+        repetition_sufficient_without_history=not (
+            repetition_proven or (full_history and repetition_status == "unknown")
+        ),
         history_completeness=history_state,
         repetition_status=repetition_status,
     )

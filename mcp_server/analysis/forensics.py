@@ -160,17 +160,28 @@ def build_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
     )
 
 
-def parse_candidate_move(board: chess.Board, text: str) -> chess.Move:
-    raw = text.strip()
+def parse_candidate_move(board: chess.Board, text: str, *, strict: bool = False) -> chess.Move:
+    """Parse a candidate move supplied by the caller.
+
+    2026-09-08 ultra-hard test notes §3: the caller's ``strict`` flag is
+    threaded through so explicit ``include_moves`` and ``compare_moves``
+    behave symmetrically with the root ``moves=`` parser — under strict
+    mode, non-canonical SAN (e.g. ``"e2-e4"``) raises
+    ``INVALID_COMPARE_MOVE`` instead of being silently canonicalized.
+
+    Reuses the project's strict-aware parser
+    (``parse_move_on_board_with_warning``) so behavior matches the rest
+    of the tool surface — that parser already raises STRICT_SAN_ERROR when
+    ``strict=True`` and the SAN form requires normalization. The error
+    is re-raised as the candidate-specific ``INVALID_COMPARE_MOVE`` code
+    so callers can distinguish it from other illegal-move paths.
+    """
+    from mcp_server.parsers import parse_move_on_board_with_warning
+
     try:
-        move = chess.Move.from_uci(raw.lower())
-        if move in board.legal_moves:
-            return move
-    except (ValueError, chess.InvalidMoveError):
-        pass
-    try:
-        return board.parse_san(raw)
-    except (ValueError, chess.IllegalMoveError, chess.AmbiguousMoveError) as exc:
+        move, _warning = parse_move_on_board_with_warning(board, text, strict=strict)
+        return move
+    except ValueError as exc:
         raise ValueError(f"INVALID_COMPARE_MOVE: {text}") from exc
 
 
@@ -275,6 +286,7 @@ def _principal_line(board: chess.Board, pv: list[str] | None) -> ForcedLineEvide
     work = board.copy(stack=True)
     uci: list[str] = []
     san: list[str] = []
+    forcing_seen = False
     for raw in pv[:12]:
         try:
             move = chess.Move.from_uci(str(raw).lower())
@@ -290,6 +302,14 @@ def _principal_line(board: chess.Board, pv: list[str] | None) -> ForcedLineEvide
                 san=san,
                 termination_reason="invalid_pv_move",
             )
+        # 2026-09-08 audit §2: track forcing during the walk so the shared
+        # helper can decide resolution. A quiet root-to-endpoint with no
+        # forcing seen must NOT report resolved=True — the audit note
+        # specifically pinned the case where the candidate comparison
+        # claimed resolved=True for a sequence with no tactical action.
+        forcing_seen = forcing_seen or (
+            work.gives_check(move) or work.is_capture(move) or move.promotion is not None
+        )
         uci.append(move.uci())
         san.append(work.san(move))
         work.push(move)
@@ -300,12 +320,15 @@ def _principal_line(board: chess.Board, pv: list[str] | None) -> ForcedLineEvide
                 termination_reason="terminal_position",
                 tactical_sequence_resolved=True,
             )
-    final_snapshot = build_tactical_snapshot(work)
+    from mcp_server.analysis.tactical_continuation_resolved import (
+        tactical_sequence_resolved,
+    )
+
     return ForcedLineEvidence(
         uci=uci,
         san=san,
         termination_reason="pv_exhausted",
-        tactical_sequence_resolved=not final_snapshot.checks and not final_snapshot.captures,
+        tactical_sequence_resolved=tactical_sequence_resolved(forcing_seen, work),
     )
 
 
@@ -315,8 +338,9 @@ async def _candidate_evidence(
     *,
     pool: Any,
     depth: int,
+    strict: bool = False,
 ) -> CandidateEvidence:
-    move = parse_candidate_move(board, requested)
+    move = parse_candidate_move(board, requested, strict=strict)
     san = board.san(move)
     post = board.copy(stack=True)
     post.push(move)
@@ -514,9 +538,7 @@ def _position_update_evidence(
             if defenders_after == 0:
                 newly_exposed.append(label)
         if defenders_after < defenders_before:
-            defender_losses.append(
-                f"{label}:{defenders_before}->{defenders_after}"
-            )
+            defender_losses.append(f"{label}:{defenders_before}->{defenders_after}")
         if not pinned_before and pinned_after:
             newly_pinned.append(label)
 
@@ -593,9 +615,7 @@ def _stability_evidence(
         mate_status_changed = mate_status_changed or ((mate_before > 0) != (mate_after > 0))
 
     forcing_punishment = bool(
-        reply is not None
-        and reply.is_forcing
-        and result.move_class.value in {"mistake", "blunder"}
+        reply is not None and reply.is_forcing and result.move_class.value in {"mistake", "blunder"}
     )
     small_cp_loss = result.centipawn_loss is not None and result.centipawn_loss <= 30
     small_wdl_loss = wdl_loss_pp is not None and wdl_loss_pp <= 2.0
@@ -711,6 +731,7 @@ async def enrich_move_analysis(
     depth: int,
     detail: Literal["coach", "forensic"],
     compare_moves: list[str] | None = None,
+    strict: bool = False,
 ) -> ForensicMoveAnalysis:
     board_after = board_before.copy(stack=True)
     if played_move is not None:
@@ -766,7 +787,9 @@ async def enrich_move_analysis(
     comparisons: list[CandidateEvidence] = []
     for requested in requested_candidates:
         comparisons.append(
-            await _candidate_evidence(board_before, requested, pool=pool, depth=depth)
+            await _candidate_evidence(
+                board_before, requested, pool=pool, depth=depth, strict=strict
+            )
         )
 
     forensic = ForensicEvidence(
@@ -788,7 +811,5 @@ async def enrich_move_analysis(
             depth=depth,
         ),
     )
-    payload = result.model_dump(
-        exclude={"same_action_type", "same_outcome", "within_cp_threshold"}
-    )
+    payload = result.model_dump(exclude={"same_action_type", "same_outcome", "within_cp_threshold"})
     return ForensicMoveAnalysis(**payload, forensics=forensic)

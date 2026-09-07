@@ -86,3 +86,10 @@ class RuleStatus:
     fen_sufficient_for_status: bool = True
     history_completeness: str = "incomplete"
     repetition_status: str = "unknown"
+    # 2026-09-08 ultra-hard test notes (early obs §6): when True, the
+    # repetition-side of the status derivation is independent of the move
+    # stack — a fifty-move claim is FEN-sufficient regardless of repetition
+    # bookkeeping. The legacy ``fen_sufficient_for_status`` field stays for
+    # back-compat; callers that only need the repetition-specific subset
+    # should consult this new flag instead.
+    repetition_sufficient_without_history: bool = True

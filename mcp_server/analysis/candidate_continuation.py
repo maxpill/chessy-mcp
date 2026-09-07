@@ -16,11 +16,15 @@ from typing import Any
 
 import chess
 
-from mcp_server.analysis.forensics import PIECE_NAMES, build_position_fingerprint
+from mcp_server.analysis.forensics import (
+    PIECE_NAMES,
+    build_position_fingerprint,
+)
 from mcp_server.analysis.position_integrity import (
     build_rich_position_delta,
     build_rich_tactical_snapshot,
 )
+from mcp_server.analysis.tactical_continuation_resolved import tactical_sequence_resolved
 from mcp_server.analysis.tactical_snapshot_extensions import extend_tactical_snapshot
 from mcp_server.models.forensics import (
     CandidateContinuationEndpointDifference,
@@ -42,15 +46,28 @@ def _legal_uci(board: chess.Board, raw: str | None) -> chess.Move | None:
 
 
 def _forcing(move_board: chess.Board, move: chess.Move) -> bool:
-    return (
-        move_board.gives_check(move)
-        or move_board.is_capture(move)
-        or move.promotion is not None
-    )
+    return move_board.gives_check(move) or move_board.is_capture(move) or move.promotion is not None
 
 
 def _forcing_available(board: chess.Board) -> bool:
     return any(_forcing(board, move) for move in board.legal_moves)
+
+
+def tactical_sequence_resolved(forcing_seen: bool, final_board: chess.Board) -> bool:
+    """Shared semantic for ``tactical_sequence_resolved``.
+
+    2026-09-08 ultra-hard test notes §2: both ``_principal_line``
+    (``analysis/forensics.py``) and ``_walk_endpoint`` (this file) compute
+    the same field for the same continuation but previously disagreed —
+    ``_principal_line`` resolved on "final position is quiet" alone, while
+    ``_walk_endpoint`` required ``forcing_seen`` first. This helper pins
+    the single semantic: a continuation is resolved iff a forcing move was
+    seen during the walk AND the final board is quiet (no in-check, no
+    forcing-move available). Both call sites must use it so the candidate
+    comparison and the nested continuation_endpoint agree on the same
+    continuation.
+    """
+    return forcing_seen and not final_board.is_check() and not _forcing_available(final_board)
 
 
 def _captured_piece_label(board: chess.Board, move: chess.Move) -> str | None:
@@ -110,13 +127,17 @@ def _walk_endpoint(
     """Walk candidate + returned PV to a bounded local endpoint."""
     root_move = _legal_uci(root, candidate.uci)
     if root_move is None:
-        return root.copy(stack=True), {
-            "plies_from_candidate": 0,
-            "plies_from_root": 0,
-            "termination_reason": "invalid_candidate_move",
-            "tactical_sequence_resolved": False,
-            "returned_pv_plies_available": len(candidate.continuation_uci),
-        }, []
+        return (
+            root.copy(stack=True),
+            {
+                "plies_from_candidate": 0,
+                "plies_from_root": 0,
+                "termination_reason": "invalid_candidate_move",
+                "tactical_sequence_resolved": False,
+                "returned_pv_plies_available": len(candidate.continuation_uci),
+            },
+            [],
+        )
 
     events: list[dict[str, Any]] = []
     event = _irreversible_event(root, root_move, ply_from_root=1)
@@ -129,34 +150,46 @@ def _walk_endpoint(
     work.push(root_move)
 
     if work.is_checkmate():
-        return work, {
-            "plies_from_candidate": 0,
-            "plies_from_root": 1,
-            "termination_reason": "forced_mate_in_returned_pv",
-            "tactical_sequence_resolved": True,
-            "returned_pv_plies_available": len(candidate.continuation_uci),
-        }, events
+        return (
+            work,
+            {
+                "plies_from_candidate": 0,
+                "plies_from_root": 1,
+                "termination_reason": "forced_mate_in_returned_pv",
+                "tactical_sequence_resolved": True,
+                "returned_pv_plies_available": len(candidate.continuation_uci),
+            },
+            events,
+        )
     if work.is_game_over(claim_draw=False):
-        return work, {
-            "plies_from_candidate": 0,
-            "plies_from_root": 1,
-            "termination_reason": "terminal_position",
-            "tactical_sequence_resolved": True,
-            "returned_pv_plies_available": len(candidate.continuation_uci),
-        }, events
+        return (
+            work,
+            {
+                "plies_from_candidate": 0,
+                "plies_from_root": 1,
+                "termination_reason": "terminal_position",
+                "tactical_sequence_resolved": True,
+                "returned_pv_plies_available": len(candidate.continuation_uci),
+            },
+            events,
+        )
 
     # A forcing root move can itself settle the local tactic. Do not consume a
     # quiet engine continuation merely to reach an arbitrary fixed PV length.
     if forcing_seen and not work.is_check() and not _forcing_available(work):
-        return work, {
-            "plies_from_candidate": 0,
-            "plies_from_root": 1,
-            "termination_reason": (
-                "material_resolution" if capture_or_promotion_seen else "quiet_position"
-            ),
-            "tactical_sequence_resolved": True,
-            "returned_pv_plies_available": len(candidate.continuation_uci),
-        }, events
+        return (
+            work,
+            {
+                "plies_from_candidate": 0,
+                "plies_from_root": 1,
+                "termination_reason": (
+                    "material_resolution" if capture_or_promotion_seen else "quiet_position"
+                ),
+                "tactical_sequence_resolved": True,
+                "returned_pv_plies_available": len(candidate.continuation_uci),
+            },
+            events,
+        )
 
     walked = 0
     termination_reason = "no_pv" if not candidate.continuation_uci else "pv_exhausted"
@@ -186,20 +219,24 @@ def _walk_endpoint(
             termination_reason = "terminal_position"
             resolved = True
             break
-        if forcing_seen and not work.is_check() and not _forcing_available(work):
+        if tactical_sequence_resolved(forcing_seen, work):
             termination_reason = (
                 "material_resolution" if capture_or_promotion_seen else "quiet_position"
             )
             resolved = True
             break
 
-    return work, {
-        "plies_from_candidate": walked,
-        "plies_from_root": walked + 1,
-        "termination_reason": termination_reason,
-        "tactical_sequence_resolved": resolved,
-        "returned_pv_plies_available": len(candidate.continuation_uci),
-    }, events
+    return (
+        work,
+        {
+            "plies_from_candidate": walked,
+            "plies_from_root": walked + 1,
+            "termination_reason": termination_reason,
+            "tactical_sequence_resolved": resolved,
+            "returned_pv_plies_available": len(candidate.continuation_uci),
+        },
+        events,
+    )
 
 
 def attach_candidate_continuation_endpoint(
@@ -272,9 +309,7 @@ def _event_labels(candidate: CandidateEvidence) -> list[str]:
     for raw in endpoint.irreversible_events:
         reasons = raw.get("reasons")
         reason_text = ",".join(str(item) for item in reasons) if isinstance(reasons, list) else ""
-        labels.append(
-            f"ply={raw.get('ply_from_root')}:{raw.get('san')}:{reason_text or '-'}"
-        )
+        labels.append(f"ply={raw.get('ply_from_root')}:{raw.get('san')}:{reason_text or '-'}")
     return labels
 
 

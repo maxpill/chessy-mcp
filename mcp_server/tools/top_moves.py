@@ -83,7 +83,8 @@ async def top_moves(
     """
     t0 = time.time()
     depth = _validate_requested_depth(depth, tool="top_moves")
-    raw_requested_depth = max(1, min(depth, 30))
+    raw_requested_depth = depth
+    depth = max(1, min(depth, 30))
     raw_requested_n = n
     clamped_n = max(1, min(n, 20))
     try:
@@ -99,7 +100,7 @@ async def top_moves(
             fen=fen,
             moves=moves,
             n=clamped_n,
-            depth=raw_requested_depth,
+            depth=depth,
             raw_requested_depth=raw_requested_depth,
             raw_requested_n=raw_requested_n,
             clamped_n=clamped_n,
@@ -126,11 +127,12 @@ async def top_moves(
                 result,
                 board,
                 pool=pool,
-                depth=raw_requested_depth,
+                depth=depth,
                 detail=effective_detail,
                 include_moves=include_moves,
                 proof_mode=proof_mode,
                 proof_defenses=max(1, min(int(proof_defenses), 8)),
+                strict=strict,
             )
             result = upgrade_top_moves_forensics(result, board)
 

@@ -22,3 +22,8 @@ class HistoryBlock(BaseModel):
     fen_sufficient_for_status: bool = True
     history_completeness: str = "incomplete"  # complete | partial | incomplete | not_required
     repetition_status: str = "none"  # "unknown" | "none" | "threefold_claimable" | "fivefold"
+    # 2026-09-08 ultra-hard test notes (early obs §6): repetition-side
+    # status derivation does not need the move stack when True (fifty-move
+    # claim is FEN-sufficient even if repetition is unknown). Additive —
+    # legacy fen_sufficient_for_status unchanged.
+    repetition_sufficient_without_history: bool = True
