@@ -35,6 +35,20 @@ _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 
+def _is_transport_error(exc: BaseException) -> bool:
+    """Return True if exc represents a severed or dead engine transport."""
+    if isinstance(exc, _TRANSPORT_ERRORS):
+        return True
+    if isinstance(exc, RuntimeError):
+        msg = str(exc)
+        if "handler is closed" in msg or "closed=True" in msg or "TCPTransport" in msg:
+            return True
+    return False
+
+
+is_transport_error = _is_transport_error
+
+
 @dataclass
 class _BreakerState:
     failures: int = 0
@@ -64,7 +78,9 @@ async def with_engine_retry(fn, *, max_retries: int = 1) -> object:
             result = await fn()
             _record_success()
             return result
-        except _TRANSPORT_ERRORS as exc:
+        except BaseException as exc:
+            if not _is_transport_error(exc):
+                raise
             last_exc = exc
             _record_failure()
             if attempt < max_retries:

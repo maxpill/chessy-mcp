@@ -23,6 +23,17 @@ class UCIError(ConnectionError):
     pass
 
 
+def _is_closing(writer: Any) -> bool:
+    if getattr(writer, "is_closing", lambda: False)():
+        return True
+    if getattr(writer, "closed", False):
+        return True
+    tr = getattr(writer, "transport", None)
+    if tr is not None and getattr(tr, "is_closing", lambda: False)():
+        return True
+    return False
+
+
 class TCPUCIClient:
     """Persistent UCI session over a TCP socket (e.g. socat → stockfish)."""
 
@@ -68,36 +79,39 @@ class TCPUCIClient:
             await self._send("isready")
             await self._wait_for("readyok", timeout=10)
 
-    async def _ensure_connected(self) -> None:
+    def is_connected(self) -> bool:
+        """Check whether reader and writer are present and not in a closing/closed state."""
         if self._reader is None or self._writer is None:
+            return False
+        return not _is_closing(self._writer)
+
+    async def _ensure_connected(self) -> None:
+        if not self.is_connected():
+            await self._reset_connection()
             await self.connect()
 
     async def _reset_connection(self) -> None:
-        if self._writer:
-            try:
-                self._send_no_lock("quit")
-            except (ConnectionError, OSError):
-                pass
-            try:
-                self._writer.close()
-                await self._writer.wait_closed()
-            except Exception:
-                pass
+        writer = self._writer
         self._reader = None
         self._writer = None
         # Reset MultiPV tracking: a new engine instance defaults to MultiPV=1
         # regardless of what we last sent. We KEEP _applied_options so connect()
         # re-applies Threads/Hash/etc.; only MultiPV is reset here because
         # it's the only one whose non-applied state matters for the next call.
-        #
-        # P1 audit fix: also drop MultiPV from _applied_options. Without this,
-        # connect() re-applies the OLD MultiPV value to the new engine, so
-        # _current_multipv=1 vs _applied_options["MultiPV"]=5 leaves a phantom
-        # 5-line Stockfish while the client thinks the next multipv=1 call
-        # needs no reset (1 != 1 → False). Drop the MultiPV entry so connect()
-        # leaves the new engine at its compiled-in default of MultiPV=1.
         self._current_multipv = 1
         self._applied_options.pop("MultiPV", None)
+
+        if writer is not None:
+            try:
+                if not _is_closing(writer):
+                    writer.write(b"quit\n")
+            except Exception:
+                pass
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
 
     async def analyse(
         self,
@@ -165,22 +179,24 @@ class TCPUCIClient:
                 raise
 
     async def close(self) -> None:
-        if self._writer:
-            try:
-                self._send_no_lock("quit")
-            except (ConnectionError, OSError):
-                pass
-            self._writer.close()
+        await self._reset_connection()
 
     async def _send(self, msg: str) -> None:
         logger.debug("→ %s: %s", self.name, msg)
         assert self._writer is not None
-        self._writer.write((msg + "\n").encode())
-        await self._writer.drain()
+        try:
+            self._writer.write((msg + "\n").encode())
+            await self._writer.drain()
+        except (RuntimeError, ConnectionError, OSError) as exc:
+            await self._reset_connection()
+            raise UCIError(f"Engine {self.name} transport error during send: {exc}") from exc
 
     def _send_no_lock(self, msg: str) -> None:
-        if self._writer:
-            self._writer.write((msg + "\n").encode())
+        if self._writer and not _is_closing(self._writer):
+            try:
+                self._writer.write((msg + "\n").encode())
+            except Exception:
+                pass
 
     async def _readline(self, timeout: float = 30) -> str | None:
         assert self._reader is not None
@@ -188,6 +204,9 @@ class TCPUCIClient:
             data = await asyncio.wait_for(self._reader.readline(), timeout=timeout)
         except TimeoutError as exc:
             raise UCIError(f"Timeout reading from {self.name}") from exc
+        except (RuntimeError, ConnectionError, OSError) as exc:
+            await self._reset_connection()
+            raise UCIError(f"Engine {self.name} transport error during readline: {exc}") from exc
         if not data:
             return None
         return data.decode().strip()

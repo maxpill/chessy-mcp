@@ -28,6 +28,17 @@ _TRANSPORT_ERRORS = (
 )
 
 
+def _is_transport_error(exc: BaseException) -> bool:
+    """Return True if exc represents a severed or dead engine transport."""
+    if isinstance(exc, _TRANSPORT_ERRORS):
+        return True
+    if isinstance(exc, RuntimeError):
+        msg = str(exc)
+        if "handler is closed" in msg or "closed=True" in msg or "TCPTransport" in msg:
+            return True
+    return False
+
+
 class PoolBusy(Exception):
     """No engine became available within the acquire timeout."""
 
@@ -160,11 +171,11 @@ class _EnginePool:
 
         try:
             result = await fn(fresh)
-        except _TRANSPORT_ERRORS:
-            await self._discard(fresh)
-            self._start_self_heal()
-            raise
-        except BaseException:
+        except BaseException as exc:
+            if _is_transport_error(exc):
+                await self._discard(fresh)
+                self._start_self_heal()
+                raise
             await self._accept_fresh(fresh)
             raise
 
@@ -183,9 +194,9 @@ class _EnginePool:
 
         try:
             result = await fn(inst)
-        except _TRANSPORT_ERRORS as exc:
-            return await self._replace_and_retry(inst, fn, exc)
-        except BaseException:
+        except BaseException as exc:
+            if _is_transport_error(exc):
+                return await self._replace_and_retry(inst, fn, exc)
             self._q.put_nowait(inst)
             raise
         else:
