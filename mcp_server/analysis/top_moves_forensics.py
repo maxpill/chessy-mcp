@@ -291,13 +291,21 @@ async def enrich_top_moves_result(
     include_moves: list[str] | None,
     proof_mode: Literal["none", "tactical"],
     proof_defenses: int,
+    strict: bool = False,
 ) -> ForensicTopMovesResult:
-    """Attach position evidence, explicit candidates, and optional proof data."""
+    """Attach position evidence, explicit candidates, and optional proof data.
+
+    ``strict`` is threaded into :func:`_comparison_requests` so non-canonical
+    SAN (e.g. ``"e2-e4"``) raises ``INVALID_COMPARE_MOVE`` symmetrically with
+    how ``classify_move`` validates the played move under strict mode
+    (2026-09-08 ultra-hard test notes §1).
+    """
     requested = _comparison_requests(
         result,
         board,
         detail=detail,
         include_moves=include_moves,
+        strict=strict,
     )
 
     comparisons: list[CandidateEvidence] = []

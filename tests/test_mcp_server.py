@@ -2781,23 +2781,37 @@ async def test_audit_11_opening_parent_child_suppressed_warning():
 
 @pytest.mark.asyncio
 async def test_audit_12_mcp_eval_history_dependent_status():
-    """Incomplete FEN history must not pretend that repetition has been excluded."""
-    # A naked active FEN can prove board-local rules, but it cannot prove that
-    # no earlier repetition occurred. The response therefore explicitly asks
-    # for a move stack instead of claiming that the FEN reproduces all rule state.
+    """Incomplete FEN history must not pretend that repetition has been excluded.
+
+    2026-09-08 audit Bug 3 revision: pre-fix this test pinned the buggy
+    behavior (``history_dependent_status is True`` for a naked FEN with
+    incomplete history) — the audit's exact failing case. The fix
+    decouples ``history_dependent_status`` from ``repetition_status == "unknown"``:
+    ``requires_stack`` is True only when a threefold claim has actually
+    been proven. The audit's separate axis
+    ``repetition_sufficient_without_history`` carries the
+    repetition-knowledge signal.
+    """
+    # A naked active FEN: no claim reason is provable, so the rule_status
+    # is FEN-sufficient. Repetition_status stays "unknown" because no PGN
+    # was supplied; the repetition_sufficient_without_history flag carries
+    # that signal instead.
     b = chess.Board()
     b.push_san("e4")
     b.push_san("e5")
     ev = MCPEval.from_eval(Eval(cp=20, best_move="g1f3", pv=["g1f3"], depth=14), b.fen(), board=b)
     assert ev.repetition_status == "unknown"
-    assert ev.history_dependent_status is True
-    assert ev.lichess_url_reproduces_history is False
-    assert ev.requires_move_stack is True
-    assert ev.fen_sufficient_for_status is False
+    assert ev.history_dependent_status is False
+    assert ev.requires_move_stack is False
+    assert ev.fen_sufficient_for_status is True
+    assert ev.repetition_sufficient_without_history is True
 
-    # The halfmove clock proves a 50-move claim from the FEN, but it still does
-    # not prove that threefold repetition is absent. Claimability is known; the
-    # complete set of history-dependent reasons is not.
+    # The halfmove clock proves a 50-move claim from the FEN alone.
+    # 2026-09-08 audit Bug 3 primary regression: history_dependent_status
+    # must be False here (the current rule is FEN-provable), even though
+    # repetition_status is "unknown". The audit's exact FEN used halfmove
+    # 100 with the Rook+Pawn vs Black King — covered directly by Bug 3's
+    # dedicated test (test_p0_2026_09_08_audit_bug3_history_dep.py).
     b_50 = chess.Board()
     b_50.halfmove_clock = 100
     ev_50 = MCPEval.from_eval(
@@ -2805,12 +2819,12 @@ async def test_audit_12_mcp_eval_history_dependent_status():
     )
     assert "fifty_moves" in ev_50.claim_reasons_now
     assert ev_50.repetition_status == "unknown"
-    assert ev_50.history_dependent_status is True
-    assert ev_50.lichess_url_reproduces_history is False
-    assert ev_50.requires_move_stack is True
-    assert ev_50.fen_sufficient_for_status is False
+    assert ev_50.history_dependent_status is False
+    assert ev_50.requires_move_stack is False
+    assert ev_50.fen_sufficient_for_status is True
 
-    # Repetition -> requires history stack
+    # Repetition -> requires history stack (the only case that still
+    # actually needs the move stack — fivefold/threefold detection).
     b_rep = chess.Board()
     for m in ["Nf3", "Nf6", "Ng1", "Ng8", "Nf3", "Nf6", "Ng1", "Ng8"]:
         b_rep.push_san(m)
