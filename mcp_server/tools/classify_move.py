@@ -124,7 +124,7 @@ async def classify_move(
         if detail not in {"standard", "coach", "forensic"}:
             raise ValueError(f"INVALID_DETAIL: {detail}")
         if compare_moves is not None and len(compare_moves) > 8:
-            raise ValueError("INVALID_COMPARE_MOVES: at most 8 candidates are allowed")
+            raise ValueError("INVALID_PARAMETER_COUNT: at most 8 candidates are allowed")
         effective_detail: DetailMode = (
             "forensic" if compare_moves and detail == "standard" else detail
         )

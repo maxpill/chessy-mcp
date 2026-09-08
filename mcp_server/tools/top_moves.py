@@ -80,6 +80,17 @@ async def top_moves(
     Continuation-endpoint reconstruction adds no new Stockfish search; it uses
     only candidate PVs that were already returned by the existing engine work.
     ``proof_defenses`` controls the sampled defense count and is clamped to 1-8.
+
+    Action semantics:
+    - Root candidate action: ``recommended_action`` / ``root_candidate_action`` on each candidate
+      represents the action for the player to move at the root position (e.g. ``play_move``).
+    - Post-position action: ``post_position["recommended_action"]`` /
+      ``post_position["post_position_recommended_action"]`` represents the recommended action
+      for the replying player in the position resulting from this candidate move (e.g. ``claim_draw``).
+    - Terminal boards: when the game is over by chess rules (checkmate, stalemate, insufficient
+      material, 75-move rule, 5-fold repetition), ``returned_n = 0`` moves are returned because no
+      legal game actions can be played, even when ``board_legal_move_count > 0`` (such as kings having
+      geometric moves in insufficient material endings).
     """
     t0 = time.time()
     depth = _validate_requested_depth(depth, tool="top_moves")
@@ -93,7 +104,7 @@ async def top_moves(
         if proof_mode not in {"none", "tactical"}:
             raise ValueError(f"INVALID_PROOF_MODE: {proof_mode}")
         if len(include_moves or []) > 8:
-            raise ValueError("INVALID_COMPARE_MOVE: include_moves supports at most 8 moves")
+            raise ValueError("INVALID_PARAMETER_COUNT: include_moves supports at most 8 moves")
 
         verbosity_mode = _resolve_verbosity(verbosity)
         out = await _FINDER.run(

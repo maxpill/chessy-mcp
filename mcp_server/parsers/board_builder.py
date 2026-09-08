@@ -15,6 +15,7 @@ points:
 from __future__ import annotations
 
 import logging
+import re
 
 import chess
 
@@ -169,7 +170,20 @@ def build_board(
                 f"INVALID_INPUT: '{cleaned}' is not a recognizable FEN, "
                 f"PGN, or move sequence (numeric-only input)."
             )
-        game = _extract_game(cleaned, strict=strict)
+        try:
+            game = _extract_game(cleaned, strict=strict)
+        except ValueError as pgn_exc:
+            has_pgn_markers = (
+                cleaned.startswith("[")
+                or re.search(r"\b\d+\s*[\.\:]", cleaned) is not None
+                or cleaned.rstrip() in ("1-0", "0-1", "1/2-1/2", "*")
+            )
+            if not has_pgn_markers:
+                raise ValueError(
+                    f"INVALID_POSITION: Position '{cleaned}' could not be parsed as FEN or PGN. "
+                    f"fen_parse: failed; pgn_parse: {pgn_exc}"
+                ) from pgn_exc
+            raise
         board = game.board()
         if not board.is_valid() or board.status() != chess.STATUS_VALID:
             raise ValueError(

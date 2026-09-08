@@ -364,6 +364,16 @@ def _build_advantage_events(
             if two_plies_before <= -150 and before >= -75 and after <= -150:
                 kinds.append("missed_recovery")
 
+        if record.board_after.is_checkmate():
+            if record.side == perspective:
+                kinds = [
+                    k
+                    for k in kinds
+                    if k not in {"lost_advantage", "missed_conversion", "fell_behind", "missed_recovery"}
+                ]
+            else:
+                kinds = [k for k in kinds if k not in {"recovered", "gained_advantage"}]
+
         for kind in dict.fromkeys(kinds):
             events.append(
                 AdvantageEvent(
@@ -430,7 +440,12 @@ def _select_critical_moments(
     for record in ranked:
         if len(reasons_by_ply) >= max_moments:
             break
-        if _importance(record) >= 100:
+        actual_loss = (
+            record.score.effective_loss
+            if record.score.effective_loss is not None
+            else (record.score.centipawn_loss or 0)
+        )
+        if actual_loss >= 100:
             reasons_by_ply.setdefault(record.ply, []).append("high_engine_loss")
 
     selected_records = [record for record in own if record.ply in reasons_by_ply]

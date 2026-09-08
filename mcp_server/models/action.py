@@ -19,6 +19,7 @@ class ActionBlock(BaseModel):
     best_move: str | None = None
     executable_move: str | None = None
     recommended_action: str = "play_move"
+    root_candidate_action: str | None = None
     best_action: str = "play_move"
     best_action_type: str = "play_move"
     best_action_obj: dict[str, Any] | None = None

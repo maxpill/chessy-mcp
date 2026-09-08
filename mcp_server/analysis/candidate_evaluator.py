@@ -120,6 +120,7 @@ async def evaluate_candidate(
             "post_claim_reasons": cand_claim_reasons,
             "post_claim_moves": cand_claim_moves,
             "recommended_action": cand_recommended_action,
+            "root_candidate_action": cand_recommended_action,
             "best_action": cand_recommended_action,
             "best_action_type": cand_recommended_action,
             "best_action_obj": cand_best_action_obj,
@@ -132,6 +133,7 @@ async def evaluate_candidate(
                 "can_claim_draw": cand_can_claim_draw,
                 "claim_reasons": cand_claim_reasons_now or cand_claim_reasons,
                 "recommended_action": getattr(cand_rule, "recommended_action", "play_move"),
+                "post_position_recommended_action": getattr(cand_rule, "recommended_action", "play_move"),
             },
         }
     )

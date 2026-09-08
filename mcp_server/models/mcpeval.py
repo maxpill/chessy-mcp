@@ -77,6 +77,7 @@ class MCPEval(BaseModel):
     can_claim_with_intended_move: bool = False
     claim_moves: list[str] = Field(default_factory=list[str])
     recommended_action: str = "play_move"
+    root_candidate_action: str | None = None
     best_action: str = "play_move"
     best_action_type: str = "play_move"
     best_action_obj: dict[str, Any] | None = None
@@ -178,6 +179,7 @@ class MCPEval(BaseModel):
                 "post_claim_reasons",
                 "post_claim_moves",
                 "post_position",
+                "root_candidate_action",
             ):
                 values.setdefault(field_name, getattr(action_block, field_name))
         history_block = values.pop("history", None)
@@ -273,6 +275,7 @@ class MCPEval(BaseModel):
             post_claim_reasons=list(self.post_claim_reasons),
             post_claim_moves=list(self.post_claim_moves),
             post_position=self.post_position,
+            root_candidate_action=self.root_candidate_action or self.recommended_action,
         )
 
     @computed_field  # type: ignore[misc]

@@ -182,7 +182,20 @@ def parse_candidate_move(board: chess.Board, text: str, *, strict: bool = False)
         move, _warning = parse_move_on_board_with_warning(board, text, strict=strict)
         return move
     except ValueError as exc:
-        raise ValueError(f"INVALID_COMPARE_MOVE: {text}") from exc
+        msg = str(exc)
+        if "ILLEGAL_MOVE" in msg:
+            raise ValueError(
+                f"INVALID_COMPARE_MOVE: Candidate move {text!r} is not a valid legal move in position '{board.fen()}' (ILLEGAL_MOVE)"
+            ) from exc
+        if "STRICT" in msg:
+            raise ValueError(
+                f"INVALID_COMPARE_MOVE: Input candidate {text!r} requires syntax normalization ({msg})"
+            ) from exc
+        if "AMBIGUOUS_SAN" in msg or "GAME_ALREADY_OVER" in msg:
+            raise
+        raise ValueError(
+            f"INVALID_MOVE_SYNTAX: Candidate move {text!r} could not be parsed as UCI or SAN syntax: {exc}"
+        ) from exc
 
 
 def build_position_delta(
