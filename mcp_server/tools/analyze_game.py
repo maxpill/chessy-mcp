@@ -103,12 +103,7 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             message=f"INVALID_PERSPECTIVE: {perspective}",
             tool="analyze_game",
         )
-    if max_critical_moments < 1 or max_critical_moments > 7:
-        raise _tool_error(
-            code="invalid_argument",
-            message="INVALID_MAX_CRITICAL_MOMENTS: expected 1..7",
-            tool="analyze_game",
-        )
+    max_critical_moments = max(1, min(max_critical_moments, 7))
 
     try:
         return await _ANALYZER.analyze(

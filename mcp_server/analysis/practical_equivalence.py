@@ -19,6 +19,7 @@ from typing import Any, Literal
 import chess
 
 from mcp_server.models.forensics import ForensicMoveAnalysis
+from mcp_server.models.mcpeval import MCPEval
 
 _EQUIVALENT_WDL_LOSS_PP = 2.0
 _NON_EQUIVALENT_WDL_LOSS_PP = 5.0
@@ -64,10 +65,17 @@ def _opponent_mate_signature(mover: chess.Color) -> str:
     return "black_mates" if mover == chess.WHITE else "white_mates"
 
 
-def _initial_mate_signature(mate: int | None) -> Literal["white_mates", "black_mates", "no_mate"]:
-    if mate is None:
+def _mate_signature_from_eval(ev: MCPEval) -> Literal["white_mates", "black_mates", "no_mate"]:
+    if ev.status == "checkmate" or ev.mate == 0:
+        if ev.winner == "white":
+            return "white_mates"
+        if ev.winner == "black":
+            return "black_mates"
+        if ev.cp is not None and ev.cp != 0:
+            return "white_mates" if ev.cp > 0 else "black_mates"
+    if ev.mate is None:
         return "no_mate"
-    return "white_mates" if mate > 0 else "black_mates"
+    return "white_mates" if ev.mate > 0 else "black_mates"
 
 
 def _selected_evidence(
@@ -106,9 +114,9 @@ def _selected_evidence(
     mate_before = stability.get("verified_mate_before") if verified else stability.get("initial_mate_before")
     mate_after = stability.get("verified_mate_after") if verified else stability.get("initial_mate_after")
     if not isinstance(mate_before, str):
-        mate_before = _initial_mate_signature(result.eval_before.mate)
+        mate_before = _mate_signature_from_eval(result.eval_before)
     if not isinstance(mate_after, str):
-        mate_after = _initial_mate_signature(result.eval_after.mate)
+        mate_after = _mate_signature_from_eval(result.eval_after)
 
     return {
         "basis": "verified" if verified else "initial",
@@ -151,9 +159,17 @@ def build_practical_equivalence_evidence(
     )
     tactical_punishment = bool(hard_tactical or forcing_large_loss)
 
+    mover_won_by_mate = (
+        result.eval_after.status == "checkmate"
+        and (
+            (mover == chess.WHITE and result.eval_after.winner == "white")
+            or (mover == chess.BLACK and result.eval_after.winner == "black")
+        )
+    )
     opponent_mate = _opponent_mate_signature(mover)
     mate_deterioration = (
-        selected["mate_after"] == opponent_mate
+        not mover_won_by_mate
+        and selected["mate_after"] == opponent_mate
         and selected["mate_before"] != opponent_mate
     )
     same_rule_outcome = bool(result.same_outcome)
@@ -166,6 +182,10 @@ def build_practical_equivalence_evidence(
         status = "indeterminate"
         practical_equivalent = None
         reason_codes.append("NON_MOVE_ACTION")
+    elif result.is_best_engine_move and mover_won_by_mate:
+        status = "equivalent"
+        practical_equivalent = True
+        reason_codes.append("ENGINE_BEST_WINNING_MOVE")
     elif mate_deterioration:
         status = "not_equivalent"
         practical_equivalent = False

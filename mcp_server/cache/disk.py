@@ -55,6 +55,16 @@ def _migrate_legacy_cache(target_path: str) -> None:
     if not os.path.exists(legacy):
         return
     try:
+        with open(legacy, "rb") as f:
+            header = f.read(16)
+        if header.startswith(b"SQLite format 3\x00"):
+            with sqlite3.connect(legacy, timeout=5.0) as check_conn:
+                row = check_conn.execute("PRAGMA quick_check;").fetchone()
+                if not row or row[0] != "ok":
+                    return
+    except Exception:
+        return
+    try:
         os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
         shutil.copy2(legacy, target_path)
         for suffix in ("-wal", "-shm"):
@@ -79,6 +89,16 @@ class SQLiteDiskCache:
         _migrate_legacy_cache(self.db_path)
         self._init_db()
 
+    def _handle_db_corruption(self) -> None:
+        try:
+            for suffix in ("", "-wal", "-shm"):
+                p = self.db_path + suffix
+                if os.path.exists(p):
+                    os.remove(p)
+            self._init_db()
+        except Exception:
+            pass
+
     def _init_db(self) -> None:
         try:
             with sqlite3.connect(self.db_path, timeout=15.0) as conn:
@@ -96,6 +116,8 @@ class SQLiteDiskCache:
                     "CREATE INDEX IF NOT EXISTS idx_eval_cache_created ON eval_cache(created_at);"
                 )
                 conn.commit()
+        except sqlite3.DatabaseError:
+            self._handle_db_corruption()
         except Exception:
             pass
 
@@ -103,9 +125,6 @@ class SQLiteDiskCache:
         try:
             with sqlite3.connect(self.db_path, timeout=15.0) as conn:
                 conn.execute("PRAGMA busy_timeout = 15000;")
-                # Per-connection PRAGMA: re-assert NORMAL on every connection so
-                # older caches (synchronous=FULL) pick up the faster write path
-                # without a manual VACUUM/rebuild.
                 conn.execute("PRAGMA synchronous = NORMAL;")
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS eval_cache "
@@ -114,6 +133,9 @@ class SQLiteDiskCache:
                 cur = conn.execute("SELECT val FROM eval_cache WHERE key = ?", (key,))
                 row = cur.fetchone()
                 return str(row[0]) if row else None
+        except sqlite3.DatabaseError:
+            self._handle_db_corruption()
+            return None
         except Exception:
             return None
 
@@ -139,6 +161,23 @@ class SQLiteDiskCache:
                         (max_entries,),
                     )
                 conn.commit()
+        except sqlite3.DatabaseError:
+            self._handle_db_corruption()
+            try:
+                with sqlite3.connect(self.db_path, timeout=15.0) as conn:
+                    conn.execute("PRAGMA busy_timeout = 15000;")
+                    conn.execute("PRAGMA synchronous = NORMAL;")
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS eval_cache "
+                        "(key TEXT PRIMARY KEY, val TEXT NOT NULL, created_at REAL NOT NULL);"
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO eval_cache (key, val, created_at) VALUES (?, ?, ?)",
+                        (key, val, time.time()),
+                    )
+                    conn.commit()
+            except Exception:
+                pass
         except Exception:
             pass
 

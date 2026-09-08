@@ -89,9 +89,15 @@ def _side_name(color: chess.Color) -> Perspective:
 
 
 def _white_effective_cp(ev: MCPEval) -> int:
+    if ev.status == "checkmate" or ev.mate == 0:
+        if ev.winner == "black":
+            return -MATE_VALUE
+        if ev.winner == "white":
+            return MATE_VALUE
+        if ev.cp is not None and ev.cp != 0:
+            return MATE_VALUE if ev.cp > 0 else -MATE_VALUE
+        return -MATE_VALUE if getattr(ev, "winner", None) == "black" else MATE_VALUE
     if ev.mate is not None:
-        if ev.mate == 0:
-            return ev.cp if ev.cp is not None else MATE_VALUE
         return (MATE_VALUE - min(abs(ev.mate), MATE_VALUE - 1)) * (1 if ev.mate > 0 else -1)
     return ev.cp if ev.cp is not None else 0
 
@@ -103,7 +109,10 @@ def _perspective_cp(ev: MCPEval, perspective: Perspective) -> int:
 
 def _perspective_raw_value(cp: int | None, mate: int | None, perspective: Perspective) -> int:
     if mate is not None:
-        value = (MATE_VALUE - min(abs(mate), MATE_VALUE - 1)) * (1 if mate > 0 else -1)
+        if mate == 0:
+            value = MATE_VALUE if (cp is not None and cp > 0) else -MATE_VALUE
+        else:
+            value = (MATE_VALUE - min(abs(mate), MATE_VALUE - 1)) * (1 if mate > 0 else -1)
     else:
         value = cp or 0
     return value if perspective == "white" else -value

@@ -54,6 +54,13 @@ def _class_name(value: Any) -> str:
 
 
 def _mate_signature(ev: MCPEval) -> Literal["white_mates", "black_mates", "no_mate"]:
+    if ev.status == "checkmate" or ev.mate == 0:
+        if ev.winner == "white":
+            return "white_mates"
+        if ev.winner == "black":
+            return "black_mates"
+        if ev.cp is not None and ev.cp != 0:
+            return "white_mates" if ev.cp > 0 else "black_mates"
     if ev.mate is None:
         return "no_mate"
     return "white_mates" if ev.mate > 0 else "black_mates"

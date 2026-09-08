@@ -52,6 +52,7 @@ def build_top_moves_response(
         best_action_obj=best_action_obj,
         legal_actions=legal_actions,
         legal_rule_actions=legal_rule_actions,
+        legal_move_uci=[m.uci() for m in board.legal_moves],
         history_completeness=rule_status.history_completeness,
         repetition_status=rule_status.repetition_status,
         requested_depth=raw_requested_depth,

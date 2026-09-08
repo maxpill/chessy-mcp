@@ -551,18 +551,22 @@ def _position_update_evidence(
     if played_move is not None and played_move in board_before.legal_moves:
         after_user = board_before.copy(stack=True)
         after_user.push(played_move)
-        after_state = _piece_attack_state(after_user, mover)
-        for label in newly_exposed:
-            state = after_state.get(label)
-            if state is not None and state[0] > 0 and state[1] == 0:
-                unresolved.append(label)
-        for label in newly_pinned:
-            state = after_state.get(label)
-            if state is not None and state[2]:
-                unresolved.append(label)
-        if king_in_check and after_user.is_check():
-            unresolved.append("king_in_check")
-        addresses_change = not unresolved
+        if after_user.is_checkmate():
+            unresolved = []
+            addresses_change = True
+        else:
+            after_state = _piece_attack_state(after_user, mover)
+            for label in newly_exposed:
+                state = after_state.get(label)
+                if state is not None and state[0] > 0 and state[1] == 0:
+                    unresolved.append(label)
+            for label in newly_pinned:
+                state = after_state.get(label)
+                if state is not None and state[2]:
+                    unresolved.append(label)
+            if king_in_check and after_user.is_check():
+                unresolved.append("king_in_check")
+            addresses_change = not unresolved
 
     return {
         "mechanism": "position_update_after_opponent_move",
@@ -768,7 +772,14 @@ async def enrich_move_analysis(
 
     update_evidence = _position_update_evidence(board_before, played_move)
     mechanisms.append(update_evidence)
-    if update_evidence.get("opponent_move_created_urgent_change"):
+    mover_won = (
+        result.eval_after.status == "checkmate"
+        and (
+            (board_before.turn == chess.WHITE and result.eval_after.winner == "white")
+            or (board_before.turn == chess.BLACK and result.eval_after.winner == "black")
+        )
+    )
+    if not mover_won and update_evidence.get("opponent_move_created_urgent_change"):
         signatures.append("OPPONENT_MOVE_CREATED_URGENT_CHANGE")
         if update_evidence.get("played_move_addresses_change") is False:
             signatures.append("FAILED_POSITION_UPDATE_CANDIDATE")
