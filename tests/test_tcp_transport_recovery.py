@@ -10,6 +10,7 @@ Verifies that `RuntimeError` from uvloop on a closed TCP transport:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,6 +25,14 @@ from mcp_server.engine.retry import with_engine_retry
 from mcp_server.models.game_coaching import ForensicGameAnalysisResult
 from mcp_server.models.mcpeval import MCPEval
 from mcp_server.tcp_client import TCPUCIClient, UCIError
+
+
+@pytest.fixture(autouse=True)
+async def _close_analyzer_at_test_end():
+    yield
+    import mcp_server.server as server_module
+
+    await server_module.close_analyzer_pool()
 
 
 class DummyTransport:
@@ -257,3 +266,211 @@ async def test_analyze_game_recovers_from_closed_transport():
     assert result.total_plies == 4
     assert result.white_accuracy == 95.0
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_classify_move_forensic_recovers_from_closed_transport():
+    """classify_move with detail='forensic' recovers when transport raises RuntimeError."""
+    import mcp_server.server as server_module
+    from mcp_server.tools.classify_move import classify_move
+
+    from core.engines.pool import AnalyzerPool
+
+    await server_module.close_analyzer_pool()
+    await server_module._cache.clear()
+
+    spawn_counter = 0
+    dead_handler_id = None
+    alive_handler_ids: list[int] = []
+
+    class _TransportFailingWorker:
+        def __init__(self, worker_id: int, die_once: bool) -> None:
+            self.worker_id = worker_id
+            self._die_once = die_once
+            self.closed = False
+            self.name = "Stockfish 18"
+
+        async def evaluate(
+            self, board: chess.Board, *, depth: int = 12, root_moves=None, **kwargs: Any
+        ) -> Eval:
+            if self._die_once:
+                self._die_once = False
+                raise RuntimeError(
+                    "unable to perform operation on <TCPTransport closed=True reading=False 0x5d2ee4e178e0>; "
+                    "the handler is closed"
+                )
+            legal = list(board.legal_moves)
+            best = legal[0].uci() if legal else "e2e4"
+            return Eval(cp=25, best_move=best, pv=[best], depth=depth)
+
+        async def top_moves(
+            self, board: chess.Board, *, n: int = 3, depth: int | None = None, **kwargs: Any
+        ) -> list[Eval]:
+            legal = list(board.legal_moves)
+            best = legal[0].uci() if legal else "e2e4"
+            return [Eval(cp=25, best_move=best, pv=[best], depth=depth or 12)]
+
+        async def probe_threat(self, board: chess.Board, **kwargs: Any) -> Eval | None:
+            return None
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def factory():
+        nonlocal spawn_counter, dead_handler_id
+        spawn_counter += 1
+        if spawn_counter == 1:
+            worker = _TransportFailingWorker(spawn_counter, die_once=True)
+            dead_handler_id = id(worker)
+            return worker
+        worker = _TransportFailingWorker(spawn_counter, die_once=False)
+        alive_handler_ids.append(id(worker))
+        return worker
+
+    pool = _EnginePool([await factory()], factory, acquire_timeout=5.0)
+    analyzer_pool = AnalyzerPool(pool, name="TestStockfish")
+    server_module._analyzer_pool = analyzer_pool  # type: ignore[assignment]
+
+    # Call 1: classify_move(detail="forensic") triggers dead transport, pool catches it, discards dead handler, replaces, retries
+    res1 = await classify_move(fen="startpos", move="e4", detail="forensic", depth=8)
+    assert res1.move_class in ("best", "good", "inaccuracy", "mistake", "blunder")
+    assert spawn_counter == 2
+    assert dead_handler_id not in [id(item) for item in pool._q._queue]  # type: ignore[attr-defined]
+
+    # Call 2: second call succeeds cleanly and never touches the dead handler
+    res2 = await classify_move(fen="startpos", move="d4", detail="forensic", depth=8)
+    assert res2.move_class in ("best", "good", "inaccuracy", "mistake", "blunder")
+
+    await server_module.close_analyzer_pool()
+
+
+@pytest.mark.asyncio
+async def test_terminal_checkmate_perspective_contract():
+    """White checkmated:
+    1. evaluate_position returns status='checkmate', winner='black',
+       best_action_obj={'type': 'game_over', 'outcome': 'loss', 'reason': 'checkmate', 'outcome_perspective': 'white'},
+       decision_value={'outcome': 'loss', 'perspective': 'white'}.
+    2. analyze_game(perspective='white') returns final_position.effective_cp == -100000,
+       final segment state='decisively_worse', and no spurious 'recovered' / 'gained_advantage' events.
+    """
+    from mcp_server.tools.analyze_game import analyze_game
+    from mcp_server.tools.evaluate_position import evaluate_position
+
+    # Fool's mate terminal FEN: White is checkmated by Black
+    fools_fen = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
+    eval_res = await evaluate_position(fen=fools_fen, depth=8)
+    assert eval_res.status == "checkmate"
+    assert eval_res.winner == "black"
+    assert eval_res.best_action_obj["type"] == "game_over"
+    assert eval_res.best_action_obj["outcome"] == "loss"
+    assert eval_res.best_action_obj["outcome_perspective"] == "white"
+    assert eval_res.decision_value["outcome"] == "loss"
+    assert eval_res.decision_value["perspective"] == "white"
+
+    # White wins checkmate: Scholar's mate terminal FEN
+    scholars_fen = "r1bqkb1r/pppp1Qpp/2n5/4p3/2B1n3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4"
+    white_win_res = await evaluate_position(fen=scholars_fen, depth=8)
+    assert white_win_res.status == "checkmate"
+    assert white_win_res.winner == "white"
+    assert white_win_res.best_action_obj["type"] == "game_over"
+    assert white_win_res.best_action_obj["outcome"] == "win"
+    assert white_win_res.best_action_obj["outcome_perspective"] == "white"
+    assert white_win_res.decision_value["outcome"] == "win"
+    assert white_win_res.decision_value["perspective"] == "white"
+
+    # Full game analysis from White's perspective
+    fools_pgn = "1. f3 e5 2. g4 Qh4# 0-1"
+    game_res = await analyze_game(pgn=fools_pgn, depth=8, detail="coach", perspective="white")
+    assert game_res.coaching is not None
+    assert game_res.coaching.final_position.checkmate is True
+    assert game_res.coaching.final_position.effective_cp == -100000
+    assert game_res.coaching.game_segments[-1].state == "decisively_worse"
+
+    # White must not have recovered or gained advantage after being checkmated
+    white_events = [
+        e.kind for e in game_res.coaching.advantage_events if e.side == "white" and e.ply == 4
+    ]
+    assert "recovered" not in white_events
+    assert "gained_advantage" not in white_events
+
+
+@pytest.mark.asyncio
+async def test_pool_discards_worker_on_cancelled_error_and_recovers():
+    """When a search is cancelled (e.g. caller timeout), the worker is discarded and replaced."""
+    spawn_counter = 0
+    cancelled_worker_id = None
+
+    class _HangingWorker:
+        def __init__(self, wid: int) -> None:
+            self.wid = wid
+            self.closed = False
+
+        async def evaluate(self, board: chess.Board, **kwargs: Any) -> Eval:
+            await asyncio.sleep(10.0)
+            return Eval(cp=10)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class _HealthyWorker:
+        def __init__(self, wid: int) -> None:
+            self.wid = wid
+            self.closed = False
+
+        async def evaluate(self, board: chess.Board, **kwargs: Any) -> Eval:
+            return Eval(cp=42, best_move="e2e4")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def factory():
+        nonlocal spawn_counter, cancelled_worker_id
+        spawn_counter += 1
+        if spawn_counter == 1:
+            worker = _HangingWorker(spawn_counter)
+            cancelled_worker_id = id(worker)
+            return worker
+        return _HealthyWorker(spawn_counter)
+
+    pool = _EnginePool([await factory()], factory, acquire_timeout=5.0)
+
+    # 1. Run an operation with a 50ms timeout to simulate a caller timeout / CancelledError
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            pool.run(lambda a: a.evaluate(chess.Board())),
+            timeout=0.05,
+        )
+
+    # The aborted worker must NOT be placed back in the queue
+    queued_ids = [id(item) for item in pool._q._queue]  # type: ignore[attr-defined]
+    assert cancelled_worker_id not in queued_ids
+
+    # Wait briefly for self-heal to refill the slot
+    for _ in range(50):
+        if not pool._q.empty():
+            break
+        await asyncio.sleep(0.05)
+
+    assert not pool._q.empty()
+    res = await pool.run(lambda a: a.evaluate(chess.Board()))
+    assert res.cp == 42
+    await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_game_forensic_completes_without_timeout():
+    """analyze_game in forensic mode runs parallelized gap checks and completes in seconds."""
+    from mcp_server.tools.analyze_game import analyze_game
+
+    pgn = "1. e4 c5 2. Nf3 d6 3. d4 cxd4 4. Nxd4 Nf6 5. Nc3 a6 6. Bg5 e6 7. f4 Qb6 8. Qd2 Qxb2 9. Rb1 Qa3"
+    t0 = asyncio.get_running_loop().time()
+    res = await analyze_game(pgn=pgn, depth=14, detail="forensic", perspective="white")
+    duration = asyncio.get_running_loop().time() - t0
+
+    assert res.coaching is not None
+    assert res.coaching.detail == "forensic"
+    assert res.coaching.verification_depth is not None
+    assert res.coaching.final_position is not None
+    assert duration < 20.0, f"forensic analysis took too long: {duration:.2f}s"
+
+

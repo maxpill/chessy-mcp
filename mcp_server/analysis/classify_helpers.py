@@ -226,9 +226,11 @@ def _outcome_from_eval(eval_obj: Any, mover_color: chess.Color) -> tuple[Any, in
     if status == "checkmate":
         winner = getattr(eval_obj, "winner", None)
         if winner == "white":
-            return (Outcome.WIN if mover_color == chess.WHITE else Outcome.LOSS), 100000
+            is_win = mover_color == chess.WHITE
+            return (Outcome.WIN if is_win else Outcome.LOSS), (100000 if is_win else -100000)
         if winner == "black":
-            return (Outcome.WIN if mover_color == chess.BLACK else Outcome.LOSS), 100000
+            is_win = mover_color == chess.BLACK
+            return (Outcome.WIN if is_win else Outcome.LOSS), (100000 if is_win else -100000)
         return Outcome.ACTIVE, None
 
     if status in (

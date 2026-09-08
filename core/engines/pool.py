@@ -99,47 +99,42 @@ class _EnginePool:
     async def _self_heal_loop(self) -> None:
         """Refill lost slots without ever exceeding the original target size."""
         while not self._closed:
+            async with self._cardinality_lock:
+                missing = self._target_size - self._alive_count
+            if missing > 0:
+                try:
+                    fresh = await self._factory()
+                except Exception:
+                    self._self_heal_attempts += 1
+                    now = time.time()
+                    if now - self._last_self_heal_log > 60.0:
+                        log.warning(
+                            "engine self-heal: factory failing; alive=%d target=%d attempts=%d",
+                            self._alive_count,
+                            self._target_size,
+                            self._self_heal_attempts,
+                        )
+                        self._last_self_heal_log = now
+                    self._self_heal_interval_s = min(
+                        60.0,
+                        self._self_heal_interval_s * 1.5,
+                    )
+                else:
+                    if await self._accept_fresh(fresh):
+                        self._self_heal_attempts = 0
+                        self._self_heal_interval_s = 5.0
+                        log.info(
+                            "engine self-heal: refilled slot; alive=%d target=%d",
+                            self._alive_count,
+                            self._target_size,
+                        )
+
             try:
                 await asyncio.sleep(self._self_heal_interval_s)
             except asyncio.CancelledError:
                 return
             if self._closed:
                 return
-
-            async with self._cardinality_lock:
-                missing = self._target_size - self._alive_count
-            if missing <= 0:
-                continue
-
-            try:
-                fresh = await self._factory()
-            except Exception:
-                self._self_heal_attempts += 1
-                now = time.time()
-                if now - self._last_self_heal_log > 60.0:
-                    log.warning(
-                        "engine self-heal: factory failing; alive=%d target=%d attempts=%d",
-                        self._alive_count,
-                        self._target_size,
-                        self._self_heal_attempts,
-                    )
-                    self._last_self_heal_log = now
-                self._self_heal_interval_s = min(
-                    60.0,
-                    self._self_heal_interval_s * 1.5,
-                )
-                continue
-
-            if not await self._accept_fresh(fresh):
-                continue
-
-            self._self_heal_attempts = 0
-            self._self_heal_interval_s = 5.0
-            log.info(
-                "engine self-heal: refilled slot; alive=%d target=%d",
-                self._alive_count,
-                self._target_size,
-            )
 
     async def _replace_and_retry(
         self,
@@ -197,6 +192,12 @@ class _EnginePool:
         except BaseException as exc:
             if _is_transport_error(exc):
                 return await self._replace_and_retry(inst, fn, exc)
+            if isinstance(exc, asyncio.CancelledError):
+                async with self._cardinality_lock:
+                    self._alive_count = max(0, self._alive_count - 1)
+                await self._discard(inst)
+                self._start_self_heal()
+                raise
             self._q.put_nowait(inst)
             raise
         else:

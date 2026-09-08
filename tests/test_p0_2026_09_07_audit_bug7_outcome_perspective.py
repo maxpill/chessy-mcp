@@ -14,8 +14,6 @@ terminals. The ``outcome`` field stays for backward compatibility.
 
 from __future__ import annotations
 
-import pytest
-
 from mcp_server.domain.action import build_best_action, parse_action
 
 
@@ -59,13 +57,13 @@ def test_game_over_white_wins_carries_perspective_white() -> None:
     )
 
 
-def test_game_over_black_wins_carries_perspective_black() -> None:
-    """Black checkmates → outcome_perspective == "black"."""
+def test_game_over_black_wins_carries_perspective_white() -> None:
+    """Black checkmates → outcome is loss from White perspective."""
     rs = _rule_status(terminal="checkmate", winner="black")
     out = build_best_action("play_move", rs)
     assert out["type"] == "game_over"
     assert out["outcome"] == "loss"
-    assert out["outcome_perspective"] == "black"
+    assert out["outcome_perspective"] == "white"
 
 
 def test_game_over_draw_carries_perspective_draw() -> None:

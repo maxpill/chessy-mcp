@@ -185,10 +185,9 @@ def build_best_action(
     if rule_status.terminal is not None:
         if rule_status.terminal == "checkmate":
             outcome = "win" if rule_status.winner == "white" else "loss"
-            # 2026-09-07 audit §7: explicit perspective. "win"+"white" means
-            # White won; "loss"+"black" means Black won. Both make the
-            # outcome_perspective contract testable and unambiguous.
-            outcome_perspective: str | None = rule_status.winner
+            # Outcome perspective is White-relative, consistent with evaluate_position
+            # and decision_value["perspective"] = "white".
+            outcome_perspective: str | None = "white"
         else:
             outcome = "draw"
             outcome_perspective = "draw"
@@ -273,7 +272,7 @@ def build_legal_actions(
     if rule_status.terminal is not None:
         if rule_status.terminal == "checkmate":
             outcome = "win" if rule_status.winner == "white" else "loss"
-            outcome_perspective_legal: str | None = rule_status.winner
+            outcome_perspective_legal: str | None = "white"
         else:
             outcome = "draw"
             outcome_perspective_legal = "draw"

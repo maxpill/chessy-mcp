@@ -9,6 +9,7 @@ re-searches only the chosen moments at higher depth.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from itertools import pairwise
@@ -623,9 +624,21 @@ async def _verify_critical_moments(
     )
     verified = {index: item[0] for index, item in zip(unique_indices, searched, strict=True)}
 
+    gap_depth = min(verification_depth, 16)
+
+    async def _fetch_candidate_gap(m: CriticalMoment) -> int | None:
+        rec = record_by_ply[m.ply]
+        try:
+            top = await pool.top_moves(rec.board_before, n=2, depth=gap_depth)
+            return _candidate_gap(list(top), rec.board_before.turn)
+        except Exception:
+            return None
+
+    candidate_gaps = await asyncio.gather(*[_fetch_candidate_gap(m) for m in critical])
+
     escalated_depth: int | None = None
     out: list[CriticalMoment] = []
-    for moment in critical:
+    for i, moment in enumerate(critical):
         record = record_by_ply[moment.ply]
         before_ev = verified[moment.ply - 1]
         after_ev = verified[moment.ply]
@@ -662,12 +675,7 @@ async def _verify_critical_moments(
             depth_used = escalation
             escalated_depth = max(escalated_depth or 0, escalation)
 
-        gap: int | None = None
-        try:
-            top = await pool.top_moves(record.board_before, n=2, depth=depth_used)
-            gap = _candidate_gap(list(top), record.board_before.turn)
-        except Exception:
-            gap = None
+        gap: int | None = candidate_gaps[i]
 
         before_snapshot = build_rich_tactical_snapshot(record.board_before)
         after_snapshot = build_rich_tactical_snapshot(record.board_after)
@@ -762,15 +770,22 @@ async def _verify_positive_moments(
     pool: Any,
     depth: int,
 ) -> list[PositiveMoment]:
+    if not positive:
+        return []
     by_ply = {record.ply: record for record in records}
-    out: list[PositiveMoment] = []
-    for moment in positive:
+    search_depth = min(depth, 16)
+
+    async def _fetch_pos_gap(moment: PositiveMoment) -> int | None:
         record = by_ply[moment.ply]
         try:
-            top = list(await pool.top_moves(record.board_before, n=2, depth=depth))
-            gap = _candidate_gap(top, record.board_before.turn)
+            top = list(await pool.top_moves(record.board_before, n=2, depth=search_depth))
+            return _candidate_gap(top, record.board_before.turn)
         except Exception:
-            gap = None
+            return None
+
+    gaps = await asyncio.gather(*[_fetch_pos_gap(m) for m in positive])
+    out: list[PositiveMoment] = []
+    for moment, gap in zip(positive, gaps, strict=True):
         reason = moment.reason
         if gap is not None and gap >= 150:
             reason = "unique_resource"
@@ -811,7 +826,11 @@ async def _final_assessment(
     reasonable_count: int | None = None
     if detail == "forensic" and not board.is_game_over(claim_draw=False):
         try:
-            top = list(await pool.top_moves(board, n=min(5, legal_count), depth=verification_depth or 22))
+            top = list(
+                await pool.top_moves(
+                    board, n=min(5, legal_count), depth=min(verification_depth or 22, 16)
+                )
+            )
             if top:
                 side = board.turn
                 side_perspective: Perspective = "white" if side == chess.WHITE else "black"
