@@ -63,6 +63,18 @@ def build_board(
                 f"fields; a FEN has exactly 6 (placement, side, castling, en-passant, "
                 f"halfmove, fullmove). The extra trailing field(s) cannot be parsed."
             )
+        # 2026-09-08 audit round 2 Bug 8: strict mode must reject underspecified
+        # FENs (1-5 whitespace-separated fields). Lenient mode keeps its current
+        # behavior — python-chess auto-completes the missing fields (side=w,
+        # castling=-, ep=-, halfmove=0, fullmove=1). The strict contract is
+        # "no silent canonicalization": a typo like a missing fullmove should
+        # surface as INVALID_FEN, not silently fill in ``1``.
+        if strict and "/" in cleaned and not cleaned.startswith("[") and 1 <= len(tokens) < 6:
+            raise ValueError(
+                f"INVALID_FEN: Position '{cleaned}' has {len(tokens)} whitespace-separated "
+                f"field(s); a FEN has exactly 6 (placement, side, castling, en-passant, "
+                f"halfmove, fullmove). Strict mode does not auto-complete FEN fields."
+            )
         if 1 <= len(tokens) <= 6 and not cleaned.startswith("[") and not tokens[0].endswith("."):
             if "/" in cleaned:
                 tokens, _cleaned_after_counter_check, _ep_warnings = _validate_fen_counters(

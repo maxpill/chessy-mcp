@@ -86,11 +86,30 @@ def test_r4_exactly_six_field_fen_still_accepted():
 
 
 def test_r4_five_field_fen_still_completes():
-    """R4-§A sanity: A 5-field FEN (no fullmove) still completes per §25
-    audit behavior."""
+    """R4-§A sanity: A 5-field FEN (no fullmove) still completes in lenient mode.
+
+    2026-09-08 audit round 2 Bug 8 reversed the strict-mode contract: strict
+    mode now rejects 1-5 field FENs with INVALID_FEN, but lenient mode keeps
+    its python-chess auto-completion behavior (side=w, castling=-, ep=-,
+    halfmove=0, fullmove=1). The test's intent (lenient-mode preservation)
+    is preserved by switching to strict=False.
+    """
     fen = "4k3/8/8/8/8/8/8/4K3 w - -"
-    b = server_module._build_board(fen, strict=True)
+    b = server_module._build_board(fen, strict=False)
     assert b.fen() == "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
+
+
+def test_r4_five_field_fen_rejected_in_strict_mode():
+    """2026-09-08 audit round 2 Bug 8: the 5-field case from R4-§A must now
+    be REJECTED in strict mode (not silently completed).
+
+    Same FEN as the lenient test above, but ``strict=True`` triggers the
+    new INVALID_FEN rejection.
+    """
+    fen = "4k3/8/8/8/8/8/8/4K3 w - -"
+    with pytest.raises(ValueError) as exc_info:
+        server_module._build_board(fen, strict=True)
+    assert "INVALID_FEN" in str(exc_info.value)
 
 
 # ===========================================================================
