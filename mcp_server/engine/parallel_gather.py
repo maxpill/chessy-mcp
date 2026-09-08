@@ -56,7 +56,8 @@ async def gather_evaluate_positions_bounded(
         pool_target = pool._pool._target_size  # type: ignore[attr-defined]
     except AttributeError:
         pool_target = 4
-    k = max(1, min(pool_target, len(positions)))
+    max_batch_workers = max(1, pool_target - 2) if pool_target >= 5 else max(1, pool_target - 1)
+    k = max(1, min(max_batch_workers, len(positions)))
 
     chunk = math.ceil(len(positions) / k)
     slices: list[list[tuple[int, chess.Board]]] = [

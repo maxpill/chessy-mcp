@@ -7,6 +7,7 @@ process hypothesis when it also has player context.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from typing import Any, Literal
 
@@ -808,13 +809,20 @@ async def enrich_move_analysis(
             requested_candidates.append(requested)
     requested_candidates = requested_candidates[:8]
 
-    comparisons: list[CandidateEvidence] = []
-    for requested in requested_candidates:
-        comparisons.append(
-            await _candidate_evidence(
-                board_before, requested, pool=pool, depth=depth, strict=strict
-            )
+    comparisons: list[CandidateEvidence] = list(
+        await asyncio.gather(
+            *[
+                _candidate_evidence(
+                    board_before,
+                    requested,
+                    pool=pool,
+                    depth=min(depth, 16),
+                    strict=strict,
+                )
+                for requested in requested_candidates
+            ]
         )
+    )
 
     forensic = ForensicEvidence(
         detail=detail,

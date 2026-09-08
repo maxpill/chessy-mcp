@@ -52,6 +52,7 @@ async def create_analyzer_pool(
             hash_mb=cfg.hash_mb,
             show_wdl=cfg.show_wdl,
             syzygy_path=cfg.syzygy_path or None,
+            acquire_timeout=cfg.acquire_timeout,
         )
         log.info(
             "TCP analyzer pool ready: %d engines @ %s:%d (threads=%d hash=%dMB wdl=%s syzygy=%s ponder=%s)",
@@ -74,6 +75,7 @@ async def create_analyzer_pool(
         hash_mb=cfg.hash_mb,
         show_wdl=cfg.show_wdl,
         syzygy_path=cfg.syzygy_path or None,
+        acquire_timeout=cfg.acquire_timeout,
     )
     log.info(
         "Subprocess analyzer pool ready: %d engines @ %s",

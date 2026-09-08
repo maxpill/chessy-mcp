@@ -29,6 +29,7 @@ class MCPSettings(BaseSettings):
     # connects to a pre-existing Stockfish over TCP (e.g. behind socat) instead
     # of spawning its own subprocesses.
     pool_size: int | None = Field(default=None, validation_alias="CHESS_MCP_POOL_SIZE")
+    acquire_timeout: float = Field(default=15.0, validation_alias="CHESS_MCP_ACQUIRE_TIMEOUT")
     host: str | None = Field(default=None, validation_alias="STOCKFISH_HOST")
     port: int = Field(default=0, validation_alias="STOCKFISH_PORT")
     hash_mb: int = Field(default=64, validation_alias="STOCKFISH_HASH_MB")

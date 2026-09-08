@@ -25,6 +25,7 @@ whether deeper searches agree, why escalation happened and what changed.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
@@ -191,15 +192,15 @@ async def _evaluate_pair(
     history_complete: str,
     evaluate_position: CachedEvaluator | None,
 ) -> tuple[MCPEval, MCPEval]:
-    return (
-        await _evaluate_one(
+    ev_before, ev_after = await asyncio.gather(
+        _evaluate_one(
             pool,
             board_before,
             depth=depth,
             history_complete=history_complete,
             evaluate_position=evaluate_position,
         ),
-        await _evaluate_one(
+        _evaluate_one(
             pool,
             board_after,
             depth=depth,
@@ -207,6 +208,7 @@ async def _evaluate_pair(
             evaluate_position=evaluate_position,
         ),
     )
+    return ev_before, ev_after
 
 
 def _score_at_depth(

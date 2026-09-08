@@ -532,3 +532,88 @@ async def test_analyze_game_default_depth_is_14():
     assert sig.parameters["depth"].default == 14
 
 
+@pytest.mark.asyncio
+async def test_gather_evaluate_positions_reserves_workers_for_interactive_queries(monkeypatch):
+    """gather_evaluate_positions_bounded reserves at least 1-2 workers in larger pools."""
+    import chess
+    from mcp_server.engine.parallel_gather import gather_evaluate_positions_bounded
+    from mcp_server.models import MCPEval
+
+    async def fake_eval(*args, **kwargs):
+        return (MCPEval(cp=10, depth=14, searched_depth=14), True)
+
+    monkeypatch.setattr(
+        "mcp_server.engine.pool_factory._evaluate_game_position_cached", fake_eval
+    )
+
+    class FakePool:
+        def __init__(self, size: int):
+            self._pool = type("SubPool", (), {"_target_size": size, "run": self._run})()
+            self.acquired_count = 0
+
+        async def _run(self, fn):
+            self.acquired_count += 1
+            return await fn(object())
+
+    # With pool_size=6, batch partitions across at most 4 workers (leaving 2 free)
+    p6 = FakePool(6)
+    boards = [chess.Board() for _ in range(20)]
+    await gather_evaluate_positions_bounded(boards, depth=14, pool=p6, requested_depth=14)
+    assert p6.acquired_count == 4
+
+    # With pool_size=4, batch partitions across at most 3 workers (leaving 1 free)
+    p4 = FakePool(4)
+    await gather_evaluate_positions_bounded(boards, depth=14, pool=p4, requested_depth=14)
+    assert p4.acquired_count == 3
+
+
+def test_mcpsettings_parses_acquire_timeout(monkeypatch):
+    """MCPSettings exposes CHESS_MCP_ACQUIRE_TIMEOUT with 15.0 default."""
+    from mcp_server.config import MCPSettings
+
+    monkeypatch.delenv("CHESS_MCP_ACQUIRE_TIMEOUT", raising=False)
+    cfg = MCPSettings()
+    assert cfg.acquire_timeout == 15.0
+
+    monkeypatch.setenv("CHESS_MCP_ACQUIRE_TIMEOUT", "25.0")
+    cfg2 = MCPSettings()
+    assert cfg2.acquire_timeout == 25.0
+
+
+@pytest.mark.asyncio
+async def test_evaluate_pair_runs_concurrently():
+    """_evaluate_pair runs before and after evaluations concurrently."""
+    import chess
+    import asyncio
+    from mcp_server.analysis.classification_stability import _evaluate_pair
+    from mcp_server.models import MCPEval
+
+    active = 0
+    max_active = 0
+
+    class FakePool:
+        async def evaluate(self, board, depth=14):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return MCPEval(cp=0, depth=depth, searched_depth=depth)
+
+    b1 = chess.Board()
+    b2 = chess.Board()
+    b2.push_san("e4")
+
+    ev1, ev2 = await _evaluate_pair(
+        FakePool(),
+        b1,
+        b2,
+        depth=24,
+        history_complete="incomplete",
+        evaluate_position=None,
+    )
+    assert ev1 is not None
+    assert ev2 is not None
+    assert max_active == 2
+
+
