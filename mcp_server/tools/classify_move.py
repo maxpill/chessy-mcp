@@ -78,8 +78,8 @@ async def classify_move(
     ] = None,
     depth: Annotated[
         int,
-        Field(description="Stockfish search depth (default 20, clamped 1-30)."),
-    ] = 20,
+        Field(description="Stockfish search depth (default 16, clamped 1-30)."),
+    ] = 16,
     action_type: Annotated[
         Literal["play_move", "claim_draw", "claim_draw_with_intended_move"],
         Field(
@@ -150,8 +150,8 @@ async def classify_move(
     claims about the player's thought process.
 
     ``compare_moves`` accepts SAN or UCI and is capped at eight candidates.
-    Supplying it automatically upgrades ``standard`` to ``forensic`` because a
-    comparison necessarily requires additional engine work.
+    Supplying it evaluates the candidates under ``coach`` mode without forcing
+    heavy multi-depth stability re-searches unless ``detail='forensic'`` is requested.
     """
     t0 = time.time()
     depth = _validate_requested_depth(depth, tool="classify_move")
@@ -163,7 +163,7 @@ async def classify_move(
         if compare_moves is not None and len(compare_moves) > 8:
             raise ValueError("INVALID_PARAMETER_COUNT: at most 8 candidates are allowed")
         effective_detail: DetailMode = (
-            "forensic" if compare_moves and detail == "standard" else detail
+            "coach" if compare_moves and detail == "standard" else detail
         )
 
         outcome = validate_classify_input(

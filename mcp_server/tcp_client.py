@@ -104,12 +104,16 @@ class TCPUCIClient:
         if writer is not None:
             try:
                 if not _is_closing(writer):
-                    writer.write(b"quit\n")
+                    writer.write(b"stop\nquit\n")
+                    try:
+                        await asyncio.wait_for(writer.drain(), timeout=0.5)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:
                 writer.close()
-                await writer.wait_closed()
+                await asyncio.wait_for(writer.wait_closed(), timeout=0.5)
             except Exception:
                 pass
 

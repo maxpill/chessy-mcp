@@ -458,9 +458,13 @@ class GameAnalyzer:
                 coaching=zero_ply_coaching,
             )
 
+        batch_depth = depth
+        if len(positions) > 70 and batch_depth > 12:
+            batch_depth = 11 if len(positions) > 100 else 12
+
         eval_pairs = await self._evaluate_positions(
             positions,
-            depth,
+            batch_depth,
             pool,
             requested_depth=raw_requested_depth,
             history_complete="complete",

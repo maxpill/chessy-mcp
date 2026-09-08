@@ -446,7 +446,7 @@ async def verify_forensic_classification_stability(
         )
     board_after.push(played_move)
 
-    verification_depth = min(max(depth + 4, 24), 30)
+    verification_depth = min(depth + 4, 24)
     try:
         verified_before, verified_after = await _evaluate_pair(
             pool,
@@ -484,8 +484,8 @@ async def verify_forensic_classification_stability(
         final_after = verified_after
         verification_converged: bool | None = None
 
-        if disagreement and verification_depth < 30:
-            escalation_depth = min(verification_depth + 2, 30)
+        if disagreement and verification_depth < 26:
+            escalation_depth = min(verification_depth + 2, 26)
             escalated_before, escalated_after = await _evaluate_pair(
                 pool,
                 board_before,
