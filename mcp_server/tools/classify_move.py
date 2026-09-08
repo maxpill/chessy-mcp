@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
+from pydantic import Field
 
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
@@ -59,14 +60,50 @@ DetailMode = Literal["standard", "coach", "forensic"]
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
 async def classify_move(
-    fen: str,
-    move: str | None = None,
-    moves: list[str] | None = None,
-    depth: int = 20,
-    action_type: Literal["play_move", "claim_draw", "claim_draw_with_intended_move"] = "play_move",
-    strict: bool = False,
-    detail: DetailMode = "standard",
-    compare_moves: list[str] | None = None,
+    fen: Annotated[
+        str,
+        Field(description="FEN string representing the chess position before the move."),
+    ],
+    move: Annotated[
+        str | None,
+        Field(
+            description="The move played by the side to move (in SAN or UCI notation, e.g. 'e4', 'Nf3', 'O-O', 'e2e4')."
+        ),
+    ] = None,
+    moves: Annotated[
+        list[str] | None,
+        Field(
+            description="Optional move history from startpos leading to the position to detect threefold repetition state."
+        ),
+    ] = None,
+    depth: Annotated[
+        int,
+        Field(description="Stockfish search depth (default 20, clamped 1-30)."),
+    ] = 20,
+    action_type: Annotated[
+        Literal["play_move", "claim_draw", "claim_draw_with_intended_move"],
+        Field(
+            description="Action kind: 'play_move' (default), 'claim_draw', or 'claim_draw_with_intended_move'."
+        ),
+    ] = "play_move",
+    strict: Annotated[
+        bool,
+        Field(
+            description="When True, strictly enforce canonical SAN/UCI syntax and reject invalid candidate compare moves."
+        ),
+    ] = False,
+    detail: Annotated[
+        DetailMode,
+        Field(
+            description="Detail level: 'standard' for fast grade/loss, 'coach' for tactical snapshots and reply, 'forensic' for candidate comparison and verification."
+        ),
+    ] = "standard",
+    compare_moves: Annotated[
+        list[str] | None,
+        Field(
+            description="Optional list of up to 8 alternative legal candidate moves FOR THE SAME PLAYER whose turn it is in the position (e.g. ['Nf3', 'd4']). Must be legal moves for the current player to move, NOT opponent replies."
+        ),
+    ] = None,
     ctx: Context | None = None,
 ) -> ForensicMoveAnalysis:
     """Grade a played move against Stockfish's best alternative.

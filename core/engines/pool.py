@@ -167,7 +167,7 @@ class _EnginePool:
         try:
             result = await fn(fresh)
         except BaseException as exc:
-            if _is_transport_error(exc):
+            if _is_transport_error(exc) or isinstance(exc, asyncio.CancelledError):
                 await self._discard(fresh)
                 self._start_self_heal()
                 raise

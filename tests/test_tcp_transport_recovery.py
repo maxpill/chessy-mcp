@@ -474,3 +474,61 @@ async def test_analyze_game_forensic_completes_without_timeout():
     assert duration < 20.0, f"forensic analysis took too long: {duration:.2f}s"
 
 
+@pytest.mark.asyncio
+async def test_pool_discards_fresh_worker_on_cancelled_error_in_replace_and_retry():
+    """When _replace_and_retry spawns fresh worker and is cancelled, fresh must be discarded."""
+    from core.engines.pool import _EnginePool
+
+    spawned = 0
+    fresh_worker_id = None
+
+    class _FirstDeadThenHangingWorker:
+        def __init__(self, idx: int) -> None:
+            self.idx = idx
+            self.closed = False
+
+        async def evaluate(self, board: chess.Board, **kwargs) -> Eval:
+            if self.idx == 1:
+                raise RuntimeError(
+                    "unable to perform operation on <TCPTransport closed=True reading=False 0xdead>; the handler is closed"
+                )
+            # Replacement worker hangs until cancelled
+            await asyncio.sleep(10.0)
+            return Eval(cp=42)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def factory():
+        nonlocal spawned, fresh_worker_id
+        spawned += 1
+        w = _FirstDeadThenHangingWorker(spawned)
+        if spawned == 2:
+            fresh_worker_id = id(w)
+        return w
+
+    initial = await factory()
+    pool = _EnginePool([initial], factory, acquire_timeout=5.0)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(
+            pool.run(lambda a: a.evaluate(chess.Board())),  # type: ignore[attr-defined]
+            timeout=0.05,
+        )
+
+    # The fresh worker must NOT be put back into queue on cancellation
+    queued_ids = [id(item) for item in pool._q._queue]  # type: ignore[attr-defined]
+    assert fresh_worker_id not in queued_ids
+    await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_analyze_game_default_depth_is_14():
+    """analyze_game defaults to depth 14 for sub-10s execution under ChatGPT 15s timeout."""
+    import inspect
+    from mcp_server.tools.analyze_game import analyze_game
+
+    sig = inspect.signature(analyze_game)
+    assert sig.parameters["depth"].default == 14
+
+

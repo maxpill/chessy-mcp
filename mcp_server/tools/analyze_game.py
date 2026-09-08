@@ -10,7 +10,8 @@ tools.
 from __future__ import annotations
 
 import logging
-from typing import Literal
+from typing import Annotated, Literal
+from pydantic import Field
 
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
@@ -33,12 +34,36 @@ _ANALYZER = GameAnalyzer.with_defaults()
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
 async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
-    pgn: str,
-    depth: int = 18,
-    strict: bool = False,
-    detail: Literal["standard", "coach", "forensic"] = "standard",
-    perspective: Literal["white", "black"] = "white",
-    max_critical_moments: int = 6,
+    pgn: Annotated[
+        str,
+        Field(description="PGN string, annotated game text, or SAN move list to analyze."),
+    ],
+    depth: Annotated[
+        int,
+        Field(
+            description="Stockfish search depth per move (default 14, clamped 1-30). Depth 14 completes full games in 4-7s, well under client timeouts."
+        ),
+    ] = 14,
+    strict: Annotated[
+        bool,
+        Field(description="When True, reject non-canonical SAN syntax or move numbers."),
+    ] = False,
+    detail: Annotated[
+        Literal["standard", "coach", "forensic"],
+        Field(
+            description="Analysis detail level: 'standard' (fast batch), 'coach' (turning points & story), 'forensic' (deep verification)."
+        ),
+    ] = "standard",
+    perspective: Annotated[
+        Literal["white", "black"],
+        Field(description="Player perspective for coaching analysis ('white' or 'black')."),
+    ] = "white",
+    max_critical_moments: Annotated[
+        int,
+        Field(
+            description="Maximum number of critical moments to extract (clamped between 1 and 7, default 6)."
+        ),
+    ] = 6,
     ctx: Context | None = None,
 ) -> ForensicGameAnalysisResult:
     """Analyze a full PGN, optionally as a structured coaching post-mortem.

@@ -8,7 +8,8 @@ and opt-in deterministic position-integrity evidence.
 from __future__ import annotations
 
 import time
-from typing import Literal
+from typing import Annotated, Literal
+from pydantic import Field
 
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
@@ -33,12 +34,32 @@ from mcp_server.tools._common import (
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
 async def evaluate_position(
-    fen: str,
-    moves: list[str] | None = None,
-    depth: int = 22,
-    strict: bool = False,
-    verbosity: str | None = None,
-    detail: Literal["standard", "coach", "forensic"] = "standard",
+    fen: Annotated[
+        str,
+        Field(description="FEN or PGN string representing the position to evaluate."),
+    ],
+    moves: Annotated[
+        list[str] | None,
+        Field(description="Optional list of UCI or SAN moves to replay onto the position first."),
+    ] = None,
+    depth: Annotated[
+        int,
+        Field(description="Stockfish search depth (default 22, clamped 1-30)."),
+    ] = 22,
+    strict: Annotated[
+        bool,
+        Field(description="When True, reject non-canonical SAN syntax or move numbers."),
+    ] = False,
+    verbosity: Annotated[
+        str | None,
+        Field(description="Response verbosity: 'full' (default) or 'compact'."),
+    ] = None,
+    detail: Annotated[
+        Literal["standard", "coach", "forensic"],
+        Field(
+            description="Detail level: 'standard' (fast eval), 'coach' (tactical geometry), 'forensic' (resulting position deltas)."
+        ),
+    ] = "standard",
     ctx: Context | None = None,
 ) -> ForensicEval:
     """Evaluate a chess position with Stockfish.

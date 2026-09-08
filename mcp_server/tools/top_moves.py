@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Literal
+from typing import Annotated, Literal
+from pydantic import Field
 
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
@@ -38,16 +39,48 @@ _FINDER = TopMovesFinder.with_defaults()
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True))
 async def top_moves(
-    fen: str,
-    moves: list[str] | None = None,
-    n: int = 3,
-    depth: int = 20,
-    strict: bool = False,
-    verbosity: str | None = None,
-    detail: Literal["standard", "coach", "forensic"] = "standard",
-    include_moves: list[str] | None = None,
-    proof_mode: Literal["none", "tactical"] = "none",
-    proof_defenses: int = 3,
+    fen: Annotated[
+        str,
+        Field(description="FEN or PGN string representing the position to evaluate."),
+    ],
+    moves: Annotated[
+        list[str] | None,
+        Field(description="Optional list of UCI or SAN moves to replay onto the position first."),
+    ] = None,
+    n: Annotated[
+        int,
+        Field(description="Number of top candidate moves to return (default 3, clamped 1-10)."),
+    ] = 3,
+    depth: Annotated[
+        int,
+        Field(description="Stockfish search depth (default 20, clamped 1-30)."),
+    ] = 20,
+    strict: Annotated[
+        bool,
+        Field(description="When True, reject non-canonical SAN syntax or move numbers."),
+    ] = False,
+    verbosity: Annotated[
+        str | None,
+        Field(description="Response verbosity: 'full' (default) or 'compact'."),
+    ] = None,
+    detail: Annotated[
+        Literal["standard", "coach", "forensic"],
+        Field(description="Detail level: 'standard' (fast ranking), 'coach' (snapshots), 'forensic' (endpoint deltas & proofs)."),
+    ] = "standard",
+    include_moves: Annotated[
+        list[str] | None,
+        Field(
+            description="Explicit legal candidate moves for the side to move that MUST be evaluated and included (up to 8 moves). Must be legal moves for the side to move, NOT opponent replies."
+        ),
+    ] = None,
+    proof_mode: Annotated[
+        Literal["none", "tactical"],
+        Field(description="'none' (default) or 'tactical' to evaluate the reply tree of the best move."),
+    ] = "none",
+    proof_defenses: Annotated[
+        int,
+        Field(description="Number of defensive replies to analyze in tactical proof mode (default 3)."),
+    ] = 3,
     ctx: Context | None = None,
 ) -> ForensicTopMovesResult:
     """Get top candidates, with optional explicit comparisons and tactical proof.
