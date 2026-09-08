@@ -15,17 +15,26 @@ MAX_HALFMOVE_CLOCK: Final[int] = 10_000
 MAX_FULLMOVE_NUMBER: Final[int] = 10_000
 
 
-def validate_fen_counters(cleaned: str, strict: bool) -> tuple[list[str], str]:
+def validate_fen_counters(cleaned: str, strict: bool) -> tuple[list[str], str, list[str]]:
     """Validate halfmove clock + fullmove number + EP/halfmove historical consistency.
 
-    Returns ``(tokens, cleaned_to_parse)``. Raises ``ValueError` on any
-    invalid counter when strict=True, or when the value is unparseable /
-    negative. Non-strict mode also raises on hard impossibilities
-    (negative, unparseable, halfmove_clock > MAX) but permits non-historical
-    EP + non-zero halfmove as a warning to the caller (which surfaces it
-    via the metadata_warning channel rather than as an error).
+    Returns ``(tokens, cleaned_to_parse, warnings)``.
+
+    Strict mode raises on:
+      * any unparseable counter,
+      * negative halfmove clock / fullmove number,
+      * counter exceeding :data:`MAX_HALFMOVE_CLOCK` / :data:`MAX_FULLMOVE_NUMBER`,
+      * a non-historical EP target (EP square set with halfmove clock > 0).
+
+    Lenient mode also raises on hard impossibilities (negative,
+    unparseable, exceeding max) but **permits** a non-historical EP +
+    non-zero halfmove by stripping the EP target to ``-`` and recording
+    a structured warning (audit Bug 6, 2026-09-08). The halfmove counter
+    is left untouched — callers can detect the canonicalization via
+    the returned ``tokens`` or the canonical-FEN diff.
     """
     tokens = cleaned.split()
+    warnings: list[str] = []
     if len(tokens) >= 5:
         halfmove_raw = tokens[4]
         try:
@@ -45,11 +54,19 @@ def validate_fen_counters(cleaned: str, strict: bool) -> tuple[list[str], str]:
             )
         if len(tokens) >= 4 and tokens[3] != "-" and halfmove_num != 0:
             ep_sq = tokens[3]
-            raise ValueError(
-                f"INVALID_FEN: FEN '{cleaned}' has en-passant target '{ep_sq}' "
-                f"but halfmove clock is {halfmove_num}; an en-passant target "
-                f"requires the previous move to have been a pawn double push "
-                f"which would have reset the halfmove clock to 0."
+            if strict:
+                raise ValueError(
+                    f"INVALID_FEN: FEN '{cleaned}' has en-passant target '{ep_sq}' "
+                    f"but halfmove clock is {halfmove_num}; an en-passant target "
+                    f"requires the previous move to have been a pawn double push "
+                    f"which would have reset the halfmove clock to 0."
+                )
+            tokens[3] = "-"
+            cleaned = " ".join(tokens)
+            warnings.append(
+                f"EP target '{ep_sq}' stripped because halfmove clock is "
+                f"{halfmove_num}; EP requires a prior pawn double push which "
+                f"would have reset the clock to 0."
             )
     if len(tokens) >= 6:
         fullmove_raw = tokens[5]
@@ -68,7 +85,7 @@ def validate_fen_counters(cleaned: str, strict: bool) -> tuple[list[str], str]:
                 f"INVALID_FEN: Fullmove number in FEN '{cleaned}' "
                 f"is {fullmove_num}; maximum supported value is {MAX_FULLMOVE_NUMBER}."
             )
-    return tokens, cleaned
+    return tokens, cleaned, warnings
 
 
 # Back-compat shim.

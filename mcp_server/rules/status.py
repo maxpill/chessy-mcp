@@ -124,7 +124,17 @@ def evaluate_rule_status(
     else:
         repetition_status = "unknown"
 
-    requires_stack = repetition_proven or repetition_status == "unknown"
+    # 2026-09-08 audit Bug 3: ``requires_stack`` (and the related
+    # ``history_dependent_status`` / ``fen_sufficient_for_status``) must
+    # reflect whether the CURRENT RULE depends on the move stack. The
+    # pre-fix code conflated ``repetition_status == "unknown"`` (we
+    # couldn't tell because no PGN was provided) with "history dependency"
+    # — which wrongly marked an immediate FEN-provable 50-move claim as
+    # history-dependent. The fix restricts ``requires_stack`` to the only
+    # case that actually needs the move stack: a threefold claim has been
+    # proven. ``repetition_sufficient_without_history`` below continues
+    # to encode the audit's separate repetition-completeness axis.
+    requires_stack = repetition_proven
     return RuleStatus(
         terminal=None,
         winner=None,

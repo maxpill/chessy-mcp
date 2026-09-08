@@ -47,7 +47,7 @@ from mcp_server.engine import (
     _single_flight,
 )
 from mcp_server.metrics import metrics
-from mcp_server.models import MCPMoveAnalysis
+from mcp_server.models import MCPEval, MCPMoveAnalysis
 from mcp_server.models.forensics import ForensicMoveAnalysis
 from mcp_server.tcp_analyzer import TCPAnalyzerPool
 from mcp_server.tools._common import _tool_error, _validate_requested_depth, error_code_for
@@ -155,10 +155,8 @@ async def classify_move(
         cached = await _cache.get_classify(cache_key)
         if cached is not None:
             await metrics.record("classify_move", (time.time() - t0) * 1000, cache_hit=True)
-            eval_bef = cached.eval_before.model_copy(
-                update={"requested_depth": raw_requested_depth}
-            )
-            eval_aft = cached.eval_after.model_copy(update={"requested_depth": raw_requested_depth})
+            eval_bef = _stamp_requested_depth(cached.eval_before, raw_requested_depth)
+            eval_aft = _stamp_requested_depth(cached.eval_after, raw_requested_depth)
             base = cached.model_copy(
                 update={
                     "eval_before": eval_bef,
@@ -173,6 +171,7 @@ async def classify_move(
                 depth=depth,
                 detail=effective_detail,
                 compare_moves=compare_moves,
+                strict=strict,
             )
 
         async def _compute() -> MCPMoveAnalysis:
@@ -265,6 +264,7 @@ async def classify_move(
             depth=depth,
             detail=effective_detail,
             compare_moves=compare_moves,
+            strict=strict,
         )
     except ToolError:
         await metrics.record("classify_move", 0.0, is_error=True)
@@ -286,6 +286,7 @@ async def _finish_result(
     depth: int,
     detail: DetailMode,
     compare_moves: list[str] | None,
+    strict: bool = False,
 ) -> ForensicMoveAnalysis:
     if detail == "standard" and not compare_moves:
         payload = result.model_dump(
@@ -342,6 +343,24 @@ async def _finish_result(
         reply_enriched,
         mover=outcome.board.turn,
     )
+
+
+def _stamp_requested_depth(eval_obj: MCPEval, requested_depth: int) -> MCPEval:
+    """Rebind the top-level and nested ``engine_eval`` ``requested_depth`` to the new request.
+
+    The cache stores ``MCPEval`` snapshots with the depth used when the
+    snapshot was originally produced. A later request at a different depth
+    must not inherit the snapshot's depth verbatim — pre-fix the nested
+    ``engine_eval.requested_depth`` leaked the original request's depth and
+    contradicted the freshly-stamped top-level value (audit Bug 7).
+    """
+    nested = eval_obj.engine_eval
+    if isinstance(nested, dict):
+        nested = {**nested, "requested_depth": requested_depth}
+        return eval_obj.model_copy(
+            update={"requested_depth": requested_depth, "engine_eval": nested}
+        )
+    return eval_obj.model_copy(update={"requested_depth": requested_depth})
 
 
 def _uses_pool_classify_fast_path(pool: Any, outcome: Any) -> bool:

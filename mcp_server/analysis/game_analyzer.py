@@ -27,6 +27,9 @@ from mcp_server.analysis.game_validation import GameMetadata, extract_game_metad
 from mcp_server.analysis.mainline_parser import parse_mainline
 from mcp_server.analysis.result_reconciliation import reconcile_result
 from mcp_server.analysis.trailing_ply_reconciliation import reconcile_trailing_plies
+from mcp_server.actions import build_best_action, build_legal_actions
+from mcp_server.rules import evaluate_rule_status
+from mcp_server.urls import lichess_urls
 from mcp_server.engine import (
     _build_identity,
     _gather_evaluate_positions_bounded,
@@ -34,6 +37,7 @@ from mcp_server.engine import (
 )
 from mcp_server.models import MCPEval
 from mcp_server.models.game_coaching import (
+    FinalPositionAssessment,
     ForensicGameAnalysisResult,
     GameCoachingEvidence,
 )
@@ -93,14 +97,10 @@ def _finalize_coaching_evidence(
         for signature in moment.evidence_signatures
     )
     reason_counts = Counter(
-        reason
-        for moment in coaching.critical_moments
-        for reason in moment.reasons
+        reason for moment in coaching.critical_moments for reason in moment.reasons
     )
     self_reported = sorted(
-        moment.ply
-        for moment in coaching.critical_moments
-        if moment.user_comment_raw
+        moment.ply for moment in coaching.critical_moments if moment.user_comment_raw
     )
     return coaching.model_copy(
         update={
@@ -110,6 +110,161 @@ def _finalize_coaching_evidence(
             "self_reported_critical_plies": self_reported,
         }
     )
+
+
+def _build_fifty_move_short_circuit(
+    *,
+    game_result: str,
+    requested_depth: int,
+    positions: list[chess.Board],
+) -> Callable[[chess.Board, int], MCPEval | None]:
+    """Build a ``short_circuit`` callback for the FINAL 50-move-rule position.
+
+    2026-09-08 audit Bug 8: when a PGN ends with a 50-move-rule draw,
+    the final position has ``board.is_fifty_moves()`` True. Calling the
+    engine on that position is wasted work — the player will claim a
+    draw rather than play on. This callback synthesizes a terminal
+    MCPEval (``status="fifty_moves"``, ``searched_depth=0``) for that
+    specific position so the gather path skips the engine call.
+
+    Only the LAST position in ``positions`` is short-circuited. An
+    intermediate position with ``is_fifty_moves()`` True (e.g. halfmove
+    149 with a winning continuation that walks into 75-move-draw on the
+    next move) still needs a real engine eval so blunder detection can
+    compare eval_before vs eval_after.
+
+    Non-50-move positions and non-last positions return ``None``.
+    """
+
+    final_fen = positions[-1].fen() if positions else None
+
+    def _cb(board: chess.Board, index: int) -> MCPEval | None:
+        if game_result != "1/2-1/2":
+            return None
+        if index != len(positions) - 1:
+            return None
+        if not board.is_fifty_moves():
+            return None
+        if final_fen is not None and board.fen() != final_fen:
+            return None
+        rule_status = evaluate_rule_status(board, history_complete="complete")
+        canonical_fen = board.fen()
+        url, img = lichess_urls(canonical_fen)
+        best_action = build_best_action(
+            recommended_action="claim_draw",
+            rule_status=rule_status,
+            engine_eval=None,
+            board=board,
+            sign=1 if board.turn == chess.WHITE else -1,
+        )
+        legal_actions = build_legal_actions(
+            rule_status=rule_status,
+            engine_eval=None,
+            board=board,
+            legal_engine_moves=None,
+        )
+        rule_actions = [
+            a
+            for a in legal_actions
+            if a.get("type") in ("claim_draw", "claim_draw_with_intended_move")
+        ]
+        return MCPEval(
+            status="fifty_moves",
+            cp=0,
+            mate=None,
+            best_move=None,
+            pv=[],
+            depth=0,
+            requested_depth=requested_depth,
+            searched_depth=0,
+            can_claim_draw=True,
+            claim_reasons=["fifty_moves"],
+            can_claim_now=True,
+            claim_reasons_now=["fifty_moves"],
+            can_claim_with_intended_move=False,
+            claim_moves=[],
+            recommended_action="claim_draw",
+            best_action="claim_draw",
+            best_action_type="claim_draw",
+            best_action_obj=best_action,
+            legal_actions=legal_actions,
+            legal_rule_actions=rule_actions,
+            canonical_fen=canonical_fen,
+            fen_was_canonicalized=False,
+            decision_value={
+                "outcome": "draw",
+                "cp_equivalent": 0,
+                "best_action": "claim_draw",
+                "perspective": "white",
+            },
+            engine_eval={
+                "cp": 0,
+                "mate": None,
+                "best_move": None,
+                "pv": [],
+                "depth": 0,
+            },
+            history_dependent_status=False,
+            lichess_url_reproduces_history=True,
+            requires_move_stack=False,
+            fen_sufficient_for_status=True,
+            history_completeness="complete",
+            repetition_status="none",
+            lichess_url=url,
+            lichess_image=img,
+        )
+
+    return _cb
+
+
+def _build_zero_ply_coaching(
+    board: chess.Board,
+    *,
+    detail: Literal["coach", "forensic"],
+    perspective: GamePerspective,
+    scan_depth: int,
+    pgn: str,
+) -> GameCoachingEvidence:
+    """Construct a minimal but real coaching block for a zero-ply PGN.
+
+    The position is the initial/final board (the same since no moves
+    were played). No engine call is made — ``searched_depth=0`` is set on
+    the outer response. The coaching block carries a ``final_position``
+    derived from the board's terminal status and a synthesized empty
+    record set so the rich-mode response schema is satisfied.
+    """
+    legal_count = board.legal_moves.count()
+    final_position = FinalPositionAssessment(
+        perspective=perspective,
+        position_terminal_by_rules=board.is_game_over(claim_draw=False),
+        checkmate=board.is_checkmate(),
+        stalemate=board.is_stalemate(),
+        forced_mate=board.is_checkmate(),
+        mate_distance=None,
+        effective_cp=0,
+        wdl=None,
+        side_to_move="white" if board.turn == chess.WHITE else "black",
+        legal_move_count=legal_count,
+        best_move_uci=None,
+        best_move_san=None,
+        defensive_resources_exist=not board.is_game_over(claim_draw=False) and legal_count > 0,
+        reasonable_resource_count=None,
+        verification_depth=scan_depth if detail == "forensic" else None,
+    )
+    coaching = GameCoachingEvidence(
+        detail=detail,
+        perspective=perspective,
+        critical_moments=[],
+        game_segments=[],
+        advantage_events=[],
+        positive_moments=[],
+        root_cause_links=[],
+        final_position=final_position,
+        scan_depth=scan_depth,
+        verification_depth=scan_depth if detail == "forensic" else None,
+        adaptive_escalation_depth=None,
+    )
+    return _finalize_coaching_evidence(pgn, coaching)
 
 
 class GameAnalyzer:
@@ -235,6 +390,20 @@ class GameAnalyzer:
             detected_opening, detected_eco = (
                 lookup_opening([])[:2] if is_standard_start else (None, None)
             )
+            # 2026-09-08 audit Bug 5: rich zero-ply PGNs must return a real
+            # coaching block, not ``coaching=None``. Standard detail keeps
+            # the cheap shape; coach/forensic attach a minimal coaching
+            # payload built from the initial board state with no engine
+            # call (searched_depth stays 0).
+            zero_ply_coaching = None
+            if detail != "standard":
+                zero_ply_coaching = _build_zero_ply_coaching(
+                    positions[-1],
+                    detail=detail,
+                    perspective=perspective,
+                    scan_depth=raw_requested_depth,
+                    pgn=pgn,
+                )
             if metrics is not None:
                 await metrics.record("analyze_game", (time.time() - t0) * 1000, cache_hit=True)
             return ForensicGameAnalysisResult(
@@ -286,7 +455,7 @@ class GameAnalyzer:
                 **identity,
                 accuracy_method="win_probability_logistic",
                 mate_penalty_policy="1000_cp_mate_transition",
-                coaching=None,
+                coaching=zero_ply_coaching,
             )
 
         eval_pairs = await self._evaluate_positions(
@@ -295,6 +464,11 @@ class GameAnalyzer:
             pool,
             requested_depth=raw_requested_depth,
             history_complete="complete",
+            short_circuit=_build_fifty_move_short_circuit(
+                game_result=reconciled.result,
+                requested_depth=raw_requested_depth,
+                positions=positions,
+            ),
         )
         evals: list[MCPEval] = [ep[0] for ep in eval_pairs]
         all_cached = all(ep[1] for ep in eval_pairs)

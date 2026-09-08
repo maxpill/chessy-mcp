@@ -14,6 +14,8 @@ points:
 
 from __future__ import annotations
 
+import logging
+
 import chess
 
 from mcp_server.parsers.move_parser import _parse_move_on_board_with_warning
@@ -23,6 +25,8 @@ from mcp_server.parsers.pgn_validate import (
     _validate_fen_counters,
 )
 from mcp_server.rules import format_fen_status_errors
+
+log = logging.getLogger("chessy_mcp.board_builder")
 
 __all__ = [
     "build_board",
@@ -61,7 +65,11 @@ def build_board(
             )
         if 1 <= len(tokens) <= 6 and not cleaned.startswith("[") and not tokens[0].endswith("."):
             if "/" in cleaned:
-                tokens, _ = _validate_fen_counters(cleaned, strict)
+                tokens, _cleaned_after_counter_check, _ep_warnings = _validate_fen_counters(
+                    cleaned, strict
+                )
+                for _w in _ep_warnings:
+                    log.info("FEN canonicalization: %s", _w)
             try:
                 # U-09 (2026-09-01): validate castling rights BEFORE handing
                 # the FEN to python-chess. The library raises
@@ -137,6 +145,18 @@ def build_board(
                 board = None
 
     if board is None:
+        # 2026-09-08 audit Bug 4: a numeric-only token (e.g. ``"12345"``)
+        # has no PGN headers, no SAN/UCI moves, no result token, and no
+        # slash — but the bare-movetext PGN fallback would otherwise
+        # accept it as an empty game (board = starting position).
+        # Reject it explicitly before the PGN parser ever sees it so the
+        # caller gets a structured INVALID_INPUT instead of a misleading
+        # "starting position" response.
+        if cleaned.isdigit():
+            raise ValueError(
+                f"INVALID_INPUT: '{cleaned}' is not a recognizable FEN, "
+                f"PGN, or move sequence (numeric-only input)."
+            )
         game = _extract_game(cleaned, strict=strict)
         board = game.board()
         if not board.is_valid() or board.status() != chess.STATUS_VALID:

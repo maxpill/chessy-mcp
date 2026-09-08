@@ -21,14 +21,27 @@ def test_cache_build_sha_uses_injected_environment(monkeypatch: pytest.MonkeyPat
 
 
 def test_unknown_repetition_explicitly_requires_move_stack():
+    # 2026-09-08 audit Bug 3: pre-fix this asserted
+    # ``requires_move_stack is True`` and ``history_dependent_status is True``
+    # for the startpos with incomplete history — the bug conflated "we can't
+    # tell whether threefold is in play" with "the current rule depends on
+    # history". Post-fix the rule_status is FEN-sufficient: no claim reason
+    # is proven, so requires_move_stack and history_dependent_status are
+    # both False. Repetition_status stays "unknown" because no PGN was
+    # supplied; the audit's separate axis ``repetition_sufficient_without_history``
+    # encodes the incompleteness (still True here — fivefold is the only
+    # case where repetition knowledge becomes required).
     status = evaluate_rule_status(chess.Board(chess.STARTING_FEN), history_complete="incomplete")
     assert status.repetition_status == "unknown"
-    assert status.requires_move_stack is True
-    assert status.history_dependent_status is True
-    assert status.fen_sufficient_for_status is False
+    assert status.requires_move_stack is False
+    assert status.history_dependent_status is False
+    assert status.fen_sufficient_for_status is True
+    assert status.repetition_sufficient_without_history is True
 
 
-@pytest.mark.parametrize("text", ["White wins on time", "Black wins on time", "White won on time", "Black won on time"])
+@pytest.mark.parametrize(
+    "text", ["White wins on time", "Black wins on time", "White won on time", "Black won on time"]
+)
 def test_winner_oriented_time_text_normalizes_to_time_forfeit(text: str):
     assert server_module.normalize_termination(text) == "time_forfeit"
 
@@ -72,7 +85,9 @@ async def test_core_best_move_uses_real_immediate_post_evaluation():
                 return Eval(cp=40, best_move="e2e4", pv=["e2e4", "e7e5"], depth=2)
             return Eval(cp=25, best_move="e7e5", pv=["e7e5"], depth=2)
 
-        async def top_moves(self, board: chess.Board, n: int = 3, depth: int | None = None) -> list[Eval]:
+        async def top_moves(
+            self, board: chess.Board, n: int = 3, depth: int | None = None
+        ) -> list[Eval]:
             return []
 
         async def close(self) -> None:
@@ -109,7 +124,14 @@ async def test_local_analyzer_pool_forwards_wdl_and_syzygy(monkeypatch: pytest.M
         show_wdl: bool = False,
         syzygy_path: str | None = None,
     ) -> FakeAnalyzer:
-        seen.update(path=path, depth=depth, threads=threads, hash_mb=hash_mb, show_wdl=show_wdl, syzygy_path=syzygy_path)
+        seen.update(
+            path=path,
+            depth=depth,
+            threads=threads,
+            hash_mb=hash_mb,
+            show_wdl=show_wdl,
+            syzygy_path=syzygy_path,
+        )
         return FakeAnalyzer()
 
     monkeypatch.setattr(Analyzer, "create", fake_create)

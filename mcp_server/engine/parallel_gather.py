@@ -35,8 +35,18 @@ async def gather_evaluate_positions_bounded(
     *,
     requested_depth: int,
     history_complete: str = "complete",
+    short_circuit: Any = None,
 ) -> list[tuple[MCPEval, bool]]:
-    """Evaluate N positions partitioned across the pool with TT reuse per slice."""
+    """Evaluate N positions partitioned across the pool with TT reuse per slice.
+
+    2026-09-08 audit Bug 8: ``short_circuit`` is an optional callable
+    ``(chess.Board, int) -> MCPEval | None`` that receives the
+    position AND its index in the caller's list. When it returns a
+    non-None MCPEval, that position is short-circuited (no engine
+    call). Used by ``analyze_game`` for the final position of a PGN
+    that ended with a 50-move-rule draw — the engine call there is
+    wasted because the player will claim rather than play.
+    """
     if not positions:
         return []
     sem = await get_evaluate_semaphore()
@@ -49,12 +59,15 @@ async def gather_evaluate_positions_bounded(
     k = max(1, min(pool_target, len(positions)))
 
     chunk = math.ceil(len(positions) / k)
-    slices: list[list[chess.Board]] = [
-        list(positions[i : i + chunk]) for i in range(0, len(positions), chunk)
+    slices: list[list[tuple[int, chess.Board]]] = [
+        [(i, positions[i]) for i in range(start, min(start + chunk, len(positions)))]
+        for start in range(0, len(positions), chunk)
     ]
     slices = slices[:k]
 
-    async def _run_slice(slice_positions: list[chess.Board]) -> list[tuple[MCPEval, bool]]:
+    async def _run_slice(
+        slice_items: list[tuple[int, chess.Board]],
+    ) -> list[tuple[int, tuple[MCPEval, bool]]]:
         # Lazy lookup of the cached evaluator preserves the legacy
         # ``monkeypatch.setattr("mcp_server.engine.pool_factory._evaluate_game_position_cached", ...)``
         # test pattern: the patch lands on the pool_factory re-export and we
@@ -66,9 +79,16 @@ async def gather_evaluate_positions_bounded(
         async with sem:
             if hasattr(pool, "_pool"):
 
-                async def _on_worker(analyzer: Any) -> list[tuple[MCPEval, bool]]:
-                    out: list[tuple[MCPEval, bool]] = []
-                    for j, b in enumerate(slice_positions):
+                async def _on_worker(
+                    analyzer: Any,
+                ) -> list[tuple[int, tuple[MCPEval, bool]]]:
+                    out: list[tuple[int, tuple[MCPEval, bool]]] = []
+                    for j, (idx, b) in enumerate(slice_items):
+                        if short_circuit is not None:
+                            mc = short_circuit(b, idx)
+                            if mc is not None:
+                                out.append((idx, (mc, True)))
+                                continue
                         r, hit = await eval_cached(
                             b,
                             depth,
@@ -78,13 +98,18 @@ async def gather_evaluate_positions_bounded(
                             analyzer=analyzer,
                             history_complete=history_complete,
                         )
-                        out.append((r, hit))
+                        out.append((idx, (r, hit)))
                     return out
 
                 return await pool._pool.run(_on_worker)  # type: ignore[attr-defined]
 
-            out: list[tuple[MCPEval, bool]] = []
-            for b in slice_positions:
+            out = []
+            for j, (idx, b) in enumerate(slice_items):
+                if short_circuit is not None:
+                    mc = short_circuit(b, idx)
+                    if mc is not None:
+                        out.append((idx, (mc, True)))
+                        continue
                 r, hit = await eval_cached(
                     b,
                     depth,
@@ -93,16 +118,14 @@ async def gather_evaluate_positions_bounded(
                     reuse_tt=False,
                     history_complete=history_complete,
                 )
-                out.append((r, hit))
+                out.append((idx, (r, hit)))
             return out
 
     slice_results = await asyncio.gather(*[_run_slice(s) for s in slices if s])
     out: list[tuple[MCPEval, bool]] = [None] * len(positions)  # type: ignore[list-item]
-    cursor = 0
     for slice_result in slice_results:
-        for j, item in enumerate(slice_result):
-            out[cursor + j] = item
-        cursor += len(slice_result)
+        for idx, item in slice_result:
+            out[idx] = item
     return out
 
 
