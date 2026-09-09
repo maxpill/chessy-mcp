@@ -238,6 +238,7 @@ def _is_illegal_position_result(result: Any) -> bool:
             "INVALID_PARAMETER",
             "INVALID_VERBOSITY",
             "INVALID_DETAIL",
+            "GAME_ALREADY_OVER",
         )
     )
 
@@ -392,6 +393,9 @@ def _short(value: Any, limit: int = 200) -> str:
 
 
 def _write_jsonl(records: list[CallRecord], path: str) -> None:
+    from pathlib import Path
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         for r in records:
             fh.write(json.dumps(asdict(r), default=str) + "\n")
@@ -518,8 +522,12 @@ async def _main_async(args: argparse.Namespace) -> int:
                 # reference if the user didn't supply one.
                 for tool_name, count in DISTRIBUTION.items():
                     cases = list(_filter_cases_by_tool(tool_name, count))[:count]
-                    for concurrency in CONCURRENCY_PHASES:
-                        phase_cases = cases
+                    num_phases = len(CONCURRENCY_PHASES)
+                    chunk_size = len(cases) // num_phases
+                    for phase_idx, concurrency in enumerate(CONCURRENCY_PHASES):
+                        start = phase_idx * chunk_size
+                        end = (phase_idx + 1) * chunk_size if phase_idx < num_phases - 1 else len(cases)
+                        phase_cases = cases[start:end]
                         records = await _run_phase(session, phase_cases, concurrency, expected_sha)
                         all_records.extend(records)
                         by_tool[tool_name].extend(records)

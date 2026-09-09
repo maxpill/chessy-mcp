@@ -43,3 +43,6 @@ Thumbs.db
 # Environment
 .env
 .env.*
+
+# Local test / stress run artifacts
+artifacts/
