@@ -56,7 +56,7 @@ async def top_moves(
     ] = None,
     n: Annotated[
         int,
-        Field(description="Number of top candidate moves to return (default 3, clamped 1-10)."),
+        Field(description="Number of top candidate moves to return (default 3, clamped 1-20)."),
     ] = 3,
     depth: Annotated[
         int,
@@ -72,7 +72,9 @@ async def top_moves(
     ] = None,
     detail: Annotated[
         Literal["standard", "coach", "forensic"],
-        Field(description="Detail level: 'standard' (fast ranking), 'coach' (snapshots), 'forensic' (endpoint deltas & proofs)."),
+        Field(
+            description="Detail level: 'standard' (fast ranking), 'coach' (snapshots), 'forensic' (endpoint deltas & proofs)."
+        ),
     ] = "standard",
     include_moves: Annotated[
         list[str] | None,
@@ -82,11 +84,15 @@ async def top_moves(
     ] = None,
     proof_mode: Annotated[
         Literal["none", "tactical"],
-        Field(description="'none' (default) or 'tactical' to evaluate the reply tree of the best move."),
+        Field(
+            description="'none' (default) or 'tactical' to evaluate the reply tree of the best move."
+        ),
     ] = "none",
     proof_defenses: Annotated[
         int,
-        Field(description="Number of defensive replies to analyze in tactical proof mode (default 3)."),
+        Field(
+            description="Number of defensive replies to analyze in tactical proof mode (default 3)."
+        ),
     ] = 3,
     ctx: Context | None = None,
 ) -> ForensicTopMovesResult:

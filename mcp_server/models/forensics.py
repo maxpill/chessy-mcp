@@ -103,19 +103,47 @@ class MechanismCandidateEvidence(BaseModel):
     targets: list[str] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
     proof_scope: str
+    # F-010 fix (2026-09-09): presentation priority bucket. Computed from
+    # the candidate's category + whether it is supported by engine PV /
+    # concrete material consequence. Used to rank presentation_mechanisms
+    # without dropping raw evidence.
+    presentation_priority: Literal[
+        "immediate_mate",
+        "checking_move",
+        "capturing_move",
+        "promotion",
+        "forced_reply",
+        "new_en_prise",
+        "pinned_defender",
+        "engine_pv_supported",
+        "pure_geometry",
+    ] = "pure_geometry"
 
 
 class TacticalSnapshot(BaseModel):
     side_to_move: Literal["white", "black"]
     checks: list[ForcingMoveEvidence] = Field(default_factory=list)
     captures: list[ForcingMoveEvidence] = Field(default_factory=list)
+    # F-009 fix (2026-09-09 master audit): split the loose_pieces geometric
+    # fact into three explicit categories. ``loose_pieces`` is preserved as
+    # a back-compat alias for ``undefended_pieces`` (any piece with zero
+    # defenders). New consumers should prefer the explicit fields.
     loose_pieces: list[PieceEvidence] = Field(default_factory=list)
+    undefended_pieces: list[PieceEvidence] = Field(default_factory=list)
+    attacked_undefended_pieces: list[PieceEvidence] = Field(default_factory=list)
     en_prise_pieces: list[PieceEvidence] = Field(default_factory=list)
     pinned_pieces: list[PieceEvidence] = Field(default_factory=list)
     tactically_hanging_candidates: list[TacticalHangingEvidence] = Field(default_factory=list)
     attacked_defenders: list[DefenderLoadEvidence] = Field(default_factory=list)
     overloaded_defender_candidates: list[DefenderLoadEvidence] = Field(default_factory=list)
     mechanism_candidates: list[MechanismCandidateEvidence] = Field(default_factory=list)
+    # F-010 fix (2026-09-09): the geometry-only mechanism list can dominate
+    # payload while contributing little coaching value. ``presentation_mechanisms``
+    # is the same data re-ranked by concrete consequence priority (mate >
+    # check > capture > promotion > forced reply > en prise > PV-supported >
+    # pure geometry). The full ``mechanism_candidates`` list is still emitted
+    # for tooling that wants the exhaustive evidence.
+    presentation_mechanisms: list[MechanismCandidateEvidence] = Field(default_factory=list)
     opponent_forcing_threats_if_pass: list[ForcingMoveEvidence] = Field(default_factory=list)
     threat_probe_available: bool = False
     threat_probe_reason: str | None = None

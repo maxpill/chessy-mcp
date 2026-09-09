@@ -36,6 +36,13 @@ def score_delivered_checkmate(
         and board_after.turn != board_before.turn
     ):
         return None
+    # F-001 fix (2026-09-09 master audit): exact engine-best mating play_move
+    # must be action_equivalent=True. Earlier this strategy hardcoded
+    # ``action_equivalent=False``, which contradicted ``is_engine_best``,
+    # ``is_best_action``, ``same_action_type``, and ``same_outcome`` when the
+    # played move was the canonical mating best move. A non-best mating move
+    # correctly stays False (policy choice — only the exact canonical move
+    # is action-equivalent, alternative mates are not auto-equivalent).
     score = PlayedMoveScore(
         move_class=MoveClass.BEST,
         centipawn_loss=0,
@@ -48,7 +55,7 @@ def score_delivered_checkmate(
         win_loss=0.0,
         best_action=canonical_best_action,
         is_best_action=True,
-        action_equivalent=False,
+        action_equivalent=bool(is_best_engine_move and canonical_best_action == "play_move"),
         missed_draw_claim=False,
         conceded_draw_claim=False,
         claim_reason=None,

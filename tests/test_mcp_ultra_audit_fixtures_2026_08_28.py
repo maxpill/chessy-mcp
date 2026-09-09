@@ -759,14 +759,20 @@ async def test_r_42_depth_clamp():
 
 @pytest.mark.asyncio
 async def test_r_43_n_clamp():
-    """R-43: n is clamped to 1..20."""
+    """R-43: n is clamped to 1..20 (canonical max, 2026-09-09 master audit F-002).
+
+    The old assertion ``clamped_n == 10`` pinned the broken-by-design constant
+    in ``rules/constants.py``. The audit unified TOP_MOVES_MAX_N to 20 (the
+    value already used at runtime, in request-cost estimation, and in the
+    production deployment).
+    """
     server_module._analyzer_pool = _FlatPool(cp=30, best_move="e2e4")  # type: ignore
 
     res = await server_module.top_moves("startpos", n=0, depth=8)
     assert res.clamped_n == 1
 
     res2 = await server_module.top_moves("startpos", n=21, depth=8)
-    assert res2.clamped_n == 10
+    assert res2.clamped_n == 20
 
 
 # ---------------------------------------------------------------------------
@@ -779,9 +785,7 @@ async def test_r_44_black_ranking():
     """R-44: black-to-move candidates must be ranked by Black utility."""
 
     class BlackRankingPool(_FlatPool):
-        async def top_moves(
-            self, board: chess.Board, n: int = 3, depth: int = 14
-        ) -> list[Eval]:
+        async def top_moves(self, board: chess.Board, n: int = 3, depth: int = 14) -> list[Eval]:
             candidates = [
                 Eval(cp=50, best_move="e7e5", pv=["e7e5"], depth=depth),
                 Eval(cp=-80, best_move="d7d5", pv=["d7d5"], depth=depth),
@@ -1049,7 +1053,14 @@ async def test_m05_compact_mode_strips_urls():
 
 @pytest.mark.asyncio
 async def test_m05_compact_top_moves_candidates():
-    """M-05: compact top_moves drops engine_eval/decision_value from candidates."""
+    """M-05: compact top_moves drops heavy nested/legacy fields from candidates.
+
+    F-004 fix (2026-09-09): expanded compact now also drops best_action_obj,
+    post_position, legal_actions, legal_rule_actions, action_policy, and the
+    claim_* nested fields. The flat ``best_action``/``best_action_type``/
+    ``recommended_action`` are sufficient to identify the canonical action.
+    The old assertion ``best_action_obj is not None`` pinned the bloat.
+    """
     server_module._analyzer_pool = _FlatPool(cp=30, best_move="e2e4")  # type: ignore
 
     full = await server_module.top_moves("startpos", n=3, depth=10)
@@ -1061,8 +1072,13 @@ async def test_m05_compact_top_moves_candidates():
     compact_cand = compact.result[0]
     assert compact_cand.engine_eval is None
     assert compact_cand.decision_value is None
-    # Best_actionObj is still present (typed contract is required)
-    assert compact_cand.best_action_obj is not None
+    # F-004 fix: best_action_obj is now nulled in compact because the flat
+    # best_action/best_action_type/recommended_action fields carry the same
+    # information at a fraction of the wire size.
+    assert compact_cand.best_action_obj is None
+    assert compact_cand.legal_actions == []
+    assert compact_cand.legal_rule_actions == []
+    assert compact_cand.action_policy is None
 
 
 @pytest.mark.asyncio

@@ -26,7 +26,12 @@ def estimate_mcp_request_cost(body: bytes) -> float:
         if tool_name == "evaluate_position":
             return 1.0 + depth / 14.0
         if tool_name == "top_moves":
-            n = max(1, min(int(args.get("n", 3)), 20))
+            # F-002 fix (2026-09-09): import the canonical constant so the
+            # cost estimator stays in lockstep with the runtime clamp and the
+            # public schema description.
+            from mcp_server.rules.constants import TOP_MOVES_MAX_N
+
+            n = max(1, min(int(args.get("n", 3)), TOP_MOVES_MAX_N))
             base = 1.0 + (depth * n) / 14.0
             detail = str(args.get("detail", "standard"))
             include_any = args.get("include_moves")
@@ -85,9 +90,13 @@ def estimate_mcp_request_cost(body: bytes) -> float:
                 return base + 1.0
             if detail == "forensic":
                 critical = max(1, min(int(args.get("max_critical_moments", 6)), 7))
-                verification_depth = (
-                    22 if depth <= 18 else 24 if depth <= 20 else min(depth + 2, 26)
+                # F-003 fix (2026-09-09): import the same helper the engine
+                # uses so the cost estimator can never drift from execution.
+                from mcp_server.analysis.game_coaching import (
+                    forensic_verification_depth,
                 )
+
+                verification_depth = forensic_verification_depth(depth)
                 # Two deep evals around every selected ply, a top-2 candidate
                 # search per ply, up to three positive-resource searches and a
                 # final-position resource search. Unstable moments can escalate

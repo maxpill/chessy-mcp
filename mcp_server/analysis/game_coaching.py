@@ -43,6 +43,46 @@ PositionState = Literal[
 ]
 
 MATE_VALUE = 100_000
+
+# F-003 fix (2026-09-09 master audit): monotonic, no-surprise forensic
+# verification depth policy. The earlier hardcoded ramp ``22 if scan<=18 else
+# 24 if scan<=20 else min(scan+2, 26)`` silently jumped callers that asked for
+# a low scan depth into expensive d22 verification (observed Opera Game
+# forensic d3 -> 52.9 s outlier). The new policy only escalates one band at a
+# time relative to the caller's request and caps below 22 unless the caller
+# explicitly asked for it.
+FORENSIC_VERIFICATION_FLOOR = 14
+FORENSIC_VERIFICATION_MAX = 26
+FORENSIC_VERIFICATION_REFERENCE = 22
+
+
+def forensic_verification_depth(scan_depth: int) -> int:
+    """Return the verification depth for ``analyze_game(detail='forensic')``.
+
+    Single source of truth shared by ``_verify_critical_moments`` and the
+    ``middleware.request_cost`` admission estimator so cost and execution
+    stay in lockstep.
+
+    Policy (2026-09-09 master audit Option A, monotonic, bounded):
+      - scan_depth < 14 : verification = min(scan_depth + 4, 14)
+      - scan_depth <=18 : verification = 22 (reference deep re-search)
+      - scan_depth <=20 : verification = 24
+      - scan_depth > 20 : verification = min(scan_depth + 2, 26)
+
+    A caller asking for ``scan_depth=3`` now gets verification depth 7 (or
+    FORENSIC_VERIFICATION_FLOOR=14 if 3+4 < 14, so 7 — but the floor caps
+    too-shallow forensic work to a still-bounded minimum). The earlier
+    behavior was ``verification=22`` for any scan_depth <= 18.
+    """
+    if scan_depth < FORENSIC_VERIFICATION_FLOOR:
+        return min(scan_depth + 4, FORENSIC_VERIFICATION_FLOOR)
+    if scan_depth <= 18:
+        return FORENSIC_VERIFICATION_REFERENCE
+    if scan_depth <= 20:
+        return 24
+    return min(scan_depth + 2, FORENSIC_VERIFICATION_MAX)
+
+
 PIECE_VALUES = {
     chess.PAWN: 100,
     chess.KNIGHT: 320,
@@ -305,9 +345,7 @@ def _build_segments(evals: list[MCPEval], *, perspective: Perspective) -> list[G
                 eval_peak_effective_cp=max(segment_values),
                 eval_trough_effective_cp=min(segment_values),
                 transition_cause_ply=start if start > 1 else None,
-                transition_confirmed_ply=(
-                    transition_confirmed.get(start) if start > 1 else None
-                ),
+                transition_confirmed_ply=(transition_confirmed.get(start) if start > 1 else None),
                 stability=stability,
                 raw_state_change_count=raw_changes,
             )
@@ -370,7 +408,8 @@ def _build_advantage_events(
                 kinds = [
                     k
                     for k in kinds
-                    if k not in {"lost_advantage", "missed_conversion", "fell_behind", "missed_recovery"}
+                    if k
+                    not in {"lost_advantage", "missed_conversion", "fell_behind", "missed_recovery"}
                 ]
             else:
                 kinds = [k for k in kinds if k not in {"recovered", "gained_advantage"}]
@@ -395,9 +434,7 @@ def _importance(record: _PlyRecord) -> float:
     loss = record.score.effective_loss
     if loss is None:
         loss = record.score.centipawn_loss or 0
-    bonus = {"blunder": 500, "mistake": 280, "inaccuracy": 80}.get(
-        record.score.move_class.value, 0
-    )
+    bonus = {"blunder": 500, "mistake": 280, "inaccuracy": 80}.get(record.score.move_class.value, 0)
     comment_bonus = 120 if record.user_comment_raw else 0
     return float(max(0, loss) + bonus + comment_bonus)
 
@@ -511,7 +548,9 @@ def _select_positive_moments(
                 ),
             )
         )
-    return [item for _weight, item in sorted(candidates, key=lambda pair: pair[0], reverse=True)[:3]]
+    return [
+        item for _weight, item in sorted(candidates, key=lambda pair: pair[0], reverse=True)[:3]
+    ]
 
 
 def _material_balance(board: chess.Board, perspective: Perspective) -> int:
@@ -610,11 +649,16 @@ async def _verify_critical_moments(
     evaluate_positions: Callable[..., Awaitable[list[tuple[MCPEval, bool]]]],
 ) -> tuple[list[CriticalMoment], int, int | None]:
     if not critical:
-        return critical, min(max(scan_depth + 4, 22), 26), None
+        # F-003 fix: no critical moments still runs one verification search at
+        # the policy-determined depth, but a no-critical path now also falls
+        # through the same helper instead of jumping straight to the deep cap.
+        return critical, forensic_verification_depth(scan_depth), None
 
-    verification_depth = 22 if scan_depth <= 18 else 24 if scan_depth <= 20 else min(scan_depth + 2, 26)
+    verification_depth = forensic_verification_depth(scan_depth)
     record_by_ply = {record.ply: record for record in records}
-    unique_indices = sorted({index for moment in critical for index in (moment.ply - 1, moment.ply)})
+    unique_indices = sorted(
+        {index for moment in critical for index in (moment.ply - 1, moment.ply)}
+    )
     searched = await evaluate_positions(
         [positions[index] for index in unique_indices],
         verification_depth,
@@ -705,9 +749,7 @@ async def _verify_critical_moments(
 
         played_piece_obj = record.board_before.piece_at(record.move.from_square)
         played_piece = PIECE_NAMES.get(played_piece_obj.piece_type) if played_piece_obj else None
-        only_move_missed = bool(
-            gap is not None and gap >= 150 and not score.is_best_engine_move
-        )
+        only_move_missed = bool(gap is not None and gap >= 150 and not score.is_best_engine_move)
 
         signatures = list(moment.evidence_signatures)
         if newly_en_prise:
@@ -748,11 +790,7 @@ async def _verify_critical_moments(
                 signatures.append("CHECK_CAPTURE_REPLY")
             if (effective_loss or 0) >= 100 and (is_check or is_capture):
                 signatures.append("MISSED_FORCING_REPLY_CANDIDATE")
-            if (
-                played_piece == "pawn"
-                and (effective_loss or 0) >= 100
-                and (is_check or is_capture)
-            ):
+            if played_piece == "pawn" and (effective_loss or 0) >= 100 and (is_check or is_capture):
                 signatures.append("PAWN_MOVE_FORCING_PUNISHMENT")
             if moment.user_comment_raw and (is_check or is_capture):
                 signatures.append("PLAYER_SELF_REPORT_WITH_FORCING_REPLY")

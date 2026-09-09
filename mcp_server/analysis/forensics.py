@@ -125,6 +125,33 @@ def _piece_sort_key(item: PieceEvidence) -> tuple[str, str, str]:
     return item.color, item.square, item.piece
 
 
+def _classify_presentation_priority(
+    *, is_check: bool, is_capture: bool, is_promotion: bool, category: str
+) -> str:
+    """F-010 fix (2026-09-09): rank mechanism candidates by concrete consequence.
+
+    Returns one of the buckets defined on
+    ``MechanismCandidateEvidence.presentation_priority``.
+    """
+    if category == "mate_threat_candidate":
+        return "immediate_mate"
+    if is_promotion:
+        return "promotion"
+    if is_check and is_capture:
+        return "checking_move"
+    if is_check:
+        return "checking_move"
+    if is_capture:
+        return "capturing_move"
+    if category == "removal_of_defender_candidate":
+        return "pinned_defender"
+    if category == "overloaded_defender_candidate":
+        return "pinned_defender"
+    if category == "discovered_attack_candidate":
+        return "forced_reply"
+    return "pure_geometry"
+
+
 def build_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
     checks: list[ForcingMoveEvidence] = []
     captures: list[ForcingMoveEvidence] = []
@@ -138,6 +165,7 @@ def build_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
                 en_prise_squares.add(move.to_square)
 
     loose: list[PieceEvidence] = []
+    attacked_undefended: list[PieceEvidence] = []
     en_prise: list[PieceEvidence] = []
     pinned: list[PieceEvidence] = []
     for square, piece in board.piece_map().items():
@@ -146,6 +174,12 @@ def build_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
         evidence = _piece_evidence(board, square, piece)
         if evidence.defenders == 0:
             loose.append(evidence)
+            # F-009 fix (2026-09-09): attacked_undefended distinguishes pieces
+            # that are merely undefended (geometric fact, often harmless such
+            # as the starting a1 rook) from pieces that are also attacked and
+            # thus capturable in one move.
+            if evidence.attackers > 0:
+                attacked_undefended.append(evidence)
         if square in en_prise_squares:
             en_prise.append(evidence)
         if board.is_pinned(piece.color, square):
@@ -156,6 +190,8 @@ def build_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
         checks=sorted(checks, key=lambda item: item.san),
         captures=sorted(captures, key=lambda item: item.san),
         loose_pieces=sorted(loose, key=_piece_sort_key),
+        undefended_pieces=sorted(loose, key=_piece_sort_key),
+        attacked_undefended_pieces=sorted(attacked_undefended, key=_piece_sort_key),
         en_prise_pieces=sorted(en_prise, key=_piece_sort_key),
         pinned_pieces=sorted(pinned, key=_piece_sort_key),
     )
@@ -792,12 +828,9 @@ async def enrich_move_analysis(
 
     update_evidence = _position_update_evidence(board_before, played_move)
     mechanisms.append(update_evidence)
-    mover_won = (
-        result.eval_after.status == "checkmate"
-        and (
-            (board_before.turn == chess.WHITE and result.eval_after.winner == "white")
-            or (board_before.turn == chess.BLACK and result.eval_after.winner == "black")
-        )
+    mover_won = result.eval_after.status == "checkmate" and (
+        (board_before.turn == chess.WHITE and result.eval_after.winner == "white")
+        or (board_before.turn == chess.BLACK and result.eval_after.winner == "black")
     )
     if not mover_won and update_evidence.get("opponent_move_created_urgent_change"):
         signatures.append("OPPONENT_MOVE_CREATED_URGENT_CHANGE")

@@ -129,6 +129,11 @@ def build_game_termination_assessment(
         )
 
     loser_to_move = loser is not None and final_position.side_to_move == loser
+    # F-006 fix (2026-09-09): when there is no loser-to-move, the resource
+    # assessment is "not applicable" rather than "measured zero". Returning
+    # ``None`` for ``legal_resource_count``/``defensive_resources_exist`` and
+    # ``resources_applicable=False`` lets consumers distinguish an ongoing
+    # game (no loser) from an actual checkmate (measured zero).
     return GameTerminationAssessment(
         pgn_result=result,
         termination_header=termination_header,
@@ -146,11 +151,12 @@ def build_game_termination_assessment(
         eval_for_loser_effective_cp=eval_for_loser,
         best_defensive_move_uci=(final_position.best_move_uci if loser_to_move else None),
         best_defensive_move_san=(final_position.best_move_san if loser_to_move else None),
-        legal_resource_count=final_position.legal_move_count if loser_to_move else 0,
+        legal_resource_count=(final_position.legal_move_count if loser_to_move else None),
         reasonable_resource_count=(
             final_position.reasonable_resource_count if loser_to_move else None
         ),
         defensive_resources_exist=(
-            final_position.defensive_resources_exist if loser_to_move else False
+            final_position.defensive_resources_exist if loser_to_move else None
         ),
+        resources_applicable=loser_to_move,
     )
