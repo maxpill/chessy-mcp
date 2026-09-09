@@ -9,8 +9,6 @@ contract: ``None`` means not-applicable; ``0/False`` means measured zero.
 
 from __future__ import annotations
 
-import chess
-import pytest
 
 from mcp_server.analysis.game_termination import build_game_termination_assessment
 from mcp_server.models.game_coaching import FinalPositionAssessment

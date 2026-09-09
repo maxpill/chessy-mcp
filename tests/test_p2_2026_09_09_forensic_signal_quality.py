@@ -16,7 +16,6 @@ and a ``presentation_mechanisms`` top-N list ranked by concrete consequence.
 from __future__ import annotations
 
 import chess
-import pytest
 
 from mcp_server.analysis.position_integrity import build_rich_tactical_snapshot
 
@@ -62,7 +61,7 @@ def test_attacked_undefended_distinguishes_tactical_danger() -> None:
     )
     # And the queen is en prise (capturable next move).
     en_prise_labels = {(p.color, p.square, p.piece) for p in snap.en_prise_pieces}
-    assert queen_label in en_prise_labels, f"Black queen on e5 must appear in en_prise_pieces."
+    assert queen_label in en_prise_labels, "Black queen on e5 must appear in en_prise_pieces."
 
 
 def test_presentation_mechanisms_ranked_by_priority() -> None:
@@ -97,8 +96,7 @@ def test_presentation_mechanisms_ranked_by_priority() -> None:
 def test_mechanism_candidates_preserve_presentation_priority() -> None:
     """Every mechanism candidate carries a non-empty presentation_priority bucket."""
     fen = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1"
-    b = chess.Board(fen)
-    snap = build_rich_tactical_snapshot(fen if False else chess.Board(fen))
+    snap = build_rich_tactical_snapshot(chess.Board(fen))
     valid = {
         "immediate_mate",
         "checking_move",

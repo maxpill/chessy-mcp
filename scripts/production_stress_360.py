@@ -29,17 +29,11 @@ import argparse
 import asyncio
 import hashlib
 import json
-import socket
-import ssl
-import statistics
 import sys
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from typing import Any
-from urllib.parse import urlparse
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client

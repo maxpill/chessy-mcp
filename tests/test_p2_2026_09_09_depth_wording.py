@@ -53,7 +53,7 @@ def test_depth_error_wording_mentions_clamp_not_positive() -> None:
     """The validation error must describe clamp semantics, not 'positive integer'."""
     try:
         _validate_requested_depth("not-an-int", tool="evaluate_position")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         msg = str(exc)
     else:
         pytest.fail("Expected a validation error for non-integer depth")
