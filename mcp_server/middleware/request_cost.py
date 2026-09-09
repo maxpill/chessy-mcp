@@ -26,7 +26,12 @@ def estimate_mcp_request_cost(body: bytes) -> float:
         if tool_name == "evaluate_position":
             return 1.0 + depth / 14.0
         if tool_name == "top_moves":
-            n = max(1, min(int(args.get("n", 3)), 20))
+            # F-002 fix (2026-09-09): import the canonical constant so the
+            # cost estimator stays in lockstep with the runtime clamp and the
+            # public schema description.
+            from mcp_server.rules.constants import TOP_MOVES_MAX_N
+
+            n = max(1, min(int(args.get("n", 3)), TOP_MOVES_MAX_N))
             base = 1.0 + (depth * n) / 14.0
             detail = str(args.get("detail", "standard"))
             include_any = args.get("include_moves")

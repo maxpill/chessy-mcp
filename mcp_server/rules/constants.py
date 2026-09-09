@@ -13,7 +13,11 @@ from typing import Final
 
 # Centralized tool parameter bounds & invariants
 TOP_MOVES_MIN_N: Final[int] = 1
-TOP_MOVES_MAX_N: Final[int] = 10
+# F-002 fix (2026-09-09 master audit): single canonical maximum, shared by
+# schema description, runtime clamp, request-cost estimator, and tests.
+# Previously the constant said 10 while runtime clamped to 20 and the
+# cost-estimator clamped to 20; production callers could observe both.
+TOP_MOVES_MAX_N: Final[int] = 20
 DEPTH_MIN: Final[int] = 1
 DEPTH_MAX: Final[int] = 30
 MAX_INCLUDE_MOVES: Final[int] = 8
