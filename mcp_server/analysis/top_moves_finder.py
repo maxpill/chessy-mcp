@@ -37,7 +37,12 @@ from mcp_server.engine.identity import _engine_version_str
 from mcp_server.models import MCPEval, TopMovesResult
 from mcp_server.parsers import _build_board_with_metadata, _history_provenance_for_input
 from mcp_server.rules import evaluate_rule_status
-from mcp_server.tools._common import VERBOSITY_COMPACT, _compact_mcpeval
+from mcp_server.tools._common import (
+    VERBOSITY_COMPACT,
+    VERBOSITY_MINIMAL,
+    _compact_mcpeval,
+    _minimal_mcpeval,
+)
 
 
 @dataclass
@@ -127,6 +132,8 @@ class TopMovesFinder:
             ]
             if verbosity_mode == VERBOSITY_COMPACT:
                 items = [_compact_mcpeval(c) for c in items]
+            elif verbosity_mode == VERBOSITY_MINIMAL:
+                items = [_minimal_mcpeval(c) for c in items]
             return TopMovesOutput(
                 cache_hit=True,
                 result=_assemble_response(
@@ -207,6 +214,8 @@ class TopMovesFinder:
         items = [c.model_copy(update={"requested_depth": raw_requested_depth}) for c in res[:n]]
         if verbosity_mode == VERBOSITY_COMPACT:
             items = [_compact_mcpeval(c) for c in items]
+        elif verbosity_mode == VERBOSITY_MINIMAL:
+            items = [_minimal_mcpeval(c) for c in items]
         return TopMovesOutput(
             cache_hit=False,
             result=_assemble_response(

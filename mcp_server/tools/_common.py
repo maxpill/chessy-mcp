@@ -15,9 +15,11 @@ from mcp.server.mcpserver.exceptions import ToolError
 __all__ = [
     "VERBOSITY_COMPACT",
     "VERBOSITY_FULL",
+    "VERBOSITY_MINIMAL",
     "compact_mcpeval",
     "error_code_for",
     "format_exception",
+    "minimal_mcpeval",
     "normalize_termination",
     "resolve_verbosity",
     "tool_error",
@@ -27,14 +29,16 @@ __all__ = [
 
 # Audit M-05: `compact` strips Lichess URLs/images and decision_value/engine_eval
 # duplication from every candidate, dropping payload size ~70% for LLM-driven
-# callers that don't need URLs.
+# callers that don't need URLs. `minimal` strips further down to decision-critical
+# fields (<1.5 KB).
 VERBOSITY_FULL: Final[str] = "full"
 VERBOSITY_COMPACT: Final[str] = "compact"
+VERBOSITY_MINIMAL: Final[str] = "minimal"
 
 _VERBOSITY_ALIASES: Final[dict[str, str]] = {
     "compact": "compact",
-    "minimal": "compact",
-    "min": "compact",
+    "minimal": "minimal",
+    "min": "minimal",
     "full": "full",
     "standard": "full",
     "default": "full",
@@ -107,11 +111,40 @@ def _compact_mcpeval(mcp_eval: Any) -> Any:
             "decision_value": None,
             "engine_eval": None,
             "input_fen": None,
+            "is_compact": True,
+        }
+    )
+
+
+def _minimal_mcpeval(mcp_eval: Any) -> Any:
+    """Strip non-decision fields for lean minimal LLM context usage (<1.5 KB)."""
+    return mcp_eval.model_copy(
+        update={
+            "lichess_url": None,
+            "lichess_image": None,
+            "decision_value": None,
+            "engine_eval": None,
+            "input_fen": None,
+            "canonical_fen": None,
+            "post_position": None,
+            "action_policy": None,
+            "best_action_obj": None,
+            "legal_move_uci": [],
+            "board_legal_move_uci": [],
+            "legal_actions": [],
+            "legal_rule_actions": [],
+            "claim_moves": [],
+            "claim_reasons": [],
+            "claim_reasons_now": [],
+            "is_minimal": True,
+            "is_compact": True,
         }
     )
 
 
 compact_mcpeval = _compact_mcpeval
+minimal_mcpeval = _minimal_mcpeval
+_minimal_mcpeval = _minimal_mcpeval
 
 
 def _validate_requested_depth(depth: Any, tool: str) -> int:

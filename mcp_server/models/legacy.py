@@ -112,6 +112,8 @@ class MCPMoveAnalysis(BaseModel):
     played_line_san: str | None = None
     played_continuation_san: str | None = None
     syntax_warning: str | None = None
+    normalization_kind: str | None = None
+    normalization_changes: list[str] = Field(default_factory=list)
     action_type: Literal["play_move", "claim_draw", "claim_draw_with_intended_move"] = "play_move"
     best_action: str = "play_move"
     is_best_action: bool = True
@@ -185,6 +187,8 @@ class MCPMoveAnalysis(BaseModel):
         board_before: chess.Board | None = None,
         board_after: chess.Board | None = None,
         syntax_warning: str | None = None,
+        normalization_kind: str | None = None,
+        normalization_changes: list[str] | None = None,
         action_type: Literal[
             "play_move", "claim_draw", "claim_draw_with_intended_move"
         ] = "play_move",
@@ -267,6 +271,8 @@ class MCPMoveAnalysis(BaseModel):
             played_line_san=ma.played_line_san or played_san,
             played_continuation_san=played_continuation_san,
             syntax_warning=syntax_warning,
+            normalization_kind=normalization_kind,
+            normalization_changes=normalization_changes or [],
             action_type=action_type,
             best_action=score.best_action,
             is_best_action=score.is_best_action,
@@ -374,6 +380,7 @@ class TopMovesResult(BaseModel):
     legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     legal_rule_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     legal_move_uci: list[str] = Field(default_factory=list[str])
+    board_legal_move_uci: list[str] = Field(default_factory=list[str])
     history_completeness: str = "complete"
     repetition_status: str = "none"
     requested_depth: int | None = None
@@ -381,6 +388,8 @@ class TopMovesResult(BaseModel):
     requested_n: int | None = None
     clamped_n: int | None = None
     returned_n: int | None = None
+    requested_include_moves: list[str] = Field(default_factory=list)
+    included_move_count: int = 0
     legal_move_count: int | None = None
     # Bug fix (chessy-mcp-deep-audit §12): see MCPEval.board_legal_move_count
     # — canonical name for board-level legality count.
@@ -394,6 +403,21 @@ class TopMovesResult(BaseModel):
     canonical_fen: str | None = None
     fen_was_canonicalized: bool = False
     result: list[MCPEval] = Field(default_factory=list[MCPEval])
+
+    @property
+    def candidates(self) -> list[MCPEval]:
+        """Canonical alias for primary candidate result list."""
+        return self.result
+
+    @model_validator(mode="after")
+    def _enforce_top_moves_invariants(self) -> TopMovesResult:
+        if not self.board_legal_move_uci and self.legal_move_uci:
+            self.board_legal_move_uci = list(self.legal_move_uci)
+        elif not self.legal_move_uci and self.board_legal_move_uci:
+            self.legal_move_uci = list(self.board_legal_move_uci)
+        if self.returned_n is None:
+            self.returned_n = len(self.result)
+        return self
 
     def __iter__(self) -> Any:
         return iter(self.result)

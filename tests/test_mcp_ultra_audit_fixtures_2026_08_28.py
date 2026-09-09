@@ -766,7 +766,7 @@ async def test_r_43_n_clamp():
     assert res.clamped_n == 1
 
     res2 = await server_module.top_moves("startpos", n=21, depth=8)
-    assert res2.clamped_n == 20
+    assert res2.clamped_n == 10
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ from mcp_server.models import MCPMoveAnalysis, MCPEval, PlayedMoveScore
 from mcp_server.parsers import (
     _build_board,
     _history_provenance_for_input,
-    _parse_move_on_board_with_warning,
+    parse_move_with_details,
 )
 from mcp_server.rules import evaluate_rule_status, is_terminal_position
 
@@ -28,12 +28,16 @@ class _ValidationOutcome:
         rule_before,
         chess_move: chess.Move | None,
         syntax_warning: str | None,
+        normalization_kind: str | None = None,
+        normalization_changes: list[str] | None = None,
     ):
         self.board = board
         self.history_complete = history_complete
         self.rule_before = rule_before
         self.chess_move = chess_move
         self.syntax_warning = syntax_warning
+        self.normalization_kind = normalization_kind
+        self.normalization_changes = normalization_changes or []
 
 
 def validate_classify_input(
@@ -48,6 +52,8 @@ def validate_classify_input(
         raise ValueError(f"INVALID_INPUT: 'move' must be a string, got {type(move).__name__}.")
     syntax_warning: str | None = None
     chess_move: chess.Move | None = None
+    normalization_kind: str | None = None
+    normalization_changes: list[str] = []
 
     if action_type == "claim_draw":
         if move is not None and move.strip() and move.strip() != "(none)":
@@ -60,6 +66,8 @@ def validate_classify_input(
                 f"action_type='claim_draw' ignores supplied move argument "
                 f"{move!r} (the claim outcome is purely procedural)."
             )
+            normalization_kind = "cosmetic"
+            normalization_changes = ["claim_draw_move_ignored"]
     else:
         if move is None or not move.strip():
             raise ValueError(
@@ -81,7 +89,11 @@ def validate_classify_input(
             raise ValueError("ILLEGAL_ACTION: draw cannot be claimed now")
     else:
         assert move is not None and move.strip()
-        chess_move, syntax_warn = _parse_move_on_board_with_warning(board, move, strict=strict)
+        parsed_res = parse_move_with_details(board, move, strict=strict)
+        chess_move = parsed_res.move
+        syntax_warn = parsed_res.warning
+        normalization_kind = parsed_res.normalization_kind
+        normalization_changes = parsed_res.normalization_changes
         if syntax_warn and not syntax_warning:
             syntax_warning = syntax_warn
         if (
@@ -95,6 +107,8 @@ def validate_classify_input(
         rule_before=rule_before,
         chess_move=chess_move,
         syntax_warning=syntax_warning,
+        normalization_kind=normalization_kind,
+        normalization_changes=normalization_changes,
     )
 
 

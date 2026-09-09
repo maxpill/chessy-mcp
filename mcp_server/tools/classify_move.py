@@ -51,7 +51,12 @@ from mcp_server.metrics import metrics
 from mcp_server.models import MCPEval, MCPMoveAnalysis
 from mcp_server.models.forensics import ForensicMoveAnalysis
 from mcp_server.tcp_analyzer import TCPAnalyzerPool
-from mcp_server.tools._common import _tool_error, _validate_requested_depth, error_code_for
+from mcp_server.tools._common import (
+    _compact_mcpeval,
+    _tool_error,
+    _validate_requested_depth,
+    error_code_for,
+)
 
 log = logging.getLogger("chessy_mcp.classify_move")
 _CLASSIFIER = MoveClassifier.with_defaults()
@@ -199,6 +204,8 @@ async def classify_move(
                     "eval_before": eval_bef,
                     "eval_after": eval_aft,
                     "syntax_warning": outcome.syntax_warning,
+                    "normalization_kind": outcome.normalization_kind,
+                    "normalization_changes": outcome.normalization_changes,
                 }
             )
             return await _finish_result(
@@ -293,7 +300,13 @@ async def classify_move(
         result = cast(MCPMoveAnalysis, await _single_flight.do(cache_key, _compute))
         await _cache.set_classify(cache_key, result)
         await metrics.record("classify_move", (time.time() - t0) * 1000, cache_hit=False)
-        base = result.model_copy(update={"syntax_warning": outcome.syntax_warning})
+        base = result.model_copy(
+            update={
+                "syntax_warning": outcome.syntax_warning,
+                "normalization_kind": outcome.normalization_kind,
+                "normalization_changes": outcome.normalization_changes,
+            }
+        )
         return await _finish_result(
             base,
             outcome=outcome,
@@ -326,6 +339,9 @@ async def _finish_result(
     strict: bool = False,
 ) -> ForensicMoveAnalysis:
     if detail == "standard" and not compare_moves:
+        eval_before = _compact_mcpeval(result.eval_before) if result.eval_before else None
+        eval_after = _compact_mcpeval(result.eval_after) if result.eval_after else None
+        result = result.model_copy(update={"eval_before": eval_before, "eval_after": eval_after})
         payload = result.model_dump(
             exclude={"same_action_type", "same_outcome", "within_cp_threshold"}
         )

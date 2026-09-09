@@ -124,6 +124,11 @@ async def evaluate_candidate(
             "best_action": cand_recommended_action,
             "best_action_type": cand_recommended_action,
             "best_action_obj": cand_best_action_obj,
+            "search_provenance": {
+                "kind": "multipv_root",
+                "depth": getattr(candidate, "depth", depth),
+                "multipv": getattr(candidate, "multipv", None),
+            },
             "post_state_cp": post_state_cp,
             "post_state_mate": post_state_mate,
             "post_position": {

@@ -309,7 +309,7 @@ async def enrich_top_moves_result(
     )
 
     comparisons: list[CandidateEvidence] = []
-    for canonical_san, original_text in requested:
+    for _canonical_san, original_text in requested:
         # 2026-09-08 ultra-hard test notes §4: pass the original user
         # text (e.g. 'e2-e4') to _candidate_evidence so the response
         # payload's `requested` field round-trips the user's spelling.
@@ -325,6 +325,64 @@ async def enrich_top_moves_result(
             depth=depth,
             proof_defenses=proof_defenses,
         )
+
+    new_items = list(result.result)
+    existing_ucis = {c.best_move.lower() for c in new_items if c.best_move}
+
+    if include_moves:
+        from core.engines.types import Eval
+        from mcp_server.analysis.candidate_evaluator import evaluate_candidate
+        from mcp_server.rules import evaluate_rule_status
+
+        history_complete = (
+            "complete" if result.history_completeness == "complete" else "incomplete"
+        )
+        rule_status = evaluate_rule_status(board, history_complete=history_complete)
+        sign = 1 if board.turn == chess.WHITE else -1
+
+        for comp in comparisons:
+            if comp.uci.lower() not in existing_ucis:
+                cand_eval = Eval(
+                    cp=comp.eval_cp,
+                    mate=comp.eval_mate,
+                    best_move=comp.uci,
+                    pv=[comp.uci, *list(comp.continuation_uci)],
+                    depth=comp.searched_depth or depth,
+                )
+                cand_mcpeval = await evaluate_candidate(
+                    board=board,
+                    candidate=cand_eval,
+                    pool=pool,
+                    rule_status=rule_status,
+                    sign=sign,
+                    history_complete=history_complete,
+                    raw_requested_depth=result.requested_depth or depth,
+                    depth=depth,
+                    needs_post_eval=bool(
+                        rule_status.can_claim_now or rule_status.can_claim_with_intended_move
+                    ),
+                )
+                cand_mcpeval = cand_mcpeval.model_copy(
+                    update={
+                        "search_provenance": {
+                            "kind": "candidate_research",
+                            "depth": comp.searched_depth or depth,
+                        }
+                    }
+                )
+                new_items.append(cand_mcpeval)
+                existing_ucis.add(comp.uci.lower())
+
+    new_legal_actions = [c.best_action_obj for c in new_items if c.best_action_obj is not None]
+    result = result.model_copy(
+        update={
+            "result": new_items,
+            "returned_n": len(new_items),
+            "legal_actions": new_legal_actions,
+            "requested_include_moves": list(include_moves or []),
+            "included_move_count": len([m for m in include_moves or [] if m]),
+        }
+    )
 
     forensic = TopMovesForensicEvidence(
         detail=detail,

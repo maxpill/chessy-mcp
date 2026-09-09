@@ -9,6 +9,17 @@ they sit next to the policy implementation that consumes them.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Final
+
+# Centralized tool parameter bounds & invariants
+TOP_MOVES_MIN_N: Final[int] = 1
+TOP_MOVES_MAX_N: Final[int] = 10
+DEPTH_MIN: Final[int] = 1
+DEPTH_MAX: Final[int] = 30
+MAX_INCLUDE_MOVES: Final[int] = 8
+MAX_COMPARE_MOVES: Final[int] = 8
+MAX_PROOF_DEFENSES: Final[int] = 8
+MAX_CRITICAL_MOMENTS: Final[int] = 7
 
 # Audit M-04: explicit, versioned action policy. Single source of truth.
 ACTION_POLICY_NAME = "risk_adjusted_draw_claim"

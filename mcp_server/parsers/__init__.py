@@ -19,10 +19,12 @@ from mcp_server.parsers.board_builder import (
     history_provenance_for_input,
 )
 from mcp_server.parsers.move_parser import (
+    MoveParseResult,
     _parse_move_on_board,
     _parse_move_on_board_with_warning,
     parse_move_on_board,
     parse_move_on_board_with_warning,
+    parse_move_with_details,
 )
 from mcp_server.parsers.pgn import (
     FIGURINE_MAP,
@@ -110,8 +112,10 @@ __all__ = [  # noqa: RUF022 - grouped by parser stage for navigability
     "_build_board_with_metadata",
     "_history_provenance_for_input",
     # move_parser
+    "MoveParseResult",
     "parse_move_on_board",
     "parse_move_on_board_with_warning",
+    "parse_move_with_details",
     "_parse_move_on_board",
     "_parse_move_on_board_with_warning",
     # pgn_canonical

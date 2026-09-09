@@ -24,7 +24,9 @@ from mcp_server.models.forensics import ForensicEval
 from mcp_server.parsers import _build_board_with_metadata, _history_provenance_for_input
 from mcp_server.tools._common import (
     VERBOSITY_COMPACT,
+    VERBOSITY_MINIMAL,
     _compact_mcpeval,
+    _minimal_mcpeval,
     _resolve_verbosity,
     _tool_error,
     _validate_requested_depth,
@@ -115,7 +117,9 @@ async def evaluate_position(
         )
         if verbosity_mode == VERBOSITY_COMPACT:
             result = _compact_mcpeval(result)
-        if detail == "standard":
+        elif verbosity_mode == VERBOSITY_MINIMAL:
+            result = _minimal_mcpeval(result)
+        if detail == "standard" or verbosity_mode == VERBOSITY_MINIMAL:
             return ForensicEval(**result.model_dump())
         evidence_detail: Literal["coach", "forensic"] = (
             "forensic" if detail == "forensic" else "coach"

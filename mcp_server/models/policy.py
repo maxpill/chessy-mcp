@@ -18,4 +18,4 @@ class PolicyBlock(BaseModel):
     """Decision and policy metadata for a single position evaluation."""
 
     decision_value: dict[str, Any] | None = None
-    action_policy: ActionPolicyMetadata = Field(default_factory=ActionPolicyMetadata)
+    action_policy: ActionPolicyMetadata | None = Field(default_factory=ActionPolicyMetadata)

@@ -25,6 +25,13 @@ from mcp_server.engine import _get_analyzer_pool
 from mcp_server.metrics import metrics
 from mcp_server.models.forensics import ForensicTopMovesResult
 from mcp_server.parsers import _build_board_with_metadata
+from mcp_server.rules.constants import (
+    DEPTH_MAX,
+    DEPTH_MIN,
+    MAX_INCLUDE_MOVES,
+    TOP_MOVES_MAX_N,
+    TOP_MOVES_MIN_N,
+)
 from mcp_server.tools._common import (
     _resolve_verbosity,
     _tool_error,
@@ -61,7 +68,7 @@ async def top_moves(
     ] = False,
     verbosity: Annotated[
         str | None,
-        Field(description="Response verbosity: 'full' (default) or 'compact'."),
+        Field(description="Response verbosity: 'full' (default), 'compact', or 'minimal'."),
     ] = None,
     detail: Annotated[
         Literal["standard", "coach", "forensic"],
@@ -128,15 +135,15 @@ async def top_moves(
     t0 = time.time()
     depth = _validate_requested_depth(depth, tool="top_moves")
     raw_requested_depth = depth
-    depth = max(1, min(depth, 30))
+    depth = max(DEPTH_MIN, min(depth, DEPTH_MAX))
     raw_requested_n = n
-    clamped_n = max(1, min(n, 20))
+    clamped_n = max(TOP_MOVES_MIN_N, min(n, TOP_MOVES_MAX_N))
     try:
         if detail not in {"standard", "coach", "forensic"}:
             raise ValueError(f"INVALID_DETAIL: {detail}")
         if proof_mode not in {"none", "tactical"}:
             raise ValueError(f"INVALID_PROOF_MODE: {proof_mode}")
-        if len(include_moves or []) > 8:
+        if len(include_moves or []) > MAX_INCLUDE_MOVES:
             raise ValueError("INVALID_PARAMETER_COUNT: include_moves supports at most 8 moves")
 
         verbosity_mode = _resolve_verbosity(verbosity)

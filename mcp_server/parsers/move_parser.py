@@ -10,6 +10,7 @@ entry points used by the tools and the FEN/PGN parsers.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import re
 
 import chess
@@ -18,27 +19,154 @@ from mcp_server.rules import is_locked_dead_position, is_terminal_position
 from mcp_server.parsers.pgn import _FIGURINE_MAP, _UNICODE_HYPHEN_MAP
 
 __all__ = [
+    "MoveParseResult",
     "parse_move_on_board",
     "parse_move_on_board_with_warning",
+    "parse_move_with_details",
 ]
+
+
+@dataclass(frozen=True)
+class MoveParseResult:
+    move: chess.Move
+    canonical_san: str
+    raw_input: str
+    warning: str | None
+    normalization_kind: str  # "none", "cosmetic", "notation_variant", "semantic"
+    normalization_changes: list[str] = field(default_factory=list)
+
+
+def _detect_san_normalization(
+    board: chess.Board, raw_s: str, canonical: str, move: chess.Move
+) -> tuple[str, list[str], str | None]:
+    """Classify normalization between raw user input and canonical SAN."""
+    if raw_s == canonical:
+        return "none", [], None
+
+    trimmed = raw_s.strip(" \t\r\n`'\"")
+    # If the input is canonical lowercase UCI matching move.uci()
+    if trimmed.lower() == move.uci() and re.fullmatch(
+        r"[a-hA-H][1-8][a-hA-H][1-8][qrbnQRBN]?", trimmed
+    ):
+        if raw_s == move.uci():
+            return "none", [], None
+        changes: list[str] = []
+        if raw_s != trimmed:
+            changes.append("whitespace_trimmed")
+        if trimmed != move.uci():
+            changes.append("uppercase_uci_lowercased")
+            warning = f"Input UCI '{trimmed}' normalized to lowercase '{move.uci()}'."
+        else:
+            warning = f"Input UCI '{raw_s}' normalized to '{move.uci()}'."
+        return "cosmetic", changes, warning
+
+    changes: list[str] = []
+    is_semantic = False
+
+    if raw_s != trimmed:
+        changes.append("whitespace_trimmed")
+
+    # 1. Capture claims
+    claimed_capture = "x" in raw_s or ":" in raw_s
+    actual_capture = board.is_capture(move)
+    if claimed_capture and not actual_capture:
+        changes.append("capture_marker_removed")
+        is_semantic = True
+    elif not claimed_capture and actual_capture:
+        changes.append("capture_marker_added")
+        is_semantic = True
+
+    # 2. Check & Checkmate claims
+    post = board.copy(stack=False)
+    post.push(move)
+    is_mate = post.is_checkmate()
+    is_check = board.gives_check(move) and not is_mate
+
+    claimed_mate = "#" in raw_s
+    claimed_check = "+" in raw_s and not claimed_mate
+
+    if claimed_mate and not is_mate:
+        changes.append("mate_marker_removed")
+        is_semantic = True
+    elif not claimed_mate and is_mate:
+        changes.append("mate_marker_added")
+        is_semantic = True
+
+    if claimed_check and not is_check:
+        changes.append("check_marker_removed")
+        is_semantic = True
+    elif not claimed_check and is_check and not claimed_mate:
+        changes.append("check_marker_added")
+        is_semantic = True
+
+    # 3. Promotion notation
+    if "=" not in raw_s and "=" in canonical:
+        changes.append("promotion_syntax_normalized")
+
+    # 4. Castling variants
+    if "0" in raw_s and ("O-O" in canonical or "O-O-O" in canonical):
+        changes.append("castling_zeros_normalized")
+
+    # 5. Hyphenated SAN (e.g. e2-e4)
+    if "-" in raw_s and not ("O-O" in raw_s or "0-0" in raw_s):
+        changes.append("hyphenated_san_normalized")
+
+    # 6. Leading move numbers
+    if re.search(r"^(\d+[\.\:]+|\.+)", raw_s):
+        changes.append("move_number_removed")
+
+    # 7. Disambiguation differences
+    clean_no_punct = re.sub(r"[+#!?x:=\-]", "", raw_s).strip()
+    canon_no_punct = re.sub(r"[+#!?x:=\-]", "", canonical).strip()
+    if clean_no_punct != canon_no_punct:
+        changes.append("disambiguation_adjusted")
+
+    if is_semantic:
+        kind = "semantic"
+        if "capture_marker_removed" in changes:
+            warning = f"Input SAN '{raw_s}' normalized to '{canonical}': claimed a capture but resolved legal move is non-capturing."
+        elif "check_marker_removed" in changes:
+            warning = f"Input SAN '{raw_s}' normalized to '{canonical}': claimed check (+) but resolved legal move does not give check."
+        elif "mate_marker_removed" in changes:
+            warning = f"Input SAN '{raw_s}' normalized to '{canonical}': claimed checkmate (#) but resolved legal move does not deliver checkmate."
+        elif "capture_marker_added" in changes:
+            warning = f"Input SAN '{raw_s}' normalized to '{canonical}': omitted capture marker."
+        elif "check_marker_added" in changes:
+            warning = f"Input SAN '{raw_s}' normalized to '{canonical}': omitted check (+) marker."
+        elif "mate_marker_added" in changes:
+            warning = f"Input SAN '{raw_s}' normalized to '{canonical}': omitted checkmate (#) marker."
+        else:
+            warning = f"Input SAN '{raw_s}' normalized to '{canonical}': required semantic normalization."
+    elif any(
+        c in changes
+        for c in (
+            "promotion_syntax_normalized",
+            "castling_zeros_normalized",
+            "hyphenated_san_normalized",
+            "disambiguation_adjusted",
+        )
+    ):
+        kind = "notation_variant"
+        warning = f"Input SAN '{raw_s}' normalized to '{canonical}'"
+    elif changes:
+        kind = "cosmetic"
+        warning = f"Input SAN '{raw_s}' normalized to '{canonical}'"
+    else:
+        kind = "cosmetic"
+        warning = f"Input SAN '{raw_s}' normalized to '{canonical}'"
+
+    return kind, changes, warning
 
 
 def parse_move_on_board(board: chess.Board, move_str: str) -> chess.Move:
     return _parse_move_on_board_with_warning(board, move_str)[0]
 
 
-def parse_move_on_board_with_warning(
+def parse_move_with_details(
     board: chess.Board, move_str: str, strict: bool = False
-) -> tuple[chess.Move, str | None]:
-    """Parse a move string on a board, accepting either UCI or SAN notation.
-    Also detects non-canonical SAN (e.g. false mate/check markers or redundant disambiguation)."""
-    # Use is_terminal_position (single source of truth) instead of python-chess's
-    # is_game_over(), which does NOT detect locked dead positions (FIDE 5.2.2).
-    # Without this, classify_move and other tools would silently accept a move
-    # that the rules layer has already declared terminal — disagreeing about
-    # the same position across endpoints (audit P0).
+) -> MoveParseResult:
+    """Parse a move string on a board, classifying cosmetic vs semantic normalization."""
     if is_terminal_position(board):
-        # Try to name the actual terminal reason
         if board.is_checkmate():
             term = "checkmate"
         elif board.is_stalemate():
@@ -68,15 +196,8 @@ def parse_move_on_board_with_warning(
     clean_move = re.sub(r"^(\d+[\.\:]+|\.+)\s*", "", clean_move)
     clean_move = clean_move.translate(_FIGURINE_MAP)
     clean_move = re.sub(r"\s*\(?\s*e\.?p\.?\s*\)?$", "", clean_move, flags=re.IGNORECASE)
-    # U-11 (2026-09-01): normalize Unicode hyphens to ASCII so
-    # castling tokens like "0–0" (en-dash) are recognized like the
-    # analyze_game path does. _UNICODE_HYPHEN_MAP is a str.maketrans
-    # translation table (not a regex), so use .translate() to match
-    # _normalize_unicode_pgn_results. Brings classify_move into
-    # parity with analyze_game.
     clean_move = clean_move.translate(_UNICODE_HYPHEN_MAP)
 
-    # Normalize castling variants
     lower_cand = clean_move.lower()
     if lower_cand in ("o-o-o", "0-0-0", "o-o-o+", "0-0-0+", "o-o-o#", "0-0-0#"):
         suffix = "#" if "#" in clean_move else ("+" if "+" in clean_move else "")
@@ -87,36 +208,7 @@ def parse_move_on_board_with_warning(
 
     san_cand = clean_move.rstrip("!?")
 
-    # P1/P2 (2026-09-02 ultra audit): uppercase UCI like `E2E4`, `e2E4`,
-    # `A7A8Q` was previously accepted silently without a syntax warning
-    # in BOTH lenient and strict modes. PGN movetext requires
-    # SAN-shaped notation (and accepts lowercase only), so this
-    # normalization only applies to the DIRECT move API. The
-    # normalization itself is harmless (lower-case UCI is canonical),
-    # but the silent acceptance hid input-shape drift and let callers
-    # paste uppercase accidentally. We now:
-    #   - emit a `syntax_warning` whenever the supplied UCI contains
-    #     uppercase letters, in lenient mode (so the audit's
-    #     "normalized without a syntax warning" finding is closed);
-    #   - reject with STRICT_SAN_ERROR when the caller asks for strict
-    #     mode (the audit explicitly calls out that strict mode should
-    #     reject or document non-canonical UCI form).
-    #
-    # Parse order matters here. The audit's `B8e5` reproducer in the
-    # `test_randomized_legal_move_san_and_fen_differential_5000_positions`
-    # test exercises `board.san(move)` output — for a White Bishop on
-    # b8 moving to e5, python-chess generates the rank-disambiguated
-    # SAN `B8e5`. The same string is also a syntactically valid UCI
-    # (`b8e5` after lowercase). Treating it as UCI in BOTH cases
-    # caused a false-positive flag against the legitimate SAN form.
-    # The fix: try SAN FIRST; if SAN parsing succeeds, prefer it and
-    # never flag uppercase UCI. Only fall through to UCI when SAN
-    # parsing fails, in which case the input is unambiguously UCI.
-    #
-    # Try SAN with candidates (e.g. clean, stripped !?, stripped +/#,
-    # with/without =, promo variants).
     cands = [clean_move, san_cand, san_cand.rstrip("+#!?")]
-    # Handle promotion without equal sign e.g. e8Q -> e8=Q
     if re.search(r"[a-h][18][qrbnQRBN]", san_cand):
         cands.append(re.sub(r"([a-h][18])([qrbnQRBN])", r"\1=\2", san_cand))
 
@@ -128,17 +220,21 @@ def parse_move_on_board_with_warning(
             m = board.parse_san(cand)
             if m in board.legal_moves:
                 canonical = board.san(m)
-                syntax_warning = None
                 raw_s = move_str.strip(" \t\r\n`'\"")
-                if raw_s != canonical and not re.fullmatch(
-                    r"[a-h][1-8][a-h][1-8][qrbn]?", raw_s.lower()
-                ):
-                    syntax_warning = f"Input SAN '{raw_s}' normalized to '{canonical}'"
-                if strict and syntax_warning:
+                kind, changes, warning = _detect_san_normalization(board, move_str, canonical, m)
+                if strict and warning:
+                    req_type = "semantic" if kind == "semantic" else "syntax"
                     raise ValueError(
-                        f"STRICT_SAN_ERROR: Input SAN '{raw_s}' requires syntax normalization: {syntax_warning}"
+                        f"STRICT_SAN_ERROR: Input SAN '{raw_s}' requires {req_type} normalization: {warning}"
                     )
-                return m, syntax_warning
+                return MoveParseResult(
+                    move=m,
+                    canonical_san=canonical,
+                    raw_input=raw_s,
+                    warning=warning,
+                    normalization_kind=kind,
+                    normalization_changes=changes,
+                )
         except (chess.AmbiguousMoveError, chess.IllegalMoveError) as exc:
             if "ambiguous" in str(exc).lower() or isinstance(exc, chess.AmbiguousMoveError):
                 ambiguous_err = exc
@@ -146,50 +242,44 @@ def parse_move_on_board_with_warning(
             if "STRICT" in str(exc):
                 raise
 
-    # SAN parsing failed (no candidate matched a legal move). Fall
-    # through to UCI parsing — the input is unambiguously UCI now.
-    #
-    # Only flag uppercase UCI when the original matched the UCI shape
-    # AND had uppercase letters in valid UCI positions (file letters
-    # at 0/2, optional promotion piece at 4). This avoids the false
-    # positive where python-chess's `board.san(move)` output for a
-    # rank-disambiguated SAN like `B8e5` happens to also lowercase to
-    # a valid UCI — we only catch the uppercase-UCI case when SAN
-    # parsing definitively failed (above).
     uci_was_upper = False
     if (
-        re.fullmatch(r"[a-hA-H][1-8][a-hA-H][1-8][qrbnQRBN]?", clean_move)
-        is not None  # position 0 is a valid file letter
+        re.fullmatch(r"[a-hA-H][1-8][a-hA-H][1-8][qrbnQRBN]?", clean_move) is not None
         and clean_move != clean_move.lower()
         and any(c.isalpha() for c in clean_move)
     ):
         uci_was_upper = True
-    uci_syntax_warning: str | None = None
+
     for uci_cand in (clean_move, clean_move.lower()):
-        # Parse-only — don't catch our STRICT_SAN_ERROR raise below. The
-        # previous shape accidentally did, because the catch's `ValueError`
-        # matched both python-chess's and ours.
         m_obj: chess.Move | None = None
         try:
             m_obj = chess.Move.from_uci(uci_cand)
         except (chess.InvalidMoveError, ValueError):
             m_obj = None
         if m_obj is not None and m_obj in board.legal_moves:
+            raw_s = move_str.strip(" \t\r\n`'\"")
+            uci_syntax_warning: str | None = None
+            norm_kind = "none"
+            norm_changes: list[str] = []
             if uci_was_upper:
-                raw_s = move_str.strip(" \t\r\n`'\"")
                 uci_syntax_warning = (
                     f"Input UCI '{raw_s}' normalized to lowercase '{uci_cand.lower()}'."
                 )
+                norm_kind = "cosmetic"
+                norm_changes = ["uppercase_uci_lowercased"]
                 if strict:
-                    # Promote the warning to a structured strict error.
-                    # Raised outside the parse-only try so the caller
-                    # actually sees STRICT_SAN_ERROR, not the catch-all
-                    # ILLEGAL_MOVE at the bottom of the function.
                     raise ValueError(
                         f"STRICT_SAN_ERROR: Input UCI '{raw_s}' requires "
                         f"syntax normalization: {uci_syntax_warning}"
                     )
-            return m_obj, uci_syntax_warning
+            return MoveParseResult(
+                move=m_obj,
+                canonical_san=board.san(m_obj),
+                raw_input=raw_s,
+                warning=uci_syntax_warning,
+                normalization_kind=norm_kind,
+                normalization_changes=norm_changes,
+            )
 
     if ambiguous_err:
         raise ValueError(
@@ -198,6 +288,14 @@ def parse_move_on_board_with_warning(
     raise ValueError(
         f"ILLEGAL_MOVE: Move {move_str!r} is not a valid legal move in position {board.fen()!r}"
     )
+
+
+def parse_move_on_board_with_warning(
+    board: chess.Board, move_str: str, strict: bool = False
+) -> tuple[chess.Move, str | None]:
+    """Parse a move string on a board, accepting either UCI or SAN notation."""
+    res = parse_move_with_details(board, move_str, strict=strict)
+    return res.move, res.warning
 
 
 # Underscored aliases for backwards-compatible import paths.

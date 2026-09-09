@@ -248,6 +248,7 @@ class CandidateEvidence(BaseModel):
     eval_cp: int | None = None
     eval_mate: int | None = None
     searched_depth: int | None = None
+    search_provenance: dict[str, Any] | None = None
     opponent_best_reply: StrongestReplyEvidence | None = None
     tactical_snapshot_after: TacticalSnapshot
     continuation_uci: list[str] = Field(default_factory=list)

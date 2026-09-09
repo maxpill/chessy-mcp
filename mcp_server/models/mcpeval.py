@@ -87,6 +87,8 @@ class MCPEval(BaseModel):
     )
     legal_rule_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     legal_move_uci: list[str] = Field(default_factory=list[str])
+    board_legal_move_uci: list[str] = Field(default_factory=list[str])
+    search_provenance: dict[str, Any] | None = None
     legal_move_count: int | None = None
     # Bug fix (chessy-mcp-deep-audit §12): terminal positions previously
     # reported `legal_move_count > 0` (board-level legality) while
@@ -106,7 +108,7 @@ class MCPEval(BaseModel):
     input_fen: str | None = None
     canonical_fen: str | None = None
     fen_was_canonicalized: bool = False
-    action_policy: ActionPolicyMetadata = Field(default_factory=ActionPolicyMetadata)
+    action_policy: ActionPolicyMetadata | None = Field(default_factory=ActionPolicyMetadata)
     post_terminal_status: str | None = None
     candidate_san: str | None = None
     post_can_claim_draw: bool = False
@@ -116,6 +118,8 @@ class MCPEval(BaseModel):
     post_position: dict[str, Any] | None = None
     post_state_cp: int | None = None
     post_state_mate: int | None = None
+    is_compact: bool = False
+    is_minimal: bool = False
     lichess_url: str | None = None
     lichess_image: str | None = None
     wdl: tuple[int, int, int] | None = None
@@ -206,6 +210,14 @@ class MCPEval(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_inv(self) -> MCPEval:
+        if self.root_candidate_action is None:
+            self.root_candidate_action = self.recommended_action
+        if not self.board_legal_move_uci and self.legal_move_uci:
+            self.board_legal_move_uci = list(self.legal_move_uci)
+        elif not self.legal_move_uci and self.board_legal_move_uci:
+            self.legal_move_uci = list(self.board_legal_move_uci)
+        if self.recommended_action == "game_over":
+            self.executable_move = None
         return self
 
     # ---------------- Movable handle (back-compat for legacy code) ----------------
@@ -229,7 +241,9 @@ class MCPEval(BaseModel):
     # ---------------- Typed block views (Phase 18 atomization) ----------------
     @computed_field  # type: ignore[misc]
     @property
-    def eval_block(self) -> EvalBlock:
+    def eval_block(self) -> EvalBlock | None:
+        if self.is_compact or self.is_minimal:
+            return None
         return EvalBlock(
             cp=self.cp,
             mate=self.mate,
@@ -248,7 +262,9 @@ class MCPEval(BaseModel):
 
     @computed_field  # type: ignore[misc]
     @property
-    def action_block(self) -> ActionBlock:
+    def action_block(self) -> ActionBlock | None:
+        if self.is_compact or self.is_minimal:
+            return None
         return ActionBlock(
             best_move=self.best_move,
             executable_move=self.executable_move,
@@ -259,6 +275,7 @@ class MCPEval(BaseModel):
             legal_actions=list(self.legal_actions),
             legal_rule_actions=list(self.legal_rule_actions),
             legal_move_uci=list(self.legal_move_uci),
+            board_legal_move_uci=list(self.board_legal_move_uci),
             can_claim_draw=self.can_claim_draw,
             claim_reasons=list(self.claim_reasons),
             claim_move=self.claim_move,
@@ -275,12 +292,14 @@ class MCPEval(BaseModel):
             post_claim_reasons=list(self.post_claim_reasons),
             post_claim_moves=list(self.post_claim_moves),
             post_position=self.post_position,
-            root_candidate_action=self.root_candidate_action or self.recommended_action,
+            root_candidate_action=self.root_candidate_action,
         )
 
     @computed_field  # type: ignore[misc]
     @property
-    def history_block(self) -> HistoryBlock:
+    def history_block(self) -> HistoryBlock | None:
+        if self.is_compact or self.is_minimal:
+            return None
         return HistoryBlock(
             input_fen=self.input_fen,
             canonical_fen=self.canonical_fen,
@@ -297,7 +316,9 @@ class MCPEval(BaseModel):
 
     @computed_field  # type: ignore[misc]
     @property
-    def policy_block(self) -> PolicyBlock:
+    def policy_block(self) -> PolicyBlock | None:
+        if self.is_compact or self.is_minimal:
+            return None
         return PolicyBlock(
             decision_value=self.decision_value,
             action_policy=self.action_policy,
