@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import socket
 import ssl
@@ -35,6 +36,15 @@ def _dump_model(value: Any) -> Any:
         except TypeError:
             return model_dump()
     return value
+
+
+def _canonicalize_schema(schema: Any) -> Any:
+    """Strip ephemeral $schema URIs that drift across MCP versions."""
+    if isinstance(schema, dict):
+        return {k: _canonicalize_schema(v) for k, v in schema.items() if k != "$schema"}
+    if isinstance(schema, list):
+        return [_canonicalize_schema(v) for v in schema]
+    return schema
 
 
 def _find_values(value: Any, key: str) -> list[Any]:
@@ -188,7 +198,12 @@ async def _call_tool(session: ClientSession, name: str, arguments: dict[str, Any
     return result
 
 
-async def _probe_mcp(base_url: str, expected_sha: str, depth: int) -> list[str]:
+async def _probe_mcp(
+    base_url: str,
+    expected_sha: str,
+    depth: int,
+    expected_schema_fingerprint: str = "",
+) -> list[str]:
     errors: list[str] = []
     mcp_url = base_url.rstrip("/") + "/mcp"
     try:
@@ -212,6 +227,31 @@ async def _probe_mcp(base_url: str, expected_sha: str, depth: int) -> list[str]:
                 else:
                     _print("OK", f"MCP tools/list exposes {sorted(tool_names)}")
 
+                # F-005 fix (2026-09-09): schema fingerprint parity.
+                schema_payload = {
+                    tool.name: _canonicalize_schema(tool.inputSchema)
+                    for tool in tools_result.tools
+                    if tool.name in EXPECTED_TOOLS
+                }
+                schema_fp = hashlib.sha256(
+                    json.dumps(schema_payload, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                _print("INFO", f"Deployed schema fingerprint sha256={schema_fp}")
+                if expected_schema_fingerprint and not _sha_matches(
+                    expected_schema_fingerprint, schema_fp
+                ):
+                    errors.append(
+                        f"Schema fingerprint drift: expected {expected_schema_fingerprint}, "
+                        f"deployed reports {schema_fp}"
+                    )
+                    _print("FAIL", errors[-1])
+                for name, schema in schema_payload.items():
+                    n_desc = (schema.get("properties", {}).get("n", {}) or {}).get(
+                        "description", ""
+                    )
+                    if n_desc:
+                        _print("INFO", f"  {name}.n description: {n_desc!r}")
+
                 evaluate = await _call_tool(
                     session,
                     "evaluate_position",
@@ -232,6 +272,26 @@ async def _probe_mcp(base_url: str, expected_sha: str, depth: int) -> list[str]:
                     "analyze_game",
                     {"pgn": "1. e4 e5 2. Nf3 Nc6 *", "depth": depth},
                 )
+
+                # F-005 fix (2026-09-09): schema fingerprint parity. Hash
+                # the public input schemas and compare to the expected
+                # fingerprint. Helps diagnose "ChatGPT shows default 20 but
+                # source says 16" class of drift.
+                schema_payload = {
+                    tool.name: _canonicalize_schema(tool.inputSchema)
+                    for tool in tools_result.tools
+                    if tool.name in EXPECTED_TOOLS
+                }
+                schema_fp = hashlib.sha256(
+                    json.dumps(schema_payload, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                _print("INFO", f"Deployed schema fingerprint sha256={schema_fp}")
+                for name, schema in schema_payload.items():
+                    n_desc = (schema.get("properties", {}).get("n", {}) or {}).get(
+                        "description", ""
+                    )
+                    if n_desc:
+                        _print("INFO", f"  {name}.n description: {n_desc!r}")
 
                 build_values = [
                     str(value)
@@ -255,7 +315,9 @@ async def _probe_mcp(base_url: str, expected_sha: str, depth: int) -> list[str]:
         message = str(exc)
         lower = message.lower()
         if "403" in lower or "forbidden" in lower or "auth token" in lower:
-            diagnosis = "public edge reached backend but MCP authentication/gateway injection failed"
+            diagnosis = (
+                "public edge reached backend but MCP authentication/gateway injection failed"
+            )
         elif "502" in lower or "bad gateway" in lower:
             diagnosis = "edge/proxy could not reach a healthy MCP upstream"
         elif "503" in lower or "service unavailable" in lower:
@@ -272,12 +334,24 @@ async def _probe_mcp(base_url: str, expected_sha: str, depth: int) -> list[str]:
 async def _run(args: argparse.Namespace) -> int:
     errors: list[str] = []
     target = args.target.rstrip("/")
-    _print("INFO", f"Target={target} expected_sha={args.expected_sha or '(not checked)'} depth={args.depth}")
+    _print(
+        "INFO",
+        f"Target={target} expected_sha={args.expected_sha or '(not checked)'} "
+        f"expected_schema_fp={args.expected_schema_fingerprint or '(not checked)'} "
+        f"depth={args.depth}",
+    )
 
     errors.extend(_probe_dns_tls(target))
     health_errors, _health_payload = _probe_health(target)
     errors.extend(health_errors)
-    errors.extend(await _probe_mcp(target, args.expected_sha, args.depth))
+    errors.extend(
+        await _probe_mcp(
+            target,
+            args.expected_sha,
+            args.depth,
+            expected_schema_fingerprint=args.expected_schema_fingerprint,
+        )
+    )
 
     if errors:
         _print("FAIL", f"Production diagnostics found {len(errors)} problem(s)")
@@ -293,6 +367,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Probe the deployed Chess MCP end to end")
     parser.add_argument("--target", default="https://mcp.trychessy.com")
     parser.add_argument("--expected-sha", default="")
+    parser.add_argument(
+        "--expected-schema-fingerprint",
+        default="",
+        help=(
+            "Optional sha256 of the canonicalized inputSchema dict for the four "
+            "tools. If provided, the probe fails when the deployed schema "
+            "fingerprint does not match (F-005 schema-drift detector)."
+        ),
+    )
     parser.add_argument("--depth", type=int, default=6, choices=range(4, 13))
     args = parser.parse_args()
     return asyncio.run(_run(args))

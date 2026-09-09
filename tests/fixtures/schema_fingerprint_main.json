@@ -1,0 +1,321 @@
+{
+  "fingerprint": "5e13c0076089e929eb4dcfb8358d54565a074e4d09dd9ff86d9b317fd0b08315",
+  "tools": {
+    "analyze_game": {
+      "properties": {
+        "depth": {
+          "default": 14,
+          "description": "Stockfish search depth per move (default 14, clamped 1-30). Depth 14 completes full games in 4-7s, well under client timeouts.",
+          "title": "Depth",
+          "type": "integer"
+        },
+        "detail": {
+          "default": "standard",
+          "description": "Analysis detail level: 'standard' (fast batch), 'coach' (turning points & story), 'forensic' (deep verification).",
+          "enum": [
+            "standard",
+            "coach",
+            "forensic"
+          ],
+          "title": "Detail",
+          "type": "string"
+        },
+        "max_critical_moments": {
+          "default": 6,
+          "description": "Maximum number of critical moments to extract (clamped between 1 and 7, default 6).",
+          "title": "Max Critical Moments",
+          "type": "integer"
+        },
+        "perspective": {
+          "default": "white",
+          "description": "Player perspective for coaching analysis ('white' or 'black').",
+          "enum": [
+            "white",
+            "black"
+          ],
+          "title": "Perspective",
+          "type": "string"
+        },
+        "pgn": {
+          "description": "PGN string, annotated game text, or SAN move list to analyze.",
+          "title": "Pgn",
+          "type": "string"
+        },
+        "strict": {
+          "default": false,
+          "description": "When True, reject non-canonical SAN syntax or move numbers.",
+          "title": "Strict",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pgn"
+      ],
+      "title": "analyze_gameArguments",
+      "type": "object"
+    },
+    "classify_move": {
+      "properties": {
+        "action_type": {
+          "default": "play_move",
+          "description": "Action kind: 'play_move' (default), 'claim_draw', or 'claim_draw_with_intended_move'.",
+          "enum": [
+            "play_move",
+            "claim_draw",
+            "claim_draw_with_intended_move"
+          ],
+          "title": "Action Type",
+          "type": "string"
+        },
+        "compare_moves": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional list of up to 8 alternative legal candidate moves FOR THE SAME PLAYER whose turn it is in the position (e.g. ['Nf3', 'd4']). Must be legal moves for the current player to move, NOT opponent replies.",
+          "title": "Compare Moves"
+        },
+        "depth": {
+          "default": 16,
+          "description": "Stockfish search depth (default 16, clamped 1-30).",
+          "title": "Depth",
+          "type": "integer"
+        },
+        "detail": {
+          "default": "standard",
+          "description": "Detail level: 'standard' for fast grade/loss, 'coach' for tactical snapshots and reply, 'forensic' for candidate comparison and verification.",
+          "enum": [
+            "standard",
+            "coach",
+            "forensic"
+          ],
+          "title": "Detail",
+          "type": "string"
+        },
+        "fen": {
+          "description": "FEN string representing the chess position before the move.",
+          "title": "Fen",
+          "type": "string"
+        },
+        "move": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The move played by the side to move (in SAN or UCI notation, e.g. 'e4', 'Nf3', 'O-O', 'e2e4').",
+          "title": "Move"
+        },
+        "moves": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional move history from startpos leading to the position to detect threefold repetition state.",
+          "title": "Moves"
+        },
+        "strict": {
+          "default": false,
+          "description": "When True, strictly enforce canonical SAN/UCI syntax and reject invalid candidate compare moves.",
+          "title": "Strict",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fen"
+      ],
+      "title": "classify_moveArguments",
+      "type": "object"
+    },
+    "evaluate_position": {
+      "properties": {
+        "depth": {
+          "default": 22,
+          "description": "Stockfish search depth (default 22, clamped 1-30).",
+          "title": "Depth",
+          "type": "integer"
+        },
+        "detail": {
+          "default": "standard",
+          "description": "Detail level: 'standard' (fast eval), 'coach' (tactical geometry), 'forensic' (resulting position deltas).",
+          "enum": [
+            "standard",
+            "coach",
+            "forensic"
+          ],
+          "title": "Detail",
+          "type": "string"
+        },
+        "fen": {
+          "description": "FEN or PGN string representing the position to evaluate.",
+          "title": "Fen",
+          "type": "string"
+        },
+        "moves": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional list of UCI or SAN moves to replay onto the position first.",
+          "title": "Moves"
+        },
+        "strict": {
+          "default": false,
+          "description": "When True, reject non-canonical SAN syntax or move numbers.",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "verbosity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Response verbosity: 'full' (default) or 'compact'.",
+          "title": "Verbosity"
+        }
+      },
+      "required": [
+        "fen"
+      ],
+      "title": "evaluate_positionArguments",
+      "type": "object"
+    },
+    "top_moves": {
+      "properties": {
+        "depth": {
+          "default": 20,
+          "description": "Stockfish search depth (default 20, clamped 1-30).",
+          "title": "Depth",
+          "type": "integer"
+        },
+        "detail": {
+          "default": "standard",
+          "description": "Detail level: 'standard' (fast ranking), 'coach' (snapshots), 'forensic' (endpoint deltas & proofs).",
+          "enum": [
+            "standard",
+            "coach",
+            "forensic"
+          ],
+          "title": "Detail",
+          "type": "string"
+        },
+        "fen": {
+          "description": "FEN or PGN string representing the position to evaluate.",
+          "title": "Fen",
+          "type": "string"
+        },
+        "include_moves": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit legal candidate moves for the side to move that MUST be evaluated and included (up to 8 moves). Must be legal moves for the side to move, NOT opponent replies.",
+          "title": "Include Moves"
+        },
+        "moves": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional list of UCI or SAN moves to replay onto the position first.",
+          "title": "Moves"
+        },
+        "n": {
+          "default": 3,
+          "description": "Number of top candidate moves to return (default 3, clamped 1-20).",
+          "title": "N",
+          "type": "integer"
+        },
+        "proof_defenses": {
+          "default": 3,
+          "description": "Number of defensive replies to analyze in tactical proof mode (default 3).",
+          "title": "Proof Defenses",
+          "type": "integer"
+        },
+        "proof_mode": {
+          "default": "none",
+          "description": "'none' (default) or 'tactical' to evaluate the reply tree of the best move.",
+          "enum": [
+            "none",
+            "tactical"
+          ],
+          "title": "Proof Mode",
+          "type": "string"
+        },
+        "strict": {
+          "default": false,
+          "description": "When True, reject non-canonical SAN syntax or move numbers.",
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "verbosity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Response verbosity: 'full' (default), 'compact', or 'minimal'.",
+          "title": "Verbosity"
+        }
+      },
+      "required": [
+        "fen"
+      ],
+      "title": "top_movesArguments",
+      "type": "object"
+    }
+  }
+}
