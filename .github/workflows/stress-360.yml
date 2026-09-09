@@ -1,0 +1,80 @@
+name: Chess MCP Ultra Stress 360
+
+on:
+  push:
+    branches:
+      - audit/ultra-360-2026-09-09
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chess-mcp-ultra-stress-360
+  cancel-in-progress: false
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check uv
+          uv sync --frozen
+
+      - name: Run exact 360 direct MCP calls
+        id: stress
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          uv run python scripts/production_stress_360.py \
+            --target https://mcp.trychessy.com \
+            --concurrency 4 \
+            --batch-size 8 \
+            --pause-ms 100 \
+            --output-dir artifacts 2>&1 | tee artifacts/stress-console.log
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Show generated summary
+        if: always()
+        shell: bash
+        run: |
+          find artifacts -maxdepth 1 -type f -print || true
+          summary=$(find artifacts -maxdepth 1 -name 'chess_mcp_stress_360_*.md' | head -n 1)
+          if [ -n "$summary" ]; then
+            cat "$summary"
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No Markdown summary generated" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Harness exit code: ${{ steps.stress.outputs.exit_code }}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chess-mcp-ultra-stress-360-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail if harness found transport or unexpected tool failures
+        if: always()
+        shell: bash
+        run: |
+          code="${{ steps.stress.outputs.exit_code }}"
+          if [ -z "$code" ]; then code=99; fi
+          if [ "$code" -ne 0 ]; then
+            echo "Stress harness exit code $code"
+            exit "$code"
+          fi
