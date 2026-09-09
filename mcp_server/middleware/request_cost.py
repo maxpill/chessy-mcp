@@ -90,9 +90,13 @@ def estimate_mcp_request_cost(body: bytes) -> float:
                 return base + 1.0
             if detail == "forensic":
                 critical = max(1, min(int(args.get("max_critical_moments", 6)), 7))
-                verification_depth = (
-                    22 if depth <= 18 else 24 if depth <= 20 else min(depth + 2, 26)
+                # F-003 fix (2026-09-09): import the same helper the engine
+                # uses so the cost estimator can never drift from execution.
+                from mcp_server.analysis.game_coaching import (
+                    forensic_verification_depth,
                 )
+
+                verification_depth = forensic_verification_depth(depth)
                 # Two deep evals around every selected ply, a top-2 candidate
                 # search per ply, up to three positive-resource searches and a
                 # final-position resource search. Unstable moments can escalate
