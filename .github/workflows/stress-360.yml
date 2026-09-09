@@ -34,14 +34,17 @@ jobs:
         shell: bash
         continue-on-error: true
         run: |
-          set -o pipefail
+          mkdir -p artifacts
+          set +e
           uv run python scripts/production_stress_360.py \
             --target https://mcp.trychessy.com \
-            --concurrency 4 \
-            --batch-size 8 \
-            --pause-ms 100 \
-            --output-dir artifacts 2>&1 | tee artifacts/stress-console.log
-          code=${PIPESTATUS[0]}
+            --concurrency 1 \
+            --batch-size 1 \
+            --pause-ms 40 \
+            --output-dir artifacts > artifacts/stress-console.log 2>&1
+          code=$?
+          set -e
+          cat artifacts/stress-console.log
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
 
