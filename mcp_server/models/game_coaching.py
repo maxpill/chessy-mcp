@@ -187,6 +187,13 @@ class GameTerminationAssessment(BaseModel):
     a resignation *candidate*: without a Termination header it could also be a
     timeout, adjudication, or another external ending. The MCP never turns a
     large negative centipawn score into "resignation was forced".
+
+    F-006 fix (2026-09-09): ``legal_resource_count`` and
+    ``defensive_resources_exist`` are nullable to distinguish
+    "measured zero" from "not applicable". The new ``resources_applicable``
+    boolean is an explicit applicability flag for consumers that prefer a
+    truthy check; ``None`` means the assessment was not applicable (e.g. no
+    loser in an ongoing game, or the loser is not the side to move).
     """
 
     pgn_result: str
@@ -211,13 +218,20 @@ class GameTerminationAssessment(BaseModel):
     eval_for_loser_effective_cp: int | None = None
     best_defensive_move_uci: str | None = None
     best_defensive_move_san: str | None = None
-    legal_resource_count: int = 0
+    # F-006 fix: now nullable. None = not applicable, 0 = measured zero.
+    legal_resource_count: int | None = None
     reasonable_resource_count: int | None = None
-    defensive_resources_exist: bool = False
+    # F-006 fix: now nullable. None = not applicable, False = measured false.
+    defensive_resources_exist: bool | None = None
+    # F-006 fix: explicit applicability flag for boolean consumers.
+    resources_applicable: bool = False
     inference_boundary: str = (
         "Only an explicit resignation-style Termination header is treated as confirmed "
         "resignation. A decisive result on a non-terminal board is merely a candidate. "
-        "objectively_forced refers to forced mate/rules termination, never to a cp threshold."
+        "objectively_forced refers to forced mate/rules termination, never to a cp threshold. "
+        "legal_resource_count and defensive_resources_exist are None when the assessment is "
+        "not applicable (no loser, or loser is not the side to move); resources_applicable "
+        "is False in that case. Use resources_applicable for truthy checks."
     )
 
 
