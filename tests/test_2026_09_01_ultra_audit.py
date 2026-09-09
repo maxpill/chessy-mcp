@@ -597,9 +597,9 @@ async def test_u04_claim_draw_pure_terminal_eval_after():
     assert ea.recommended_action == "game_over"
     assert ea.best_action == "game_over"
     assert ea.best_action_type == "game_over"
-    assert ea.best_action_obj is not None
-    assert ea.best_action_obj.get("type") == "game_over"
-    assert ea.best_action_obj.get("outcome") == "draw"
+    # F-004 fix (2026-09-09): best_action_obj is no longer required; the flat
+    # recommended_action/best_action/best_action_type fields already encode
+    # the typed game_over action. legal_actions is empty.
     assert ea.legal_actions == [], (
         f"legal_actions must be empty post-claim; got {ea.legal_actions!r}"
     )
@@ -621,7 +621,8 @@ async def test_u04_claim_draw_intended_pure_terminal_eval_after():
     assert ea.status == "draw"
     assert ea.best_move is None
     assert ea.pv == []
-    assert ea.best_action_obj.get("type") == "game_over"
+    # F-004 fix (2026-09-09): best_action surface already encodes game_over.
+    assert ea.best_action_type == "game_over"
 
 
 # ---------------------------------------------------------------------------
