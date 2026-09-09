@@ -133,6 +133,9 @@ class MCPMoveAnalysis(BaseModel):
     can_claim_with_intended_move: bool = False
     claim_moves: list[str] = Field(default_factory=list)
     classification_verified: bool = False
+    action_class: str = "best"
+    action_quality_class: str = "best"
+    move_quality_class: str = "best"
 
     @computed_field  # type: ignore[misc]
     @property
@@ -390,6 +393,8 @@ class TopMovesResult(BaseModel):
     returned_n: int | None = None
     requested_include_moves: list[str] = Field(default_factory=list)
     included_move_count: int = 0
+    ignored_include_moves: list[str] = Field(default_factory=list)
+    ignored_include_moves_reason: str | None = None
     legal_move_count: int | None = None
     # Bug fix (chessy-mcp-deep-audit §12): see MCPEval.board_legal_move_count
     # — canonical name for board-level legality count.

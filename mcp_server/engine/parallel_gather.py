@@ -105,7 +105,7 @@ async def gather_evaluate_positions_bounded(
                 return await pool._pool.run(_on_worker)  # type: ignore[attr-defined]
 
             out = []
-            for j, (idx, b) in enumerate(slice_items):
+            for _j, (idx, b) in enumerate(slice_items):
                 if short_circuit is not None:
                     mc = short_circuit(b, idx)
                     if mc is not None:

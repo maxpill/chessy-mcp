@@ -110,6 +110,9 @@ class CriticalMoment(BaseModel):
     resolved_opponent_forcing_threat_candidates: list[ForcingMoveEvidence] = Field(
         default_factory=list
     )
+    strengthened_opponent_forcing_moves: list[ForcingMoveEvidence] = Field(default_factory=list)
+    weakened_opponent_forcing_moves: list[ForcingMoveEvidence] = Field(default_factory=list)
+    forcing_move_semantic_transitions: list[dict[str, Any]] = Field(default_factory=list)
     mate_in_one_moves_before: list[dict[str, Any]] = Field(default_factory=list)
     played_move_was_mate_in_one: bool | None = None
     opponent_mate_in_one_threats_if_pass_before: list[dict[str, Any]] = Field(default_factory=list)

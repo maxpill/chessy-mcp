@@ -62,7 +62,20 @@ _PRESENTATION_PRIORITY_RANK: dict[str, int] = {
 }
 
 
-def _presentation_priority_for(mechanism: str, evidence: dict) -> str:
+PresentationPriority = Literal[
+    "immediate_mate",
+    "checking_move",
+    "capturing_move",
+    "promotion",
+    "forced_reply",
+    "new_en_prise",
+    "pinned_defender",
+    "engine_pv_supported",
+    "pure_geometry",
+]
+
+
+def _presentation_priority_for(mechanism: str, evidence: dict) -> PresentationPriority:
     """Infer presentation_priority from a mechanism category + evidence dict."""
     is_check = bool(evidence.get("is_check"))
     is_capture = bool(evidence.get("is_capture"))
@@ -78,6 +91,11 @@ def _presentation_priority_for(mechanism: str, evidence: dict) -> str:
     if mechanism in ("removal_of_defender_candidate", "overloaded_defender_candidate"):
         return "pinned_defender"
     if mechanism == "discovered_attack_candidate":
+        if evidence.get("is_pawn_slider_opening"):
+            return "pure_geometry"
+        actor = str(evidence.get("actor") or "")
+        if "pawn" in actor and not evidence.get("target_en_prise"):
+            return "pure_geometry"
         return "forced_reply"
     return "pure_geometry"
 
@@ -394,8 +412,13 @@ def build_rich_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
     # re-sorted by presentation_priority bucket so a coaching consumer can
     # surface the top-N consequential mechanisms without re-implementing
     # the ranking. The exhaustive mechanism_candidates list is preserved.
+    presentation_filtered = [
+        m
+        for m in mechanisms
+        if not (m.mechanism == "discovered_attack_candidate" and m.relevance == "pure_geometry")
+    ]
     presentation = sorted(
-        mechanisms,
+        presentation_filtered,
         key=lambda item: (
             _PRESENTATION_PRIORITY_RANK.get(item.presentation_priority, 99),
             item.mechanism,

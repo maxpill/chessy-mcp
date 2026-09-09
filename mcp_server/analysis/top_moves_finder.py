@@ -88,6 +88,7 @@ class TopMovesFinder:
         strict: bool,
         verbosity_mode: str,
         ctx: Context | None,
+        include_moves: list[str] | None = None,
     ) -> TopMovesOutput:
         board, _input_fen, canonical_fen, fen_was_canonicalized = _build_board_with_metadata(
             fen, moves or [], strict=strict
@@ -114,8 +115,10 @@ class TopMovesFinder:
                     clamped_n=clamped_n,
                     legal_move_count=legal_move_count,
                     sign=sign,
+                    include_moves=include_moves,
                 ),
             )
+
 
         cache_key = top_moves_cache_key(
             board,
@@ -249,6 +252,7 @@ def _terminal_response(
     clamped_n: int,
     legal_move_count: int,
     sign: int,
+    include_moves: list[str] | None = None,
 ) -> TopMovesResult:
     best_action_obj = build_best_action(
         recommended_action=rule_status.recommended_action,
@@ -263,6 +267,7 @@ def _terminal_response(
         board=board,
         legal_engine_moves=None,
     )
+    req_inc = list(include_moves or [])
     return TopMovesResult(
         status=rule_status.terminal,
         winner=rule_status.winner,
@@ -283,6 +288,10 @@ def _terminal_response(
         requested_n=raw_requested_n,
         clamped_n=clamped_n,
         returned_n=0,
+        requested_include_moves=req_inc,
+        included_move_count=0,
+        ignored_include_moves=req_inc,
+        ignored_include_moves_reason="terminal_position" if req_inc else None,
         legal_move_count=legal_move_count,
         board_legal_move_count=legal_move_count,
         canonical_fen=canonical_fen,
@@ -292,6 +301,7 @@ def _terminal_response(
         **_build_identity(pool),
         result=[],
     )
+
 
 
 def _assemble_response(

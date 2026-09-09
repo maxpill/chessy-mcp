@@ -53,8 +53,10 @@ async def evaluate_position(
         Field(description="When True, reject non-canonical SAN syntax or move numbers."),
     ] = False,
     verbosity: Annotated[
-        str | None,
-        Field(description="Response verbosity: 'full' (default) or 'compact'."),
+        Literal["minimal", "compact", "full"] | None,
+        Field(
+            description="Response verbosity: 'full' (default), 'compact', or 'minimal' (aliases 'min', 'standard', 'default' accepted)."
+        ),
     ] = None,
     detail: Annotated[
         Literal["standard", "coach", "forensic"],

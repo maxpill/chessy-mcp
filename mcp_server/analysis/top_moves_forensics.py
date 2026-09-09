@@ -29,6 +29,7 @@ from mcp_server.models.forensics import (
     TacticalProofEvidence,
     TopMovesForensicEvidence,
 )
+from mcp_server.models import MCPEval
 from mcp_server.models.legacy import TopMovesResult
 
 
@@ -341,7 +342,8 @@ async def enrich_top_moves_result(
         sign = 1 if board.turn == chess.WHITE else -1
 
         for comp in comparisons:
-            if comp.uci.lower() not in existing_ucis:
+            comp_uci = comp.uci.lower()
+            if comp_uci not in existing_ucis:
                 cand_eval = Eval(
                     cp=comp.eval_cp,
                     mate=comp.eval_mate,
@@ -367,13 +369,51 @@ async def enrich_top_moves_result(
                         "search_provenance": {
                             "kind": "candidate_research",
                             "depth": comp.searched_depth or depth,
+                            "sources": ["include_moves"],
                         }
                     }
                 )
                 new_items.append(cand_mcpeval)
-                existing_ucis.add(comp.uci.lower())
+                existing_ucis.add(comp_uci)
+            else:
+                for idx, item in enumerate(new_items):
+                    if (item.best_move or "").lower() == comp_uci:
+                        prov = dict(item.search_provenance or {})
+                        sources = set(prov.get("sources") or [prov.get("kind", "multipv_root")])
+                        sources.add("include_moves")
+                        prov["sources"] = sorted(sources)
+                        new_items[idx] = item.model_copy(update={"search_provenance": prov})
+                        break
 
-    new_legal_actions = [c.best_action_obj for c in new_items if c.best_action_obj is not None]
+    def _action_for_candidate(c: MCPEval) -> dict[str, Any]:
+        if c.best_action_obj is not None:
+            return c.best_action_obj
+        uci = c.best_move or ""
+        san = c.candidate_san
+        if san is None and uci and board is not None:
+            try:
+                m = chess.Move.from_uci(uci.lower())
+                if m in board.legal_moves:
+                    san = board.san(m)
+            except Exception:
+                pass
+        payload: dict[str, Any] = {
+            "type": "play_move",
+            "move": {"uci": uci, "san": san},
+        }
+        if c.cp is not None or c.mate is not None:
+            payload["value"] = {"cp": c.cp, "mate": c.mate}
+        return payload
+
+    rule_actions = list(
+        result.legal_rule_actions
+        or [
+            a
+            for a in result.legal_actions
+            if a.get("type") in ("claim_draw", "claim_draw_with_intended_move")
+        ]
+    )
+    new_legal_actions = [*rule_actions, *[_action_for_candidate(c) for c in new_items]]
     result = result.model_copy(
         update={
             "result": new_items,
@@ -383,6 +423,7 @@ async def enrich_top_moves_result(
             "included_move_count": len([m for m in include_moves or [] if m]),
         }
     )
+
 
     forensic = TopMovesForensicEvidence(
         detail=detail,

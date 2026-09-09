@@ -64,6 +64,11 @@ def forcing_move_evidence(
         if not (is_check or is_capture or move.promotion is not None):
             continue
         captured, captured_square = _captured_piece(board, move)
+        is_mate = False
+        if is_check:
+            child = board.copy(stack=False)
+            child.push(move)
+            is_mate = child.is_checkmate()
         facts.append(
             ForcingMoveEvidence(
                 uci=move.uci(),
@@ -72,10 +77,12 @@ def forcing_move_evidence(
                 is_capture=is_capture,
                 captured_piece=_piece_label(captured, captured_square),
                 promotion=PIECE_NAMES.get(move.promotion) if move.promotion else None,
+                is_mate=is_mate,
             )
         )
     facts.sort(
         key=lambda item: (
+            not item.is_mate,
             not item.is_check,
             not item.is_capture,
             item.promotion is None,
@@ -99,6 +106,77 @@ def _compare_forcing_lists(
     resolved = [item for item in baseline if item.uci not in after_by_uci]
     unresolved = [item for item in after if item.uci in baseline_by_uci]
     return newly, resolved, unresolved
+
+
+def _forcing_semantic_transitions(
+    baseline: list[ForcingMoveEvidence],
+    after: list[ForcingMoveEvidence],
+    unresolved: list[ForcingMoveEvidence],
+) -> tuple[
+    list[ForcingMoveEvidence],
+    list[ForcingMoveEvidence],
+    list[dict[str, Any]],
+]:
+    """Compute semantic transitions (e.g. check_to_mate) for persistent forcing moves."""
+    baseline_by_uci = {item.uci: item for item in baseline}
+    strengthened: list[ForcingMoveEvidence] = []
+    weakened: list[ForcingMoveEvidence] = []
+    transitions: list[dict[str, Any]] = []
+
+    for item in unresolved:
+        b_item = baseline_by_uci.get(item.uci)
+        if b_item is None:
+            continue
+        trans_type: str | None = None
+        direction: str | None = None
+
+        if not b_item.is_mate and item.is_mate:
+            trans_type = "check_to_mate" if b_item.is_check else "move_to_mate"
+            direction = "strengthened"
+        elif b_item.is_mate and not item.is_mate:
+            trans_type = "mate_to_check" if item.is_check else "mate_to_quiet"
+            direction = "weakened"
+        elif not b_item.is_check and item.is_check:
+            trans_type = "quiet_to_check"
+            direction = "strengthened"
+        elif b_item.is_check and not item.is_check:
+            trans_type = "check_to_quiet"
+            direction = "weakened"
+        elif not b_item.is_capture and item.is_capture:
+            trans_type = "quiet_to_capture"
+            direction = "strengthened"
+        elif b_item.is_capture and not item.is_capture:
+            trans_type = "capture_to_quiet"
+            direction = "weakened"
+
+        if trans_type and direction:
+            transitions.append(
+                {
+                    "uci": item.uci,
+                    "san_before": b_item.san,
+                    "san_after": item.san,
+                    "transition": trans_type,
+                    "direction": direction,
+                    "before": {
+                        "san": b_item.san,
+                        "is_check": b_item.is_check,
+                        "is_capture": b_item.is_capture,
+                        "is_mate": b_item.is_mate,
+                    },
+                    "after": {
+                        "san": item.san,
+                        "is_check": item.is_check,
+                        "is_capture": item.is_capture,
+                        "is_mate": item.is_mate,
+                    },
+                }
+            )
+            if direction == "strengthened":
+                strengthened.append(item)
+            else:
+                weakened.append(item)
+
+    return strengthened, weakened, transitions
 
 
 def _wire(items: list[ForcingMoveEvidence]) -> list[ForcingMoveEvidence]:
@@ -140,10 +218,18 @@ def critical_forcing_threat_delta(
     newly_all: list[ForcingMoveEvidence] = []
     resolved_all: list[ForcingMoveEvidence] = []
     unresolved_all: list[ForcingMoveEvidence] = []
+    strengthened_all: list[ForcingMoveEvidence] = []
+    weakened_all: list[ForcingMoveEvidence] = []
+    transitions_all: list[dict[str, Any]] = []
     if baseline_available:
         newly_all, resolved_all, unresolved_all = _compare_forcing_lists(
             baseline_all,
             after_all,
+        )
+        strengthened_all, weakened_all, transitions_all = _forcing_semantic_transitions(
+            baseline_all,
+            after_all,
+            unresolved_all,
         )
 
     signatures: list[str] = []
@@ -163,18 +249,28 @@ def critical_forcing_threat_delta(
         signatures.append("RESOLVED_OPPONENT_FORCING_THREAT_CANDIDATE")
     if baseline_available and baseline_all and unresolved_all:
         signatures.append("FAILED_FORCING_THREAT_UPDATE_CANDIDATE")
+    if strengthened_all:
+        signatures.append("OPPONENT_FORCING_MOVE_STRENGTHENED")
+    if weakened_all:
+        signatures.append("OPPONENT_FORCING_MOVE_WEAKENED")
 
     baseline = _wire(baseline_all)
     after = _wire(after_all)
     newly = _wire(newly_all)
     resolved = _wire(resolved_all)
     unresolved = _wire(unresolved_all)
+    strengthened = _wire(strengthened_all)
+    weakened = _wire(weakened_all)
+    transitions = transitions_all[:MAX_FORCING_FACTS]
     counts = {
         "baseline_total": len(baseline_all),
         "after_total": len(after_all),
         "new_total": len(newly_all),
         "resolved_total": len(resolved_all),
         "persistent_total": len(unresolved_all),
+        "strengthened_total": len(strengthened_all),
+        "weakened_total": len(weakened_all),
+        "transitions_total": len(transitions_all),
     }
     truncated = {
         "baseline": len(baseline_all) > MAX_FORCING_FACTS,
@@ -182,6 +278,9 @@ def critical_forcing_threat_delta(
         "new": len(newly_all) > MAX_FORCING_FACTS,
         "resolved": len(resolved_all) > MAX_FORCING_FACTS,
         "persistent": len(unresolved_all) > MAX_FORCING_FACTS,
+        "strengthened": len(strengthened_all) > MAX_FORCING_FACTS,
+        "weakened": len(weakened_all) > MAX_FORCING_FACTS,
+        "transitions": len(transitions_all) > MAX_FORCING_FACTS,
     }
 
     scope = (
@@ -201,6 +300,9 @@ def critical_forcing_threat_delta(
         "newly_enabled_opponent_forcing_moves_after_played": newly,
         "resolved_opponent_forcing_threat_candidates": resolved,
         "unresolved_exact_opponent_forcing_threat_candidates": unresolved,
+        "strengthened_opponent_forcing_moves": strengthened,
+        "weakened_opponent_forcing_moves": weakened,
+        "forcing_move_semantic_transitions": transitions,
         "forcing_move_counts": counts,
         "presentation_truncated": truncated,
         "signatures": sorted(set(signatures)),
@@ -221,6 +323,13 @@ def critical_forcing_threat_delta(
             "unresolved_exact_opponent_forcing_threat_candidates": [
                 item.model_dump() for item in unresolved
             ],
+            "strengthened_opponent_forcing_moves": [
+                item.model_dump() for item in strengthened
+            ],
+            "weakened_opponent_forcing_moves": [
+                item.model_dump() for item in weakened
+            ],
+            "forcing_move_semantic_transitions": transitions,
             "forcing_move_counts": counts,
             "presentation_truncated": truncated,
             "proof_scope": scope,

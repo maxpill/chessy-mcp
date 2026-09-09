@@ -214,8 +214,6 @@ async def test_21_out_of_range_nag_rejected_strict():
     [
         "0+0",  # both zero
         "0+1",  # zero base
-        "1+0",  # zero increment
-        "40+0",  # zero increment with positive base
         "0+10",  # zero base
         "40/0",  # zero seconds for 40 moves
         "0/600",  # zero moves in 600 sec
@@ -244,7 +242,6 @@ async def test_16_nonsense_timecontrol_rejected_strict(nonsense: str):
         "0+1",
         "40/0",
         "0/600",
-        "40+0",
         "0+10",
     ],
 )

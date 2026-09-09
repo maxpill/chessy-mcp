@@ -54,6 +54,29 @@ def discovered_attack_candidates(board: chess.Board) -> list[MechanismCandidateE
                     continue
                 if not _between_contains(attacker_square, target_square, move.from_square):
                     continue
+                is_check = post.is_check()
+                is_capture = board.is_capture(move)
+                target_defenders = len(post.attackers(target.color, target_square))
+                target_attackers = len(post.attackers(mover, target_square))
+                target_en_prise = target_defenders < target_attackers
+                is_pawn_move = moved_before.piece_type == chess.PAWN
+
+                if is_check:
+                    priority = "checking_move"
+                    relevance = "tactically_actionable"
+                elif is_capture:
+                    priority = "capturing_move"
+                    relevance = "tactically_actionable"
+                elif target_en_prise:
+                    priority = "new_en_prise"
+                    relevance = "tactically_actionable"
+                elif is_pawn_move:
+                    priority = "pure_geometry"
+                    relevance = "pure_geometry"
+                else:
+                    priority = "forced_reply"
+                    relevance = "tactically_actionable"
+
                 out.append(
                     MechanismCandidateEvidence(
                         mechanism="discovered_attack_candidate",
@@ -65,7 +88,13 @@ def discovered_attack_candidates(board: chess.Board) -> list[MechanismCandidateE
                             "discovered_attacker": _label(attacker, attacker_square),
                             "vacated_square": chess.square_name(move.from_square),
                             "moved_to_square": chess.square_name(move.to_square),
+                            "is_check": is_check,
+                            "is_capture": is_capture,
+                            "target_en_prise": target_en_prise,
+                            "is_pawn_slider_opening": is_pawn_move and not (is_check or is_capture or target_en_prise),
                         },
+                        presentation_priority=priority,
+                        relevance=relevance,
                         proof_scope=(
                             "Deterministic discovered-attack geometry: the legal move vacates a "
                             "square on a slider ray and a different same-color bishop, rook or "

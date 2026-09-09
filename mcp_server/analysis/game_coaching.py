@@ -445,6 +445,7 @@ def _select_critical_moments(
     *,
     perspective: Perspective,
     max_moments: int,
+    evals: list[MCPEval] | None = None,
 ) -> list[CriticalMoment]:
     own = [record for record in records if record.side == perspective]
     if not own:
@@ -492,6 +493,15 @@ def _select_critical_moments(
 
     moments: list[CriticalMoment] = []
     for record in selected_records:
+        reply_uci: str | None = None
+        reply_san: str | None = None
+        reply_is_check: bool | None = None
+        reply_is_capture: bool | None = None
+        reply_is_mate: bool | None = None
+        if evals is not None and record.ply < len(evals):
+            reply_fact = _strongest_reply_fact(record.board_after, evals[record.ply])
+            if reply_fact is not None:
+                reply_uci, reply_san, reply_is_check, reply_is_capture, reply_is_mate = reply_fact
         moments.append(
             CriticalMoment(
                 ply=record.ply,
@@ -507,6 +517,11 @@ def _select_critical_moments(
                 reasons=sorted(set(reasons_by_ply[record.ply])),
                 importance_score=round(_importance(record), 1),
                 user_comment_raw=record.user_comment_raw,
+                strongest_reply_uci=reply_uci,
+                strongest_reply_san=reply_san,
+                strongest_reply_is_check=reply_is_check,
+                strongest_reply_is_capture=reply_is_capture,
+                strongest_reply_is_mate_in_one=reply_is_mate,
             )
         )
     return moments
@@ -618,7 +633,9 @@ def _candidate_gap(top: list[Any], side: chess.Color) -> int | None:
     return max(0, first - second)
 
 
-def _strongest_reply_fact(board: chess.Board, ev: MCPEval) -> tuple[str, str, bool, bool] | None:
+def _strongest_reply_fact(
+    board: chess.Board, ev: MCPEval
+) -> tuple[str, str, bool, bool, bool] | None:
     if not ev.best_move or board.is_game_over(claim_draw=False):
         return None
     try:
@@ -627,7 +644,15 @@ def _strongest_reply_fact(board: chess.Board, ev: MCPEval) -> tuple[str, str, bo
         return None
     if move not in board.legal_moves:
         return None
-    return move.uci(), board.san(move), board.gives_check(move), board.is_capture(move)
+    is_check = board.gives_check(move)
+    is_capture = board.is_capture(move)
+    is_mate = False
+    if is_check:
+        child = board.copy(stack=False)
+        child.push(move)
+        is_mate = child.is_checkmate()
+    return move.uci(), board.san(move), is_check, is_capture, is_mate
+
 
 
 def _piece_evidence_label(item: Any) -> str:
@@ -773,13 +798,14 @@ async def _verify_critical_moments(
             "newly_tactically_hanging_user_targets": newly_hanging,
         }
         if reply is not None:
-            uci, san, is_check, is_capture = reply
+            uci, san, is_check, is_capture, is_mate = reply
             update.update(
                 {
                     "strongest_reply_uci": uci,
                     "strongest_reply_san": san,
                     "strongest_reply_is_check": is_check,
                     "strongest_reply_is_capture": is_capture,
+                    "strongest_reply_is_mate_in_one": is_mate,
                 }
             )
             if is_check:
@@ -788,6 +814,8 @@ async def _verify_critical_moments(
                 signatures.append("FORCING_CAPTURE_REPLY")
             if is_check and is_capture:
                 signatures.append("CHECK_CAPTURE_REPLY")
+            if is_mate:
+                signatures.append("STRONGEST_REPLY_IS_MATE_IN_ONE")
             if (effective_loss or 0) >= 100 and (is_check or is_capture):
                 signatures.append("MISSED_FORCING_REPLY_CANDIDATE")
             if played_piece == "pawn" and (effective_loss or 0) >= 100 and (is_check or is_capture):
@@ -927,6 +955,7 @@ async def build_game_coaching_evidence(
         events,
         perspective=perspective,
         max_moments=max(1, min(max_critical_moments, 7)),
+        evals=evals,
     )
     positive = _select_positive_moments(records, perspective=perspective)
     root_links = _build_root_cause_links(

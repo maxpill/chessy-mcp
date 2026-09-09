@@ -16,7 +16,6 @@ import chess
 
 from core.engines.types import Eval
 
-from mcp_server.actions import build_best_action
 from mcp_server.engine import _build_identity
 from mcp_server.models import MCPEval
 from mcp_server.rules import evaluate_rule_status
@@ -91,17 +90,27 @@ async def evaluate_candidate(
         pv=candidate.pv,
         depth=candidate.depth,
     )
-    cand_recommended_action = "game_over" if cand_post_terminal is not None else "play_move"
+    cand_recommended_action = (
+        "game_over"
+        if (cand_post_terminal is not None and cand_post_terminal != "checkmate")
+        else "play_move"
+    )
     cand_best_action_obj = _candidate_best_action_obj(
         candidate=candidate,
         board=board,
         sign=sign,
+        cand_san_val=cand_san_val,
         cand_post_terminal=cand_post_terminal,
         cand_winner=cand_winner,
         cand_rule=cand_rule,
     )
 
     identity = _build_identity(pool)
+    post_rec_action = (
+        "game_over"
+        if cand_post_terminal is not None
+        else getattr(cand_rule, "recommended_action", "play_move")
+    )
     return MCPEval.from_eval(
         post_eval_for_candidate,
         b_cand.fen(),
@@ -113,6 +122,8 @@ async def evaluate_candidate(
         update={
             "build_sha": identity["build_sha"],
             "engine_config": identity["engine_config"],
+            "best_move": candidate.best_move,
+            "executable_move": candidate.best_move if cand_recommended_action == "play_move" else None,
             "post_terminal_status": cand_post_terminal,
             "candidate_san": cand_san_val,
             "post_can_claim_draw": cand_can_claim_draw,
@@ -137,11 +148,12 @@ async def evaluate_candidate(
                 "can_claim_now": cand_can_claim_now,
                 "can_claim_draw": cand_can_claim_draw,
                 "claim_reasons": cand_claim_reasons_now or cand_claim_reasons,
-                "recommended_action": getattr(cand_rule, "recommended_action", "play_move"),
-                "post_position_recommended_action": getattr(cand_rule, "recommended_action", "play_move"),
+                "recommended_action": post_rec_action,
+                "post_position_recommended_action": post_rec_action,
             },
         }
     )
+
 
 
 async def _walk_candidate_post_state(
@@ -237,28 +249,35 @@ def _candidate_best_action_obj(
     candidate: Eval,
     board: chess.Board,
     sign: int,
-    cand_post_terminal: str | None,
-    cand_winner: str | None,
-    cand_rule: Any,
+    cand_san_val: str | None = None,
+    cand_post_terminal: str | None = None,
+    cand_winner: str | None = None,
+    cand_rule: Any = None,
 ) -> dict[str, Any]:
-    if cand_post_terminal is not None:
-        outcome = (
-            "draw"
-            if cand_post_terminal != "checkmate"
-            else ("win" if cand_winner == "white" else "loss")
-        )
+    if cand_post_terminal is not None and cand_post_terminal != "checkmate":
+        outcome = "draw"
         return {
             "type": "game_over",
             "outcome": outcome,
             "reason": cand_post_terminal,
         }
-    return build_best_action(
-        recommended_action="play_move",
-        rule_status=cand_rule,
-        engine_eval=candidate,
-        board=board,
-        sign=sign,
-    )
+    bm_uci = candidate.best_move or ""
+    bm_san = cand_san_val
+    if bm_san is None and bm_uci and board is not None:
+        try:
+            m = chess.Move.from_uci(bm_uci.lower())
+            if m in board.legal_moves:
+                bm_san = board.san(m)
+        except Exception:
+            pass
+    payload: dict[str, Any] = {
+        "type": "play_move",
+        "move": {"uci": bm_uci, "san": bm_san},
+    }
+    if candidate.cp is not None or candidate.mate is not None:
+        payload["value"] = {"cp": candidate.cp, "mate": candidate.mate}
+    return payload
+
 
 
 # Back-compat shim.

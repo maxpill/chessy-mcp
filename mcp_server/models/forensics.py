@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from mcp_server.models.legacy import MCPMoveAnalysis, TopMovesResult
 from mcp_server.models.mcpeval import MCPEval
@@ -36,6 +36,7 @@ class ForcingMoveEvidence(BaseModel):
     is_capture: bool = False
     captured_piece: str | None = None
     promotion: str | None = None
+    is_mate: bool = False
 
 
 class PieceEvidence(BaseModel):
@@ -118,6 +119,33 @@ class MechanismCandidateEvidence(BaseModel):
         "engine_pv_supported",
         "pure_geometry",
     ] = "pure_geometry"
+    relevance: Literal[
+        "tactically_actionable",
+        "engine_supported",
+        "pure_geometry",
+    ] = "pure_geometry"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_relevance(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "relevance" not in data or data["relevance"] is None:
+                priority = data.get("presentation_priority", "pure_geometry")
+                if priority in (
+                    "immediate_mate",
+                    "checking_move",
+                    "capturing_move",
+                    "promotion",
+                    "forced_reply",
+                    "new_en_prise",
+                    "pinned_defender",
+                ):
+                    data["relevance"] = "tactically_actionable"
+                elif priority == "engine_pv_supported":
+                    data["relevance"] = "engine_supported"
+                else:
+                    data["relevance"] = "pure_geometry"
+        return data
 
 
 class TacticalSnapshot(BaseModel):

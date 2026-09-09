@@ -24,7 +24,6 @@ from mcp_server.analysis.position_integrity import (
     build_rich_position_delta,
     build_rich_tactical_snapshot,
 )
-from mcp_server.analysis.tactical_continuation_resolved import tactical_sequence_resolved
 from mcp_server.analysis.tactical_snapshot_extensions import extend_tactical_snapshot
 from mcp_server.models.forensics import (
     CandidateContinuationEndpointDifference,

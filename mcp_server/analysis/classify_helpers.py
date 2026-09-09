@@ -198,7 +198,43 @@ def build_classification(
         can_claim_with_intended_move=score.can_claim_with_intended_move,
         claim_moves=score.claim_moves,
         classification_verified=verified,
+        action_class=(
+            "missed_rule_action"
+            if score.missed_draw_claim
+            else (
+                "conceded_rule_action"
+                if score.conceded_draw_claim
+                else (
+                    "best"
+                    if score.is_best_action
+                    else (
+                        "suboptimal_rule_action"
+                        if action_type != score.best_action
+                        else score.move_class.value
+                    )
+                )
+            )
+        ),
+        action_quality_class=(
+            "missed_rule_action"
+            if score.missed_draw_claim
+            else (
+                "conceded_rule_action"
+                if score.conceded_draw_claim
+                else (
+                    "best"
+                    if score.is_best_action
+                    else (
+                        "suboptimal_rule_action"
+                        if action_type != score.best_action
+                        else score.move_class.value
+                    )
+                )
+            )
+        ),
+        move_quality_class=score.move_class.value,
     )
+
 
 
 def _outcome_from_action(

@@ -229,7 +229,9 @@ async def _probe_mcp(
 
                 # F-005 fix (2026-09-09): schema fingerprint parity.
                 schema_payload = {
-                    tool.name: _canonicalize_schema(tool.inputSchema)
+                    tool.name: _canonicalize_schema(
+                        getattr(tool, "input_schema", getattr(tool, "inputSchema", {}))
+                    )
                     for tool in tools_result.tools
                     if tool.name in EXPECTED_TOOLS
                 }
@@ -278,7 +280,9 @@ async def _probe_mcp(
                 # fingerprint. Helps diagnose "ChatGPT shows default 20 but
                 # source says 16" class of drift.
                 schema_payload = {
-                    tool.name: _canonicalize_schema(tool.inputSchema)
+                    tool.name: _canonicalize_schema(
+                        getattr(tool, "input_schema", getattr(tool, "inputSchema", {}))
+                    )
                     for tool in tools_result.tools
                     if tool.name in EXPECTED_TOOLS
                 }

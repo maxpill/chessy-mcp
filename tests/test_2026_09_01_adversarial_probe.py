@@ -413,9 +413,9 @@ async def test_top_moves_candidate_best_action_matches_outer_action_type():
 
 @pytest.mark.asyncio
 async def test_top_moves_mating_candidate_best_action_is_game_over():
-    """A candidate whose post-state is checkmate must read as `game_over`
-    on the outer action surface (recommended_action, best_action,
-    best_action_obj.type) — never `play_move`."""
+    """C1 fix: A candidate whose post-state is checkmate must read as `play_move`
+    on the root action surface with executable_move populated, while post_position
+    reports `game_over` / `checkmate`."""
     await server_module._cache.clear()
     server_module._analyzer_pool = _MultiPV3Pool()  # type: ignore[assignment]
 
@@ -425,10 +425,13 @@ async def test_top_moves_mating_candidate_best_action_is_game_over():
     by_uci = {c.best_move: c for c in res.result if c.best_move}
     qc8 = by_uci.get("f5c8")
     assert qc8 is not None
-    assert qc8.recommended_action == "game_over"
-    assert qc8.best_action == "game_over"
-    assert qc8.best_action_type == "game_over"
+    assert qc8.recommended_action == "play_move"
+    assert qc8.best_action == "play_move"
+    assert qc8.best_action_type == "play_move"
+    assert qc8.root_candidate_action == "play_move"
+    assert qc8.executable_move == "f5c8"
     assert qc8.best_action_obj is not None
-    assert qc8.best_action_obj.get("type") == "game_over"
-    assert qc8.best_action_obj.get("outcome") == "win"
-    assert qc8.best_action_obj.get("reason") == "checkmate"
+    assert qc8.best_action_obj.get("type") == "play_move"
+    assert qc8.post_position is not None
+    assert qc8.post_position.get("status") == "checkmate"
+    assert qc8.post_position.get("recommended_action") == "game_over"

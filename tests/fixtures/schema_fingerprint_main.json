@@ -1,5 +1,5 @@
 {
-  "fingerprint": "5e13c0076089e929eb4dcfb8358d54565a074e4d09dd9ff86d9b317fd0b08315",
+  "fingerprint": "be205d886ff34f7375c176d360212862f2d40b54f80a6da36664d6e199d6179e",
   "tools": {
     "analyze_game": {
       "properties": {
@@ -196,6 +196,11 @@
         "verbosity": {
           "anyOf": [
             {
+              "enum": [
+                "minimal",
+                "compact",
+                "full"
+              ],
               "type": "string"
             },
             {
@@ -203,7 +208,7 @@
             }
           ],
           "default": null,
-          "description": "Response verbosity: 'full' (default) or 'compact'.",
+          "description": "Response verbosity: 'full' (default), 'compact', or 'minimal' (aliases 'min', 'standard', 'default' accepted).",
           "title": "Verbosity"
         }
       },
@@ -300,6 +305,11 @@
         "verbosity": {
           "anyOf": [
             {
+              "enum": [
+                "minimal",
+                "compact",
+                "full"
+              ],
               "type": "string"
             },
             {
@@ -307,7 +317,7 @@
             }
           ],
           "default": null,
-          "description": "Response verbosity: 'full' (default), 'compact', or 'minimal'.",
+          "description": "Response verbosity: 'full' (default), 'compact', or 'minimal' (aliases 'min', 'standard', 'default' accepted).",
           "title": "Verbosity"
         }
       },

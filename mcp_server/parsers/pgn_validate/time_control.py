@@ -19,25 +19,32 @@ _TIME_CONTROL_STAGE_RE = TIME_CONTROL_STAGE_RE
 
 
 def stage_has_positive_number(stage: str) -> bool:
-    """Return True iff every numeric half of ``stage` is strictly positive.
+    """Return True iff every numeric half of ``stage` is valid.
 
-    Splits the stage on ``/`, ``+`, or ``*` (the three PGN TimeControl
-    separators — ``/` for moves/seconds, ``+` for Fischer increment,
-    ``*` for hourglass prefix) and requires every individual numeric
-    component to contain a non-zero digit.
+    For Fischer increment (``+``), the base time must contain a non-zero
+    digit, while the increment is allowed to be zero (e.g. ``600+0``).
+    For moves/seconds (``/``) and hourglass (``*``), every numeric
+    component must contain a non-zero digit.
     """
     body = stage[1:] if stage.startswith("*") else stage
-    pieces: list[str] = []
     if "+" in body:
-        pieces.extend(body.split("+"))
-    elif "/" in body:
-        pieces.extend(body.split("/"))
-    else:
-        pieces.append(body)
-    for piece in pieces:
-        if not piece or not any(c in "123456789" for c in piece):
+        pieces = body.split("+")
+        if len(pieces) != 2:
             return False
-    return True
+        base, inc = pieces
+        if not base or not any(c in "123456789" for c in base):
+            return False
+        if not inc or not inc.isdigit():
+            return False
+        return True
+    elif "/" in body:
+        pieces = body.split("/")
+        if len(pieces) != 2:
+            return False
+        return all(bool(p) and any(c in "123456789" for c in p) for p in pieces)
+    else:
+        return bool(body) and any(c in "123456789" for c in body)
+
 
 
 def is_valid_pgn_time_control(value: str) -> bool:

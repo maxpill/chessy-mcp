@@ -301,9 +301,34 @@ def enrich_game_critical_forensics(
         before_mate_ucis = {item["uci"] for item in mate_before}
         after_mate_ucis = {item["uci"] for item in mate_after}
         played_was_mate = moment.uci in before_mate_ucis
+
+        reply_uci = moment.strongest_reply_uci
+        reply_san = moment.strongest_reply_san
+        reply_is_check = moment.strongest_reply_is_check
+        reply_is_capture = moment.strongest_reply_is_capture
+        reply_is_mate = moment.strongest_reply_is_mate_in_one
+
+        if reply_uci is None and moment.ply < len(evals):
+            post_ev = evals[moment.ply]
+            if post_ev.best_move:
+                reply_uci = post_ev.best_move.lower()
+            elif mate_after:
+                reply_uci = mate_after[0]["uci"]
+            if reply_uci:
+                try:
+                    rmove = chess.Move.from_uci(reply_uci)
+                    if rmove in board_after.legal_moves:
+                        reply_san = board_after.san(rmove)
+                        reply_is_check = board_after.gives_check(rmove)
+                        reply_is_capture = board_after.is_capture(rmove)
+                        child = board_after.copy(stack=False)
+                        child.push(rmove)
+                        reply_is_mate = child.is_checkmate()
+                except Exception:
+                    pass
+
         strongest_reply_is_mate = bool(
-            moment.strongest_reply_uci
-            and moment.strongest_reply_uci in after_mate_ucis
+            reply_is_mate or (reply_uci and reply_uci in after_mate_ucis)
         )
         addresses_mate_threat: bool | None = None
         if mate_threats:
@@ -328,10 +353,8 @@ def enrich_game_critical_forensics(
             board_after,
             pv,
             mover=board_before.turn,
-            strongest_reply_uci=moment.strongest_reply_uci,
-            strongest_reply_forcing=bool(
-                moment.strongest_reply_is_check or moment.strongest_reply_is_capture
-            ),
+            strongest_reply_uci=reply_uci,
+            strongest_reply_forcing=bool(reply_is_check or reply_is_capture),
         )
         if trace is not None and reply_materialization is not None:
             trace = {**trace, "strongest_reply_materialization": reply_materialization}
@@ -411,6 +434,15 @@ def enrich_game_critical_forensics(
                     "resolved_opponent_forcing_threat_candidates": forcing_delta[
                         "resolved_opponent_forcing_threat_candidates"
                     ],
+                    "strengthened_opponent_forcing_moves": forcing_delta.get(
+                        "strengthened_opponent_forcing_moves", []
+                    ),
+                    "weakened_opponent_forcing_moves": forcing_delta.get(
+                        "weakened_opponent_forcing_moves", []
+                    ),
+                    "forcing_move_semantic_transitions": forcing_delta.get(
+                        "forcing_move_semantic_transitions", []
+                    ),
                     "newly_tactically_hanging_user_targets": all_new_hanging,
                     "mate_in_one_moves_before": mate_before,
                     "played_move_was_mate_in_one": played_was_mate,
@@ -419,6 +451,10 @@ def enrich_game_critical_forensics(
                     "mate_threat_pass_probe_reason": threat_probe_reason,
                     "played_move_addresses_immediate_mate_threat": addresses_mate_threat,
                     "opponent_mate_in_one_moves_after_played": mate_after,
+                    "strongest_reply_uci": reply_uci,
+                    "strongest_reply_san": reply_san,
+                    "strongest_reply_is_check": reply_is_check,
+                    "strongest_reply_is_capture": reply_is_capture,
                     "strongest_reply_is_mate_in_one": strongest_reply_is_mate,
                     "causal_trace": trace,
                     "evidence_signatures": signatures,

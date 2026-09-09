@@ -20,6 +20,10 @@ from mcp_server.analysis.forensic_extensions import (
     _skewer_evidence,
 )
 from mcp_server.analysis.forensics import PIECE_NAMES, PIECE_VALUES
+from mcp_server.analysis.position_integrity import (
+    MAX_PRESENTATION_MECHANISMS,
+    _PRESENTATION_PRIORITY_RANK,
+)
 from mcp_server.analysis.threat_forensics import relative_pin_candidates
 from mcp_server.models.forensics import (
     ForensicEval,
@@ -425,10 +429,23 @@ def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> 
     hanging.sort(key=lambda item: (item.target.square, item.capture.san, item.reason))
 
     threats, probe_available, probe_reason, probe_scope = _threat_probe(board)
+    pres_candidates = [
+        m
+        for m in candidates
+        if not (m.mechanism == "discovered_attack_candidate" and m.relevance == "pure_geometry")
+    ]
+    presentation = sorted(
+        pres_candidates,
+        key=lambda item: (
+            _PRESENTATION_PRIORITY_RANK.get(item.presentation_priority, 99),
+            item.mechanism,
+        ),
+    )[:MAX_PRESENTATION_MECHANISMS]
     return snapshot.model_copy(
         update={
             "tactically_hanging_candidates": hanging,
             "mechanism_candidates": candidates[:MAX_EXTENDED_MECHANISM_CANDIDATES],
+            "presentation_mechanisms": presentation,
             "opponent_forcing_threats_if_pass": threats,
             "threat_probe_available": probe_available,
             "threat_probe_reason": probe_reason,

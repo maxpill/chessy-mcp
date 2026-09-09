@@ -57,6 +57,7 @@ _LOGIC_FILES: tuple[str, ...] = (
     "mcp_server/models/action_policy.py",
     "mcp_server/models/legacy.py",
     "mcp_server/actions.py",
+    "mcp_server/analysis/candidate_evaluator.py",
     "mcp_server/server.py",
     "mcp_server/tcp_analyzer.py",
     "mcp_server/tcp_client.py",

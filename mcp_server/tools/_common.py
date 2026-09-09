@@ -135,11 +135,6 @@ def _compact_mcpeval(mcp_eval: Any) -> Any:
             "best_action_obj": None,
             "post_position": None,
             "action_policy": None,
-            "claim_move_san": None,
-            "claim_move_uci": None,
-            "claim_moves": [],
-            "claim_reasons": [],
-            "claim_reasons_now": [],
             "post_terminal_status": None,
             "post_can_claim_draw": False,
             "post_can_claim_now": False,
@@ -168,12 +163,11 @@ def _minimal_mcpeval(mcp_eval: Any) -> Any:
             "legal_actions": [],
             "legal_rule_actions": [],
             "claim_moves": [],
-            "claim_reasons": [],
-            "claim_reasons_now": [],
             "is_minimal": True,
             "is_compact": True,
         }
     )
+
 
 
 compact_mcpeval = _compact_mcpeval
