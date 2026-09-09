@@ -1,0 +1,88 @@
+name: Chess MCP Ultra Stress 520
+
+on:
+  push:
+    branches:
+      - audit/ultra-480-2026-09-09
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chess-mcp-ultra-stress-520
+  cancel-in-progress: false
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check uv
+          uv sync --frozen
+
+      - name: Run baseline 360 direct MCP calls sequentially
+        id: base360
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          set +e
+          uv run python scripts/production_stress_360.py \
+            --target https://mcp.trychessy.com \
+            --concurrency 1 \
+            --batch-size 1 \
+            --pause-ms 25 \
+            --output-dir artifacts > artifacts/base360-console.log 2>&1
+          code=$?
+          set -e
+          cat artifacts/base360-console.log
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Run additional 160 harder direct MCP calls
+        id: extra160
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          set +e
+          uv run python scripts/production_ultra_additional_160.py \
+            --target https://mcp.trychessy.com \
+            --output-dir artifacts > artifacts/extra160-console.log 2>&1
+          code=$?
+          set -e
+          cat artifacts/extra160-console.log
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Build combined call-accounting summary
+        if: always()
+        shell: bash
+        run: |
+          cat > artifacts/combined_520_accounting.md <<EOF
+          # Chess MCP Ultra Stress 520 call accounting
+
+          - Baseline harness intended direct calls: 360
+          - Additional harder harness intended direct calls: 160
+          - Intended total direct session.call_tool calls: 520
+          - Base harness exit code: ${{ steps.base360.outputs.exit_code }}
+          - Extra harness exit code: ${{ steps.extra160.outputs.exit_code }}
+          - Branch: audit/ultra-480-2026-09-09
+          - Base source SHA under audit: a1a05f43888ab959b5a95af2a112b18847c436fe
+          EOF
+          echo "Generated files:"
+          find artifacts -maxdepth 1 -type f -print | sort
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chess-mcp-ultra-stress-520-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
