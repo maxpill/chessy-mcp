@@ -9,20 +9,31 @@ from __future__ import annotations
 
 import pytest
 
+from core.engines.types import Eval, MoveAnalysis, MoveClass
 from mcp_server import server as server_module
 from mcp_server.engine.retry import reset_breaker
 from mcp_server.tools._common import _validate_requested_depth
 
 
-class _EmptyPool:
-    name = "EmptyPool"
-    engine_version = "EmptyPool"
+class _StaticPool:
+    name = "StaticPool"
+    engine_version = "StaticPool"
 
     async def evaluate(self, board, *, depth=14, root_moves=None):
-        return None
+        legal = list(board.legal_moves)
+        best = legal[0].uci() if legal else None
+        return Eval(cp=20, best_move=best, pv=[best] if best else [], depth=max(depth, 1))
 
     async def classify_move(self, board, move, depth=14):
-        raise NotImplementedError
+        played = move.uci() if move else ""
+        return MoveAnalysis(
+            played=played,
+            move_class=MoveClass.BEST,
+            centipawn_loss=0,
+            eval_before=Eval(cp=20, best_move=played),
+            eval_after=Eval(cp=20),
+            best_move_san=board.san(move) if move in board.legal_moves else "",
+        )
 
     async def top_moves(self, board, *, n=3, depth=14):
         return []
@@ -59,7 +70,7 @@ def test_depth_error_wording_mentions_clamp_not_positive() -> None:
 async def test_zero_and_negative_depth_are_accepted_with_clamp_searched() -> None:
     """Zero/negative depths must be accepted; searched_depth clamped to 1."""
     await server_module._cache.clear()
-    server_module._analyzer_pool = _EmptyPool()
+    server_module._analyzer_pool = _StaticPool()
 
     res_zero = await server_module.evaluate_position(
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",

@@ -154,11 +154,17 @@ def _validate_requested_depth(depth: Any, tool: str) -> int:
     values raised a raw Python TypeError. The endpoint now rejects those with
     ``ToolError(INVALID_INPUT)`` so every endpoint behaves identically and
     callers get a structured error.
+
+    F-007 fix (2026-09-09 master audit): the error wording no longer says
+    "positive integer" because the runtime actually accepts any integer and
+    clamps the *searched* depth to [1, 30]. The requested depth is echoed
+    verbatim in ``requested_depth``; the clamp is documented in the message.
     """
     if not isinstance(depth, int) or isinstance(depth, bool):
         raise _tool_error(
             "INVALID_INPUT",
-            f"depth must be a positive integer (got {type(depth).__name__}: {depth!r}).",
+            f"depth must be an integer (got {type(depth).__name__}: {depth!r}); "
+            f"searched depth is clamped to 1..30.",
             tool,
         )
     return depth
