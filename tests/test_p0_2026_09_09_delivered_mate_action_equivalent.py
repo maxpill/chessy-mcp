@@ -62,17 +62,18 @@ class _MateInOnePool:
 
 
 class _NonBestMatePool(_MateInOnePool):
-    """Pool that returns a non-best (Good) classification even though a mate exists."""
+    """Pool where the engine's best mating move differs from the played move."""
 
     async def classify_move(self, board, move, depth=14):  # type: ignore[override]
         played = move.uci()
+        # Engine best is a DIFFERENT mating move (g7h7 instead of f7g7).
         return MoveAnalysis(
             played=played,
             move_class=MoveClass.GOOD,
             centipawn_loss=20,
-            eval_before=Eval(mate=1, best_move=played),
+            eval_before=Eval(mate=1, best_move="h7h8"),
             eval_after=Eval(mate=0),
-            best_move_san=board.san(move),
+            best_move_san="Rh8#",
         )
 
 
