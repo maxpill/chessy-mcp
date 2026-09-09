@@ -759,14 +759,20 @@ async def test_r_42_depth_clamp():
 
 @pytest.mark.asyncio
 async def test_r_43_n_clamp():
-    """R-43: n is clamped to 1..20."""
+    """R-43: n is clamped to 1..20 (canonical max, 2026-09-09 master audit F-002).
+
+    The old assertion ``clamped_n == 10`` pinned the broken-by-design constant
+    in ``rules/constants.py``. The audit unified TOP_MOVES_MAX_N to 20 (the
+    value already used at runtime, in request-cost estimation, and in the
+    production deployment).
+    """
     server_module._analyzer_pool = _FlatPool(cp=30, best_move="e2e4")  # type: ignore
 
     res = await server_module.top_moves("startpos", n=0, depth=8)
     assert res.clamped_n == 1
 
     res2 = await server_module.top_moves("startpos", n=21, depth=8)
-    assert res2.clamped_n == 10
+    assert res2.clamped_n == 20
 
 
 # ---------------------------------------------------------------------------
@@ -779,9 +785,7 @@ async def test_r_44_black_ranking():
     """R-44: black-to-move candidates must be ranked by Black utility."""
 
     class BlackRankingPool(_FlatPool):
-        async def top_moves(
-            self, board: chess.Board, n: int = 3, depth: int = 14
-        ) -> list[Eval]:
+        async def top_moves(self, board: chess.Board, n: int = 3, depth: int = 14) -> list[Eval]:
             candidates = [
                 Eval(cp=50, best_move="e7e5", pv=["e7e5"], depth=depth),
                 Eval(cp=-80, best_move="d7d5", pv=["d7d5"], depth=depth),
