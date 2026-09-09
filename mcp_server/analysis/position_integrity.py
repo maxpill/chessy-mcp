@@ -35,6 +35,7 @@ from mcp_server.models.forensics import (
 from mcp_server.models.mcpeval import MCPEval
 
 MAX_MECHANISM_CANDIDATES = 32
+MAX_PRESENTATION_MECHANISMS = 8
 STRATEGIC_CENTER = {
     chess.C4,
     chess.D4,
@@ -45,6 +46,40 @@ STRATEGIC_CENTER = {
     chess.E5,
     chess.F5,
 }
+
+# F-010 fix (2026-09-09): rank buckets for presentation_priority. Lower rank
+# is higher priority. Pure geometry is the largest, lowest-priority bucket.
+_PRESENTATION_PRIORITY_RANK: dict[str, int] = {
+    "immediate_mate": 0,
+    "checking_move": 1,
+    "capturing_move": 2,
+    "promotion": 3,
+    "forced_reply": 4,
+    "new_en_prise": 5,
+    "pinned_defender": 6,
+    "engine_pv_supported": 7,
+    "pure_geometry": 8,
+}
+
+
+def _presentation_priority_for(mechanism: str, evidence: dict) -> str:
+    """Infer presentation_priority from a mechanism category + evidence dict."""
+    is_check = bool(evidence.get("is_check"))
+    is_capture = bool(evidence.get("is_capture"))
+    is_promotion = "promotion" in evidence or mechanism == "promotion_tactic"
+    if mechanism == "mate_threat_candidate":
+        return "immediate_mate"
+    if is_promotion:
+        return "promotion"
+    if is_check:
+        return "checking_move"
+    if is_capture:
+        return "capturing_move"
+    if mechanism in ("removal_of_defender_candidate", "overloaded_defender_candidate"):
+        return "pinned_defender"
+    if mechanism == "discovered_attack_candidate":
+        return "forced_reply"
+    return "pure_geometry"
 
 
 def _color_name(color: chess.Color) -> Literal["white", "black"]:
@@ -211,6 +246,9 @@ def _mechanism_candidates(
                     "Deterministic king-line pin in the current position. This does not by "
                     "itself prove a material win."
                 ),
+                presentation_priority=_presentation_priority_for(
+                    "absolute_pin", {"python_chess_is_pinned": True}
+                ),
             )
         )
 
@@ -227,6 +265,10 @@ def _mechanism_candidates(
                 proof_scope=(
                     "The piece geometrically defends at least two currently attacked targets. "
                     "This is an overload candidate, not proof that a forcing sequence wins."
+                ),
+                presentation_priority=_presentation_priority_for(
+                    "overloaded_defender_candidate",
+                    {"attacked_targets": list(load.attacked_targets)},
                 ),
             )
         )
@@ -252,6 +294,9 @@ def _mechanism_candidates(
                     ),
                     evidence={"is_check": True, "is_capture": True},
                     proof_scope="Deterministic legal move that is simultaneously check and capture.",
+                    presentation_priority=_presentation_priority_for(
+                        "check_capture", {"is_check": True, "is_capture": True}
+                    ),
                 )
             )
 
@@ -264,6 +309,9 @@ def _mechanism_candidates(
                     actor=_piece_label(actor_before, move.from_square),
                     evidence={"promotion": PIECE_NAMES[move.promotion]},
                     proof_scope="Deterministic legal promotion move in the current position.",
+                    presentation_priority=_presentation_priority_for(
+                        "promotion_tactic", {"promotion": PIECE_NAMES[move.promotion]}
+                    ),
                 )
             )
 
@@ -286,6 +334,9 @@ def _mechanism_candidates(
                             proof_scope=(
                                 "The captured piece is the sole geometric defender of at least "
                                 "one currently attacked target. Continuations are not proven."
+                            ),
+                            presentation_priority=_presentation_priority_for(
+                                "removal_of_defender_candidate", {"is_capture": True}
                             ),
                         )
                     )
@@ -312,6 +363,7 @@ def _mechanism_candidates(
                         "non-pawn enemy targets whose value is at least the attacker's value, "
                         "or the king. This does not prove a net material win."
                     ),
+                    presentation_priority=_presentation_priority_for("fork_candidate", {}),
                 )
             )
 
@@ -333,16 +385,29 @@ def build_rich_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
             overloaded.append(load)
 
     overloaded = sorted(overloaded, key=_defender_sort_key)
+    mechanisms = _mechanism_candidates(
+        board,
+        pinned=base.pinned_pieces,
+        overloaded=overloaded,
+    )
+    # F-010 fix (2026-09-09): presentation_mechanisms is the same list
+    # re-sorted by presentation_priority bucket so a coaching consumer can
+    # surface the top-N consequential mechanisms without re-implementing
+    # the ranking. The exhaustive mechanism_candidates list is preserved.
+    presentation = sorted(
+        mechanisms,
+        key=lambda item: (
+            _PRESENTATION_PRIORITY_RANK.get(item.presentation_priority, 99),
+            item.mechanism,
+        ),
+    )[:MAX_PRESENTATION_MECHANISMS]
     return base.model_copy(
         update={
             "tactically_hanging_candidates": _tactical_hanging_candidates(board),
             "attacked_defenders": sorted(attacked_defenders, key=_defender_sort_key),
             "overloaded_defender_candidates": overloaded,
-            "mechanism_candidates": _mechanism_candidates(
-                board,
-                pinned=base.pinned_pieces,
-                overloaded=overloaded,
-            ),
+            "mechanism_candidates": mechanisms,
+            "presentation_mechanisms": presentation,
         }
     )
 
