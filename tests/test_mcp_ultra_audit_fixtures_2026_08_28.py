@@ -1053,7 +1053,14 @@ async def test_m05_compact_mode_strips_urls():
 
 @pytest.mark.asyncio
 async def test_m05_compact_top_moves_candidates():
-    """M-05: compact top_moves drops engine_eval/decision_value from candidates."""
+    """M-05: compact top_moves drops heavy nested/legacy fields from candidates.
+
+    F-004 fix (2026-09-09): expanded compact now also drops best_action_obj,
+    post_position, legal_actions, legal_rule_actions, action_policy, and the
+    claim_* nested fields. The flat ``best_action``/``best_action_type``/
+    ``recommended_action`` are sufficient to identify the canonical action.
+    The old assertion ``best_action_obj is not None`` pinned the bloat.
+    """
     server_module._analyzer_pool = _FlatPool(cp=30, best_move="e2e4")  # type: ignore
 
     full = await server_module.top_moves("startpos", n=3, depth=10)
@@ -1065,8 +1072,13 @@ async def test_m05_compact_top_moves_candidates():
     compact_cand = compact.result[0]
     assert compact_cand.engine_eval is None
     assert compact_cand.decision_value is None
-    # Best_actionObj is still present (typed contract is required)
-    assert compact_cand.best_action_obj is not None
+    # F-004 fix: best_action_obj is now nulled in compact because the flat
+    # best_action/best_action_type/recommended_action fields carry the same
+    # information at a fraction of the wire size.
+    assert compact_cand.best_action_obj is None
+    assert compact_cand.legal_actions == []
+    assert compact_cand.legal_rule_actions == []
+    assert compact_cand.action_policy is None
 
 
 @pytest.mark.asyncio

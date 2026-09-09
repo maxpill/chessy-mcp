@@ -103,7 +103,25 @@ resolve_verbosity = _resolve_verbosity
 
 
 def _compact_mcpeval(mcp_eval: Any) -> Any:
-    """Strip verbose payload duplication without rewriting chess semantics."""
+    """Strip verbose payload duplication without rewriting chess semantics.
+
+    F-004 fix (2026-09-09 master audit): the original compact only nulled
+    five fields (lichess_url, lichess_image, decision_value, engine_eval,
+    input_fen) while leaving heavy forensic/legacy nested structures in
+    place. Production top_moves responses at n=20 were around 226-245 KB.
+
+    The expanded set nulls the fields that:
+      - duplicate other flat fields (legal_actions vs legal_move_uci,
+        best_action_obj vs best_action+best_action_type, post_position vs
+        flat post_state_* fields),
+      - are only diagnostic (action_policy),
+      - carry rule-claim details already encoded in claim_* flat fields,
+      - or are themselves nested MCPEval objects (post_position).
+
+    Minimal verbosity is the tighter variant (one-shot consumer); compact is
+    the standard LLM-coaching verbosity. ``is_compact``/``is_minimal`` flag
+    is preserved so downstream code can still tell them apart.
+    """
     return mcp_eval.model_copy(
         update={
             "lichess_url": None,
@@ -111,6 +129,22 @@ def _compact_mcpeval(mcp_eval: Any) -> Any:
             "decision_value": None,
             "engine_eval": None,
             "input_fen": None,
+            # F-004 fix: heavy nested/legacy/forensic fields.
+            "legal_actions": [],
+            "legal_rule_actions": [],
+            "best_action_obj": None,
+            "post_position": None,
+            "action_policy": None,
+            "claim_move_san": None,
+            "claim_move_uci": None,
+            "claim_moves": [],
+            "claim_reasons": [],
+            "claim_reasons_now": [],
+            "post_terminal_status": None,
+            "post_can_claim_draw": False,
+            "post_can_claim_now": False,
+            "post_claim_moves": [],
+            "post_claim_reasons": [],
             "is_compact": True,
         }
     )
