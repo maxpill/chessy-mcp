@@ -1,5 +1,5 @@
 {
-  "fingerprint": "be205d886ff34f7375c176d360212862f2d40b54f80a6da36664d6e199d6179e",
+  "fingerprint": "70e8e4d8a48e25f8becbe2d2428379ee02a8408189889150e1c4e1ef3a0cdbeb",
   "tools": {
     "analyze_game": {
       "properties": {
@@ -199,7 +199,10 @@
               "enum": [
                 "minimal",
                 "compact",
-                "full"
+                "full",
+                "min",
+                "standard",
+                "default"
               ],
               "type": "string"
             },
@@ -308,7 +311,10 @@
               "enum": [
                 "minimal",
                 "compact",
-                "full"
+                "full",
+                "min",
+                "standard",
+                "default"
               ],
               "type": "string"
             },

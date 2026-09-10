@@ -137,3 +137,20 @@ def test_field_descriptions_match_canonical_contract() -> None:
     assert "1-30" in depth_desc_cm, (
         f"classify_move.depth description must say '1-30'; got {depth_desc_cm!r}"
     )
+
+
+def test_verbosity_enums_match_supported_inputs() -> None:
+    """AUDIT-014: Verbosity schema enum must match SUPPORTED_VERBOSITY_INPUTS."""
+    from mcp_server.tools._common import SUPPORTED_VERBOSITY_INPUTS
+
+    schemas = _tool_schemas()
+    for tool_name in ("evaluate_position", "top_moves"):
+        verbosity_prop = schemas[tool_name]["properties"]["verbosity"]
+        enum_values = None
+        for item in verbosity_prop.get("anyOf", []):
+            if "enum" in item:
+                enum_values = set(item["enum"])
+                break
+        assert enum_values == set(SUPPORTED_VERBOSITY_INPUTS), (
+            f"{tool_name} verbosity enum {enum_values} does not match {SUPPORTED_VERBOSITY_INPUTS}"
+        )

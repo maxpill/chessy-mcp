@@ -157,16 +157,19 @@ from mcp_server.tools.game_metrics import _compute_game_metrics  # noqa: E402,F4
 async def _health(request: Any) -> Any:
     """Liveness/readiness probe — no auth required, no MCP machinery touched.
 
-    Returns 200 with a minimal payload so compose / orchestrator healthchecks
-    can verify the service is up without engaging the JSON-RPC stack.
+    Returns 200 with diagnostics so compose / orchestrator / probe checks
+    can verify the service, build sha, and registered tools.
     """
     from starlette.responses import JSONResponse
 
+    tool_names = [t.name for t in mcp._tool_manager.list_tools()]
     return JSONResponse(
         {
             "status": "ok",
             "service": "chessy-mcp",
             "version": _package_version(),
+            "build_sha": _build_sha(),
+            "tools": sorted(tool_names),
         }
     )
 

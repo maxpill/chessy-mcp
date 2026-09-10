@@ -66,16 +66,33 @@ def _captured_piece(board: chess.Board, move: chess.Move) -> chess.Piece | None:
     return board.piece_at(move.to_square)
 
 
-def _move_evidence(board: chess.Board, move: chess.Move) -> ForcingMoveEvidence:
+def build_forcing_move_evidence(board: chess.Board, move: chess.Move) -> ForcingMoveEvidence:
+    """Centralized constructor for ForcingMoveEvidence with exact checkmate semantics."""
+    if move not in board.legal_moves:
+        raise ValueError(
+            f"ILLEGAL_MOVE: move {move.uci()!r} is not legal in position '{board.fen()}'"
+        )
+    san = board.san(move)
+    is_check = board.gives_check(move)
+    is_capture = board.is_capture(move)
     captured = _captured_piece(board, move)
+    is_mate = False
+    if is_check:
+        child = board.copy(stack=False)
+        child.push(move)
+        is_mate = child.is_checkmate()
     return ForcingMoveEvidence(
         uci=move.uci(),
-        san=board.san(move),
-        is_check=board.gives_check(move),
-        is_capture=board.is_capture(move),
+        san=san,
+        is_check=is_check,
+        is_capture=is_capture,
         captured_piece=_piece_label(captured),
         promotion=PIECE_NAMES.get(move.promotion) if move.promotion else None,
+        is_mate=is_mate,
     )
+
+
+_move_evidence = build_forcing_move_evidence
 
 
 def build_position_fingerprint(board: chess.Board) -> PositionFingerprint:

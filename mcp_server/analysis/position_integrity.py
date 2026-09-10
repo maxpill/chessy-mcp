@@ -17,6 +17,7 @@ from mcp_server.analysis.forensics import (
     build_position_delta,
     build_position_fingerprint,
     build_tactical_snapshot,
+    build_forcing_move_evidence,
 )
 from mcp_server.models.forensics import (
     DefenderLoadEvidence,
@@ -137,19 +138,7 @@ def _captured_piece(board: chess.Board, move: chess.Move) -> chess.Piece | None:
 
 
 def _capture_evidence(board: chess.Board, move: chess.Move) -> ForcingMoveEvidence:
-    captured = _captured_piece(board, move)
-    return ForcingMoveEvidence(
-        uci=move.uci(),
-        san=board.san(move),
-        is_check=board.gives_check(move),
-        is_capture=True,
-        captured_piece=(
-            f"{_color_name(captured.color)}_{PIECE_NAMES[captured.piece_type]}"
-            if captured is not None
-            else None
-        ),
-        promotion=PIECE_NAMES.get(move.promotion) if move.promotion else None,
-    )
+    return build_forcing_move_evidence(board, move)
 
 
 def _defender_load(

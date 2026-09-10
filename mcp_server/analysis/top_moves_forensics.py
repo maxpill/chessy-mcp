@@ -414,13 +414,27 @@ async def enrich_top_moves_result(
         ]
     )
     new_legal_actions = [*rule_actions, *[_action_for_candidate(c) for c in new_items]]
+
+    seen_include_ucis: set[str] = set()
+    for text in (include_moves or []):
+        if not text:
+            continue
+        try:
+            m = parse_candidate_move(board, text, strict=strict)
+            seen_include_ucis.add(m.uci().lower())
+        except Exception:
+            pass
+
+    returned_candidate_ucis = {(c.best_move or "").lower() for c in new_items if c.best_move}
+    unique_included = seen_include_ucis.intersection(returned_candidate_ucis)
+
     result = result.model_copy(
         update={
             "result": new_items,
             "returned_n": len(new_items),
             "legal_actions": new_legal_actions,
             "requested_include_moves": list(include_moves or []),
-            "included_move_count": len([m for m in include_moves or [] if m]),
+            "included_move_count": len(unique_included),
         }
     )
 

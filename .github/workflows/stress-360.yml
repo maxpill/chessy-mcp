@@ -64,6 +64,7 @@ jobs:
           set -o pipefail
           uv run python scripts/production_stress_360.py \
             --target "$TARGET_URL" \
+            --expected-sha "${{ steps.deployment.outputs.expected_sha }}" \
             --jsonl-out artifacts/chess_mcp_stress_360.jsonl \
             --md-out artifacts/chess_mcp_stress_360.md 2>&1 | tee stress-360.log
 

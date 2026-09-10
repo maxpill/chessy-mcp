@@ -8,14 +8,16 @@ test suite keep working with their current import paths.
 from __future__ import annotations
 
 import re
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
 
 __all__ = [
+    "SUPPORTED_VERBOSITY_INPUTS",
     "VERBOSITY_COMPACT",
     "VERBOSITY_FULL",
     "VERBOSITY_MINIMAL",
+    "VerbosityInput",
     "compact_mcpeval",
     "error_code_for",
     "format_exception",
@@ -34,6 +36,24 @@ __all__ = [
 VERBOSITY_FULL: Final[str] = "full"
 VERBOSITY_COMPACT: Final[str] = "compact"
 VERBOSITY_MINIMAL: Final[str] = "minimal"
+
+VerbosityInput = Literal[
+    "minimal",
+    "compact",
+    "full",
+    "min",
+    "standard",
+    "default",
+]
+
+SUPPORTED_VERBOSITY_INPUTS: Final[tuple[str, ...]] = (
+    "minimal",
+    "compact",
+    "full",
+    "min",
+    "standard",
+    "default",
+)
 
 _VERBOSITY_ALIASES: Final[dict[str, str]] = {
     "compact": "compact",
@@ -262,6 +282,8 @@ def normalize_termination(term: str | None) -> str | None:
 # duplicated across evaluate_position, top_moves, classify_move, analyze_game.
 _ERROR_CODE_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
     ("INVALID_VERBOSITY", "invalid_verbosity"),
+    ("INVALID_DETAIL", "invalid_detail"),
+    ("INVALID_ARGUMENT", "invalid_argument"),
     ("INVALID_ACTION_TYPE", "invalid_action_type"),
     ("ILLEGAL_ACTION", "illegal_action"),
     ("STRICT", "strict_validation_error"),

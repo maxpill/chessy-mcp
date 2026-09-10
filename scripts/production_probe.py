@@ -248,11 +248,23 @@ async def _probe_mcp(
                     )
                     _print("FAIL", errors[-1])
                 for name, schema in schema_payload.items():
-                    n_desc = (schema.get("properties", {}).get("n", {}) or {}).get(
-                        "description", ""
-                    )
+                    props = schema.get("properties", {})
+                    n_desc = (props.get("n", {}) or {}).get("description", "")
                     if n_desc:
                         _print("INFO", f"  {name}.n description: {n_desc!r}")
+                    if name == "classify_move":
+                        depth_prop = props.get("depth", {})
+                        _print("INFO", f"  {name}.depth default: {depth_prop.get('default')!r}")
+                    verb_prop = props.get("verbosity", {})
+                    if verb_prop:
+                        enum_vals = verb_prop.get("enum")
+                        if not enum_vals and "anyOf" in verb_prop:
+                            for opt in verb_prop["anyOf"]:
+                                if isinstance(opt, dict) and "enum" in opt:
+                                    enum_vals = opt["enum"]
+                                    break
+                        if enum_vals:
+                            _print("INFO", f"  {name}.verbosity enum: {sorted(enum_vals)}")
 
                 evaluate = await _call_tool(
                     session,
@@ -274,28 +286,6 @@ async def _probe_mcp(
                     "analyze_game",
                     {"pgn": "1. e4 e5 2. Nf3 Nc6 *", "depth": depth},
                 )
-
-                # F-005 fix (2026-09-09): schema fingerprint parity. Hash
-                # the public input schemas and compare to the expected
-                # fingerprint. Helps diagnose "ChatGPT shows default 20 but
-                # source says 16" class of drift.
-                schema_payload = {
-                    tool.name: _canonicalize_schema(
-                        getattr(tool, "input_schema", getattr(tool, "inputSchema", {}))
-                    )
-                    for tool in tools_result.tools
-                    if tool.name in EXPECTED_TOOLS
-                }
-                schema_fp = hashlib.sha256(
-                    json.dumps(schema_payload, sort_keys=True, separators=(",", ":")).encode()
-                ).hexdigest()
-                _print("INFO", f"Deployed schema fingerprint sha256={schema_fp}")
-                for name, schema in schema_payload.items():
-                    n_desc = (schema.get("properties", {}).get("n", {}) or {}).get(
-                        "description", ""
-                    )
-                    if n_desc:
-                        _print("INFO", f"  {name}.n description: {n_desc!r}")
 
                 build_values = [
                     str(value)

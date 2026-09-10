@@ -25,6 +25,7 @@ from mcp_server.parsers import _build_board_with_metadata, _history_provenance_f
 from mcp_server.tools._common import (
     VERBOSITY_COMPACT,
     VERBOSITY_MINIMAL,
+    VerbosityInput,
     _compact_mcpeval,
     _minimal_mcpeval,
     _resolve_verbosity,
@@ -53,7 +54,7 @@ async def evaluate_position(
         Field(description="When True, reject non-canonical SAN syntax or move numbers."),
     ] = False,
     verbosity: Annotated[
-        Literal["minimal", "compact", "full"] | None,
+        VerbosityInput | None,
         Field(
             description="Response verbosity: 'full' (default), 'compact', or 'minimal' (aliases 'min', 'standard', 'default' accepted)."
         ),
@@ -75,7 +76,7 @@ async def evaluate_position(
             is the on-demand critical-position evaluator. Bump to 24-26 only when
             d22 still shifts the best move, and to 28-30 only when d24 is unstable.
         strict: When True, reject non-canonical SAN syntax or move numbers (default False).
-        verbosity: "full" (default) or "compact".
+        verbosity: "full" (default), "compact", or "minimal" (aliases "min", "standard", "default" accepted).
         detail: ``standard`` preserves the previous engine payload and adds only
             ``forensics=null``. ``coach`` adds a deterministic position fingerprint
             plus CCT/defender geometry. ``forensic`` additionally echoes the engine
@@ -94,6 +95,11 @@ async def evaluate_position(
         if detail not in {"standard", "coach", "forensic"}:
             raise ValueError(f"INVALID_DETAIL: {detail}")
         verbosity_mode = _resolve_verbosity(verbosity)
+        if verbosity_mode == VERBOSITY_MINIMAL and detail in {"coach", "forensic"}:
+            raise ValueError(
+                "INVALID_ARGUMENT: verbosity='minimal' is incompatible with detail='coach' or 'forensic'. "
+                "Use verbosity='compact' or 'full' for rich forensics."
+            )
         board, input_fen, canonical_fen, fen_was_canonicalized = _build_board_with_metadata(
             fen, moves or [], strict=strict
         )

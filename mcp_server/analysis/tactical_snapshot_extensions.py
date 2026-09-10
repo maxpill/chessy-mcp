@@ -19,7 +19,11 @@ from mcp_server.analysis.forensic_extensions import (
     _discovered_check_evidence,
     _skewer_evidence,
 )
-from mcp_server.analysis.forensics import PIECE_NAMES, PIECE_VALUES
+from mcp_server.analysis.forensics import (
+    PIECE_NAMES,
+    PIECE_VALUES,
+    build_forcing_move_evidence,
+)
 from mcp_server.analysis.position_integrity import (
     MAX_PRESENTATION_MECHANISMS,
     _PRESENTATION_PRIORITY_RANK,
@@ -115,20 +119,7 @@ def _piece_evidence(board: chess.Board, square: chess.Square, piece: chess.Piece
 
 
 def _capture_evidence(board: chess.Board, move: chess.Move) -> ForcingMoveEvidence:
-    captured = _captured_piece(board, move)
-    return ForcingMoveEvidence(
-        uci=move.uci(),
-        san=board.san(move),
-        is_check=board.gives_check(move),
-        is_capture=True,
-        captured_piece=(
-            f"{'white' if captured.color == chess.WHITE else 'black'}_"
-            f"{PIECE_NAMES[captured.piece_type]}"
-            if captured is not None
-            else None
-        ),
-        promotion=PIECE_NAMES.get(move.promotion) if move.promotion else None,
-    )
+    return build_forcing_move_evidence(board, move)
 
 
 def _material_balance(board: chess.Board, color: chess.Color) -> int:
@@ -333,22 +324,7 @@ def _threat_probe(board: chess.Board) -> tuple[list[ForcingMoveEvidence], bool, 
         is_capture = passed.is_capture(move)
         if not (is_check or is_capture or move.promotion is not None):
             continue
-        captured = _captured_piece(passed, move)
-        threats.append(
-            ForcingMoveEvidence(
-                uci=move.uci(),
-                san=passed.san(move),
-                is_check=is_check,
-                is_capture=is_capture,
-                captured_piece=(
-                    f"{'white' if captured.color == chess.WHITE else 'black'}_"
-                    f"{PIECE_NAMES[captured.piece_type]}"
-                    if captured is not None
-                    else None
-                ),
-                promotion=PIECE_NAMES.get(move.promotion) if move.promotion else None,
-            )
-        )
+        threats.append(build_forcing_move_evidence(passed, move))
     threats.sort(key=lambda item: (not item.is_check, not item.is_capture, item.san))
     return threats[:MAX_THREAT_PROBE_MOVES], True, None, scope
 

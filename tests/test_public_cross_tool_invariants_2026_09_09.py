@@ -129,6 +129,40 @@ async def test_invariant_2_terminal_coherence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_invariant_3_rule_action_agreement() -> None:
+    """Invariant 3: 50-move/threefold claimability and automatic terminal outcomes agree across tools."""
+    await server_module._cache.clear()
+    pool = _FixedBestPool(best_move_uci="h8g8")
+    server_module._analyzer_pool = pool
+
+    # 1. 50-move claim position (halfmove clock = 100)
+    claim_fen = "7k/8/6K1/8/8/8/8/Q7 b - - 100 51"
+    ev = await server_module.evaluate_position(claim_fen, depth=4)
+    tm = await server_module.top_moves(claim_fen, n=1, depth=4)
+    cl = await server_module.classify_move(
+        claim_fen, move=None, action_type="claim_draw", depth=4
+    )
+
+    assert ev.can_claim_now is True
+    assert tm.can_claim_now is True
+    assert cl.can_claim_now is True
+    assert "fifty_moves" in ev.claim_reasons_now
+    assert "fifty_moves" in tm.claim_reasons_now
+    assert cl.claim_reason == "fifty_moves"
+
+    # 2. 75-move automatic terminal draw (halfmove clock = 150)
+    term_fen = "7k/8/6K1/8/8/8/8/Q7 b - - 150 76"
+    ev_term = await server_module.evaluate_position(term_fen, depth=4)
+    tm_term = await server_module.top_moves(term_fen, n=1, depth=4)
+
+    assert ev_term.status == "seventyfive_moves"
+    assert tm_term.status == "seventyfive_moves"
+    assert ev_term.recommended_action == "game_over"
+    assert tm_term.recommended_action == "game_over"
+    assert tm_term.returned_n == 0
+
+
+@pytest.mark.asyncio
 async def test_invariant_4_canonical_fen_after_replay() -> None:
     """Same input + moves must yield the same canonical final position across tools."""
     await server_module._cache.clear()
@@ -143,6 +177,28 @@ async def test_invariant_4_canonical_fen_after_replay() -> None:
     # After 1.e4, the white pawn sits on e4 and ranks 2-3 are "PPPP1PPP" / "8".
     assert "PPPP1PPP" in ev.canonical_fen
     assert "PPPP1PPP" in tm.canonical_fen
+
+
+@pytest.mark.asyncio
+async def test_invariant_5_history_provenance() -> None:
+    """Invariant 5: Same board from naked FEN and move replay differ only in history-dependent fields."""
+    await server_module._cache.clear()
+    server_module._analyzer_pool = _FixedBestPool(best_move_uci="e2e4")
+
+    # Replay sequence that returns to startpos twice (threefold repetition)
+    moves = ["Nf3", "Nf6", "Ng1", "Ng8", "Nf3", "Nf6", "Ng1", "Ng8"]
+    ev_history = await server_module.evaluate_position(STARTPOS, moves=moves, depth=4)
+    ev_naked = await server_module.evaluate_position(STARTPOS, depth=4)
+
+    # Board geometry (placement, turn, castling, ep) is identical
+    assert ev_history.canonical_fen.split()[:4] == ev_naked.canonical_fen.split()[:4]
+    assert ev_history.best_move == ev_naked.best_move
+    # History provenance correctly differs
+    assert ev_history.history_completeness == "partial"
+    assert ev_naked.history_completeness == "incomplete"
+    assert ev_history.can_claim_now is True
+    assert "threefold_repetition" in ev_history.claim_reasons_now
+    assert ev_naked.can_claim_now is False
 
 
 @pytest.mark.asyncio

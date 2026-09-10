@@ -33,6 +33,7 @@ from mcp_server.rules.constants import (
     TOP_MOVES_MIN_N,
 )
 from mcp_server.tools._common import (
+    VerbosityInput,
     _resolve_verbosity,
     _tool_error,
     _validate_requested_depth,
@@ -67,7 +68,7 @@ async def top_moves(
         Field(description="When True, reject non-canonical SAN syntax or move numbers."),
     ] = False,
     verbosity: Annotated[
-        Literal["minimal", "compact", "full"] | None,
+        VerbosityInput | None,
         Field(
             description="Response verbosity: 'full' (default), 'compact', or 'minimal' (aliases 'min', 'standard', 'default' accepted)."
         ),
