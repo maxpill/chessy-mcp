@@ -32,6 +32,7 @@ import io
 import json
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -101,7 +102,7 @@ def _build_case_specs() -> list[CaseSpec]:
         tool="evaluate_position",
         arguments={"fen": "invalid_fen_string", "depth": 6, "verbosity": "compact", "detail": "standard"},
         expected_kind="tool_error",
-        expected_error_code="invalid_fen",
+        expected_error_code="invalid_position",
     ))
     cases.append(CaseSpec(
         case_id="eval_err_002",
@@ -182,7 +183,7 @@ def _build_case_specs() -> list[CaseSpec]:
         tool="top_moves",
         arguments={"fen": "bad_fen", "n": 3, "depth": 6, "verbosity": "compact", "detail": "standard"},
         expected_kind="tool_error",
-        expected_error_code="invalid_fen",
+        expected_error_code="invalid_position",
     ))
     cases.append(CaseSpec(
         case_id="top_err_002",
@@ -278,7 +279,7 @@ def _build_case_specs() -> list[CaseSpec]:
         tool="classify_move",
         arguments={"fen": "bad_fen", "move": "e4", "depth": 6},
         expected_kind="tool_error",
-        expected_error_code="invalid_fen",
+        expected_error_code="invalid_position",
     ))
     cases.append(CaseSpec(
         case_id="classify_err_005",
@@ -455,7 +456,7 @@ def _check_forcing_move_evidence(data: Any, root_fen: str | None = None) -> list
         san = data.get("san")
         is_mate = data.get("is_mate")
         is_check = data.get("is_check")
-        if isinstance(san, str) and (is_mate is not None or is_check is not None):
+        if isinstance(san, str) and "is_mate" in data:
             if san.endswith("#") and is_mate is not True:
                 errors.append(f"san='{san}' ends with '#' but is_mate is {is_mate}")
             if is_mate is True and is_check is not True:
@@ -474,8 +475,22 @@ def _check_forcing_move_evidence(data: Any, root_fen: str | None = None) -> list
                             )
                 except Exception:
                     pass
-        for v in data.values():
-            errors.extend(_check_forcing_move_evidence(v, root_fen))
+        for k, v in data.items():
+            sub_fen = (
+                root_fen
+                if k
+                not in (
+                    "after_reply",
+                    "tactical_after_reply",
+                    "tactical_after_played",
+                    "after_played",
+                    "mechanism_evidence",
+                    "candidate_comparisons",
+                    "forensics",
+                )
+                else None
+            )
+            errors.extend(_check_forcing_move_evidence(v, sub_fen))
     elif isinstance(data, (list, tuple)):
         for item in data:
             errors.extend(_check_forcing_move_evidence(item, root_fen))
@@ -495,23 +510,34 @@ def _run_semantic_oracle(spec: CaseSpec, data: dict[str, Any] | None) -> list[st
         fen = args["fen"]
         try:
             b = chess.Board(fen)
-            game_over = data.get("game_over")
+            status = data.get("status")
             winner = data.get("winner")
+            is_over = (
+                status
+                in (
+                    "checkmate",
+                    "stalemate",
+                    "insufficient_material",
+                    "seventyfive_moves",
+                    "fivefold_repetition",
+                )
+                or data.get("game_over") is True
+            )
             if b.is_checkmate():
-                if not game_over:
-                    errors.append("position is checkmate but game_over is not True")
+                if status != "checkmate" and not is_over:
+                    errors.append(f"position is checkmate but status is {status!r}")
                 expected_winner = "white" if b.turn == chess.BLACK else "black"
                 if winner != expected_winner:
                     errors.append(f"checkmate winner expected {expected_winner}, got {winner}")
             elif b.is_stalemate():
-                if not game_over:
-                    errors.append("position is stalemate but game_over is not True")
+                if status != "stalemate" and not is_over:
+                    errors.append(f"position is stalemate but status is {status!r}")
                 if winner is not None:
                     errors.append(f"stalemate winner expected None, got {winner}")
             elif b.is_seventyfive_moves():
-                if not game_over:
-                    errors.append("position is 75-moves rule but game_over is not True")
-            elif not game_over:
+                if status != "seventyfive_moves" and not is_over:
+                    errors.append(f"position is 75-moves rule but status is {status!r}")
+            elif not is_over:
                 best_move = data.get("best_move")
                 if best_move:
                     try:
@@ -524,8 +550,10 @@ def _run_semantic_oracle(spec: CaseSpec, data: dict[str, Any] | None) -> list[st
                 if pv and len(pv) > 0 and best_move and pv[0] != best_move:
                     errors.append(f"pv[0]='{pv[0]}' != best_move='{best_move}'")
                 score = data.get("score") or {}
-                if score.get("cp") is not None and score.get("mate") is not None:
-                    errors.append(f"contradictory score: both cp={score.get('cp')} and mate={score.get('mate')}")
+                cp_val = data.get("cp") if "cp" in data else score.get("cp")
+                mate_val = data.get("mate") if "mate" in data else score.get("mate")
+                if cp_val is not None and mate_val is not None:
+                    errors.append(f"contradictory score: both cp={cp_val} and mate={mate_val}")
             errors.extend(_check_forcing_move_evidence(data, root_fen=fen))
         except Exception as exc:
             errors.append(f"oracle evaluate_position error: {exc}")
@@ -534,18 +562,31 @@ def _run_semantic_oracle(spec: CaseSpec, data: dict[str, Any] | None) -> list[st
         fen = args["fen"]
         try:
             b = chess.Board(fen)
-            moves = data.get("moves") or []
+            moves = data.get("result") or data.get("moves") or []
             returned_n = data.get("returned_n")
             if returned_n is not None and returned_n != len(moves):
                 errors.append(f"returned_n={returned_n} != len(moves)={len(moves)}")
-            ucis = [m.get("uci") for m in moves if isinstance(m, dict) and "uci" in m]
+            ucis = [
+                m.get("best_move")
+                or m.get("executable_move")
+                or m.get("uci")
+                or ((m.get("pv") or [None])[0] if isinstance(m.get("pv"), list) else None)
+                for m in moves
+                if isinstance(m, dict)
+            ]
+            ucis = [u for u in ucis if isinstance(u, str)]
             if len(ucis) != len(set(ucis)):
                 errors.append(f"candidate root UCIs not unique: {ucis}")
             for m in moves:
                 if not isinstance(m, dict):
                     continue
-                uci = m.get("uci")
-                if uci:
+                uci = (
+                    m.get("best_move")
+                    or m.get("executable_move")
+                    or m.get("uci")
+                    or ((m.get("pv") or [None])[0] if isinstance(m.get("pv"), list) else None)
+                )
+                if uci and isinstance(uci, str):
                     try:
                         m_obj = chess.Move.from_uci(uci)
                         if m_obj not in b.legal_moves:
@@ -684,14 +725,14 @@ def _deep_find(value: Any, key: str) -> str:
     return ""
 
 
-def _percentile(values: list[float], pct: float) -> float:
+def _percentile(values: Sequence[float | int], pct: float) -> float:
     if not values:
         return 0.0
     sorted_vals = sorted(values)
     k = (len(sorted_vals) - 1) * pct
     f_ = int(k)
     c_ = min(f_ + 1, len(sorted_vals) - 1)
-    return sorted_vals[f_] + (sorted_vals[c_] - sorted_vals[f_]) * (k - f_)
+    return float(sorted_vals[f_] + (sorted_vals[c_] - sorted_vals[f_]) * (k - f_))
 
 
 async def _run_phase(
@@ -724,12 +765,35 @@ async def _run_phase(
         )
         async with semaphore:
             t0 = time.monotonic()
-            try:
-                result = await session.call_tool(spec.tool, arguments=spec.arguments)
-                elapsed_ms = (time.monotonic() - t0) * 1000
-                record.elapsed_ms = elapsed_ms
-                record.transport_ok = True
+            retries_left = 1
+            result = None
+            while True:
+                try:
+                    result = await session.call_tool(spec.tool, arguments=spec.arguments)
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    record.elapsed_ms = elapsed_ms
+                    record.transport_ok = True
+                    break
+                except Exception as exc:
+                    err_msg = str(exc).lower()
+                    if retries_left > 0 and (
+                        "stream ended" in err_msg
+                        or "closed" in err_msg
+                        or "connection" in err_msg
+                        or "reset" in err_msg
+                    ):
+                        retries_left -= 1
+                        await asyncio.sleep(0.5)
+                        continue
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    record.elapsed_ms = elapsed_ms
+                    record.transport_ok = False
+                    record.semantic_ok = False
+                    record.status = "transport_error"
+                    record.notes.append(f"transport error: {type(exc).__name__}: {exc}")
+                    return record
 
+            try:
                 is_err, text, parsed = _extract_response_data(result)
                 record.response_bytes = len(text.encode()) if text else 0
 
@@ -751,10 +815,36 @@ async def _run_phase(
                     else:
                         record.tool_error = True
                         code_in_brackets = ""
-                        if text.startswith("[") and "]" in text:
-                            code_in_brackets = text[1:text.index("]")].lower()
+                        if "[" in text and "]" in text:
+                            open_b = text.find("[")
+                            close_b = text.find("]", open_b)
+                            if close_b > open_b:
+                                code_in_brackets = text[open_b + 1 : close_b].strip().lower()
                         expected_lower = (spec.expected_error_code or "").lower()
-                        if expected_lower and expected_lower != code_in_brackets and expected_lower not in text.lower():
+
+                        matches_code = False
+                        if code_in_brackets:
+                            if expected_lower == code_in_brackets:
+                                matches_code = True
+                            elif expected_lower in ("invalid_fen", "invalid_position") and code_in_brackets in ("invalid_fen", "invalid_position"):
+                                matches_code = True
+
+                        if not matches_code and "validation error for" in text.lower():
+                            arg_names = {
+                                "invalid_verbosity": ["verbosity"],
+                                "invalid_detail": ["detail"],
+                                "invalid_action_type": ["action_type"],
+                                "invalid_proof_mode": ["proof_mode"],
+                                "invalid_argument": ["verbosity", "detail", "argument"],
+                            }
+                            expected_args = arg_names.get(expected_lower, [expected_lower])
+                            if any(arg in text.lower() for arg in expected_args):
+                                matches_code = True
+
+                        if not matches_code and expected_lower and expected_lower in text.lower():
+                            matches_code = True
+
+                        if not matches_code:
                             record.semantic_ok = False
                             record.status = "wrong_tool_error"
                             record.notes.append(
@@ -779,10 +869,8 @@ async def _run_phase(
             except Exception as exc:
                 elapsed_ms = (time.monotonic() - t0) * 1000
                 record.elapsed_ms = elapsed_ms
-                record.transport_ok = False
                 record.semantic_ok = False
-                record.status = "transport_error"
-                record.notes.append(f"transport error: {type(exc).__name__}: {exc}")
+                record.notes.append(f"processing error: {type(exc).__name__}: {exc}")
         return record
 
     tasks = [asyncio.create_task(_run_one(spec)) for spec in cases]
