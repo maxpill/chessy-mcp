@@ -9,13 +9,13 @@ on:
         default: https://mcp.trychessy.com
         type: string
       expected_sha:
-        description: Expected deployed git SHA; blank means current ${{ github.sha }}
+        description: Expected deployed git SHA; leave blank to use the workflow commit SHA
         required: false
         default: ""
         type: string
   pull_request:
     paths:
-      - "scripts/production_stress_360.py"
+      - "scripts/**"
       - ".github/workflows/stress-360.yml"
 
 concurrency:
@@ -30,8 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      TARGET_URL: ${{ inputs.target_url }}
-      EXPECTED_SHA_INPUT: ${{ inputs.expected_sha }}
+      TARGET_URL: ${{ inputs.target_url || 'https://mcp.trychessy.com' }}
+      EXPECTED_SHA_INPUT: ${{ inputs.expected_sha || '' }}
     steps:
       - uses: actions/checkout@v5
 

@@ -107,7 +107,7 @@ def _probe_dns_tls(base_url: str) -> list[str]:
     try:
         addresses = sorted(
             {
-                sockaddr[0]
+                str(sockaddr[0])
                 for _family, _socktype, _proto, _canonname, sockaddr in socket.getaddrinfo(
                     host, port, type=socket.SOCK_STREAM
                 )

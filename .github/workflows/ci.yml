@@ -54,6 +54,12 @@ jobs:
       - name: Pyright
         run: uv run pyright mcp_server core
 
+      - name: Validate workflow syntax
+        run: uv run pytest -q tests/test_workflow_syntax.py
+
+      - name: Validate stress harness cases
+        run: uv run python scripts/chess_mcp_stress.py --validate-cases-only
+
       - name: Full pytest suite
         run: uv run pytest -q
 
