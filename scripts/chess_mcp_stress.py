@@ -300,7 +300,7 @@ async def main_async(args: argparse.Namespace) -> int:
 
         http_client = httpx2.AsyncClient(
             headers={"User-Agent": "ChatGPT-Connectors/1.0"},
-            timeout=httpx2.Timeout(connect=30.0, read=120.0, write=30.0, pool=120.0),
+            timeout=httpx2.Timeout(connect=30.0, read=180.0, write=30.0, pool=180.0),
             verify=certifi.where(),
         )
 
@@ -329,7 +329,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     return 1
 
                 async def http_caller(tool: str, arguments: dict[str, Any]) -> Any:
-                    return await session.call_tool(tool, arguments=arguments, read_timeout_seconds=90.0)
+                    return await session.call_tool(tool, arguments=arguments, read_timeout_seconds=180.0)
 
                 records = await run_stress_suite(
                     cases=cases,

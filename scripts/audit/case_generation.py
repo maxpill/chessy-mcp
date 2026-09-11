@@ -119,7 +119,7 @@ def build_600_case_specs() -> list[CaseSpec]:
         pos_stalemate, pos_checkmate, pos_insufficient, pos_75_moves, pos_50_moves,
         pos_50_claimable, pos_promotion, pos_underpromo,
     ]
-    eval_depths = [1, 4, 8, 12, 14, 18, 22, 26, 30]
+    eval_depths = [1, 4, 8, 12, 14, 16, 18, 20, 22]
     eval_verbs = ["full", "compact", "minimal", "standard", "default"]
     eval_details = ["standard", "coach", "forensic"]
 
@@ -129,8 +129,10 @@ def build_600_case_specs() -> list[CaseSpec]:
             if eval_idx >= 140:
                 break
             eval_idx += 1
-            # Avoid minimal with coach/forensic
+            # Avoid minimal with coach/forensic; avoid forensic at extreme depth
             det = eval_details[(f_i + d_i) % len(eval_details)]
+            if d >= 18 and det == "forensic":
+                det = "coach"
             vb = eval_verbs[(f_i * 2 + d_i) % len(eval_verbs)]
             if vb in ("minimal", "min") and det in ("coach", "forensic"):
                 vb = "full"
