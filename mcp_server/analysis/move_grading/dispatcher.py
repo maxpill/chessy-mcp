@@ -128,13 +128,44 @@ def dispatch_score(
                     }
                 )
             if is_best_engine_move:
-                return res_score.model_copy(
+                res_score = res_score.model_copy(
                     update={
                         "is_best_engine_move": True,
                         "is_best_action": True,
                         "action_equivalent": True,
                     }
                 )
+
+        if canonical_best_action in ("claim_draw", "claim_draw_with_intended_move"):
+            if action_type in ("claim_draw", "claim_draw_with_intended_move"):
+                res_score = res_score.model_copy(
+                    update={"missed_draw_claim": False, "missed_draw_claim_kind": "none"}
+                )
+            else:
+                is_intended_claim = bool(
+                    canonical_best_action == "claim_draw_with_intended_move"
+                    and res_score.is_best_engine_move
+                    and (res_score.raw_centipawn_loss is None or res_score.raw_centipawn_loss == 0)
+                )
+                if is_intended_claim:
+                    res_score = res_score.model_copy(
+                        update={
+                            "missed_draw_claim": False,
+                            "action_equivalent": True,
+                            "missed_draw_claim_kind": "none",
+                        }
+                    )
+                else:
+                    res_score = res_score.model_copy(
+                        update={
+                            "missed_draw_claim": True,
+                            "is_best_action": False,
+                            "action_equivalent": False,
+                            "missed_draw_claim_kind": (
+                                "immediate" if rule_before.can_claim_now else "intended_move"
+                            ),
+                        }
+                    )
         return res_score
 
     # win_before = is_before_winning(before_mover, mover_mate_before)

@@ -222,7 +222,8 @@ async def top_moves(
                 proof_defenses=clamped_proof_defenses or 3,
                 strict=strict,
             )
-            result = upgrade_top_moves_forensics(result, board)
+            if detail != "standard":
+                result = upgrade_top_moves_forensics(result, board)
 
         top_updates: dict[str, Any] = {
             "requested_proof_defenses": requested_proof_defenses,
@@ -234,8 +235,6 @@ async def top_moves(
                 _compact_mcpeval(c) if not getattr(c, "is_compact", False) else c
                 for c in result.result
             ]
-            if detail == "standard":
-                top_updates["forensics"] = None
         elif verbosity_mode == "minimal":
             top_updates["result"] = [
                 _minimal_mcpeval(c) if not getattr(c, "is_minimal", False) else c

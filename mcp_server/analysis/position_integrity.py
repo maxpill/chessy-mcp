@@ -401,10 +401,17 @@ def build_rich_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
     # re-sorted by presentation_priority bucket so a coaching consumer can
     # surface the top-N consequential mechanisms without re-implementing
     # the ranking. The exhaustive mechanism_candidates list is preserved.
+    has_decisive_tactics = any(
+        m.presentation_priority in ("immediate_mate", "checking_move", "capturing_move")
+        for m in mechanisms
+    )
     presentation_filtered = [
         m
         for m in mechanisms
-        if not (m.mechanism == "discovered_attack_candidate" and m.relevance == "pure_geometry")
+        if not (
+            m.relevance == "pure_geometry"
+            and (has_decisive_tactics or m.mechanism == "discovered_attack_candidate")
+        )
     ]
     presentation = sorted(
         presentation_filtered,

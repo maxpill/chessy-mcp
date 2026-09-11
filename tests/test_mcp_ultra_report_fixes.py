@@ -126,7 +126,7 @@ async def test_act_004_no_discontinuity_at_zero():
     cl_neg = await server_module.classify_move(fen, "Ke2", moves=moves, depth=1)
     assert cl_neg.move_class in (MoveClass.BEST, MoveClass.GOOD)
     assert cl_neg.effective_loss is not None and cl_neg.effective_loss <= 20
-    assert cl_neg.missed_draw_claim is False
+    assert cl_neg.missed_draw_claim is True
 
     await server_module._cache.clear()
     # Test depth with +1 cp
@@ -134,7 +134,7 @@ async def test_act_004_no_discontinuity_at_zero():
     cl_pos = await server_module.classify_move(fen, "Ke2", moves=moves, depth=14)
     assert cl_pos.move_class in (MoveClass.BEST, MoveClass.GOOD)
     assert cl_pos.effective_loss is not None and cl_pos.effective_loss <= 20
-    assert cl_pos.missed_draw_claim is False
+    assert cl_pos.missed_draw_claim is True
 
 
 

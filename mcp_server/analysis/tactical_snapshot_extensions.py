@@ -405,10 +405,17 @@ def extend_tactical_snapshot(board: chess.Board, snapshot: TacticalSnapshot) -> 
     hanging.sort(key=lambda item: (item.target.square, item.capture.san, item.reason))
 
     threats, probe_available, probe_reason, probe_scope = _threat_probe(board)
+    has_decisive_tactics = any(
+        m.presentation_priority in ("immediate_mate", "checking_move", "capturing_move")
+        for m in candidates
+    )
     pres_candidates = [
         m
         for m in candidates
-        if not (m.mechanism == "discovered_attack_candidate" and m.relevance == "pure_geometry")
+        if not (
+            m.relevance == "pure_geometry"
+            and (has_decisive_tactics or m.mechanism == "discovered_attack_candidate")
+        )
     ]
     presentation = sorted(
         pres_candidates,

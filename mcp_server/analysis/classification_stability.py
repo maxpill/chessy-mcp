@@ -270,16 +270,18 @@ def _comparison(
         "verified_mate_before": verified_mate_before,
         "verified_mate_after": verified_mate_after,
         "verified_pv_before_prefix": list(_pv_prefix(verified_before)),
-        "verified_pv_after_prefix": list(_pv_prefix(verified_after)),
         "class_stable": verified_class == initial_class,
+        "classification_stable": verified_class == initial_class,
         "best_move_stable": verified_best == initial_best,
         "mate_status_stable": (
             verified_mate_before == initial_mate_before
             and verified_mate_after == initial_mate_after
         ),
+        "evaluation_band_stable": numeric.get("evaluation_magnitude_stable"),
         "tactical_context_for_pv_stability": tactical_context,
         "pv_before_prefix_stable": before_pv_stable,
         "pv_after_prefix_stable": after_pv_stable,
+        "pv_prefix_stable": bool(before_pv_stable and after_pv_stable) if (before_pv_stable is not None and after_pv_stable is not None) else None,
         "tactical_pv_stable": tactical_pv_stable,
         **numeric,
     }
@@ -406,6 +408,12 @@ async def verify_forensic_classification_stability(
             "verification_convergence": None,
             "first_verification_disagreement_reasons": [],
             "stable": None,
+            "classification_stable": True,
+            "best_move_stable": True,
+            "pv_prefix_stable": True,
+            "mate_status_stable": True,
+            "evaluation_band_stable": True,
+            "verification_depths": [depth],
             "verification_uses_cached_rule_aware_evaluator": evaluate_position is not None,
             "stability_thresholds": {
                 "wdl_loss_shift_escalate_percentage_points": _WDL_SHIFT_ESCALATE_PP,
@@ -530,6 +538,17 @@ async def verify_forensic_classification_stability(
             mover=board_before.turn,
         )
         stability.update(final_comparison)
+        depths = [
+            d
+            for d in [
+                stability.get("initial_depth"),
+                stability.get("verification_depth"),
+                stability.get("escalation_depth"),
+            ]
+            if d is not None
+        ]
+        if depths:
+            stability["verification_depths"] = sorted(set(depths))
         stability["stable"] = bool(
             final_comparison["class_stable"]
             and final_comparison["best_move_stable"]

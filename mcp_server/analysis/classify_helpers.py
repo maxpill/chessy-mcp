@@ -15,8 +15,102 @@ from core.engines.analyzer import pv_to_san
 from core.engines.types import Eval
 
 from mcp_server.models import MCPMoveAnalysis
+from mcp_server.models.legacy import AnalysisConfidence
 
 ActionType = Literal["play_move", "claim_draw", "claim_draw_with_intended_move"]
+
+
+def classify_draw_claim_delta(
+    *,
+    best_action: str,
+    played_action: str,
+    action_equivalent: bool,
+    can_claim_now: bool = False,
+    can_claim_with_intended_move: bool = False,
+    claim_reason: str | None = None,
+    is_best_engine_move: bool = False,
+    raw_cpl: int | None = None,
+) -> dict[str, Any]:
+    """Authoritative draw claim delta evaluator shared across tools."""
+    claim_available = bool(can_claim_now or can_claim_with_intended_move)
+    kind = "none"
+    if can_claim_now:
+        kind = "immediate"
+    elif can_claim_with_intended_move:
+        kind = "intended_move"
+
+    is_intended_claim = bool(
+        best_action == "claim_draw_with_intended_move"
+        and is_best_engine_move
+        and (raw_cpl is None or raw_cpl == 0)
+    )
+
+    missed = bool(
+        best_action in ("claim_draw", "claim_draw_with_intended_move")
+        and not action_equivalent
+        and played_action not in ("claim_draw", "claim_draw_with_intended_move")
+        and not is_intended_claim
+    )
+
+    return {
+        "available": claim_available,
+        "kind": kind,
+        "reason": claim_reason,
+        "best_action": best_action,
+        "played_action": played_action,
+        "equivalent": action_equivalent,
+        "missed_draw_claim": missed,
+        "missed_draw_claim_kind": kind if missed else "none",
+    }
+
+
+def compute_analysis_confidence(
+    eval_before: Any,
+    eval_after: Any,
+    *,
+    requested_depth: int | None,
+    searched_depth: int | None,
+    board_after: chess.Board | None = None,
+) -> AnalysisConfidence:
+    """Compute confidence signal based on search depth and exact rule/mate evidence."""
+    effective_depth = searched_depth if searched_depth is not None else requested_depth
+    is_terminal = bool(
+        (board_after and board_after.is_game_over(claim_draw=False))
+        or (eval_after and getattr(eval_after, "status", None) in (
+            "checkmate", "stalemate", "insufficient_material", "seventyfive_moves", "fivefold_repetition"
+        ))
+    )
+    is_mate = bool(
+        (eval_after and getattr(eval_after, "mate", None) is not None)
+        or (eval_before and getattr(eval_before, "mate", None) is not None)
+    )
+    if is_terminal or is_mate:
+        return AnalysisConfidence(
+            level="high",
+            reason_codes=["EXACT_CHESS_RULE_OR_MATE"],
+            requested_depth=requested_depth,
+            searched_depth=searched_depth,
+        )
+    if effective_depth is not None and effective_depth <= 6:
+        return AnalysisConfidence(
+            level="low",
+            reason_codes=["SHALLOW_SEARCH_DEPTH"],
+            requested_depth=requested_depth,
+            searched_depth=searched_depth,
+        )
+    if effective_depth is not None and effective_depth <= 11:
+        return AnalysisConfidence(
+            level="medium",
+            reason_codes=["MODERATE_SEARCH_DEPTH"],
+            requested_depth=requested_depth,
+            searched_depth=searched_depth,
+        )
+    return AnalysisConfidence(
+        level="normal",
+        reason_codes=[],
+        requested_depth=requested_depth,
+        searched_depth=searched_depth,
+    )
 
 
 def best_san_for_score(
@@ -145,6 +239,20 @@ def build_classification(
     else:
         best_post_cp = eval_before.cp
         best_post_mate = eval_before.mate
+
+    req_depth = getattr(eval_before, "requested_depth", None) or getattr(eval_before, "depth", None)
+    srch_depth = getattr(eval_before, "searched_depth", None) or getattr(eval_before, "depth", None)
+    confidence = compute_analysis_confidence(
+        eval_before,
+        eval_after,
+        requested_depth=req_depth,
+        searched_depth=srch_depth,
+        board_after=board_after,
+    )
+    final_warning = syntax_warning
+    if final_warning is None and confidence.level == "low":
+        final_warning = "SHALLOW_DEPTH_CLASSIFICATION_UNSTABLE"
+
     return MCPMoveAnalysis(
         played=played_uci,
         played_san=played_san,
@@ -168,7 +276,7 @@ def build_classification(
         best_line_san_truncated=bool(eval_before.pv and len(eval_before.pv) > 6),
         played_line_san=played_san,
         played_continuation_san=played_continuation,
-        syntax_warning=syntax_warning,
+        syntax_warning=final_warning,
         action_type=action_type,
         best_action=score.best_action,
         is_best_action=score.is_best_action,
@@ -207,6 +315,7 @@ def build_classification(
         played_canonical_value=played_value,
         best_canonical_value=best_value,
         missed_draw_claim=score.missed_draw_claim,
+        missed_draw_claim_kind=getattr(score, "missed_draw_claim_kind", "none"),
         conceded_draw_claim=score.conceded_draw_claim,
         claim_reason=score.claim_reason,
         claim_move=score.claim_move,
@@ -249,8 +358,9 @@ def build_classification(
             )
         ),
         move_quality_class=score.move_class.value,
-        requested_depth=getattr(eval_before, "requested_depth", None) or getattr(eval_before, "depth", None),
-        searched_depth=getattr(eval_before, "searched_depth", None) or getattr(eval_before, "depth", None),
+        requested_depth=req_depth,
+        searched_depth=srch_depth,
+        analysis_confidence=confidence,
     )
 
 

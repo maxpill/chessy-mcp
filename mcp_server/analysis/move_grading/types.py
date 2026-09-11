@@ -29,5 +29,27 @@ def finalize_score(
     if score.is_best_engine_move and canonical_best_action == action_type:
         score.action_equivalent = True
         score.is_best_action = True
+
+    if canonical_best_action in ("claim_draw", "claim_draw_with_intended_move"):
+        if action_type in ("claim_draw", "claim_draw_with_intended_move"):
+            score.missed_draw_claim = False
+            score.missed_draw_claim_kind = "none"
+        else:
+            is_intended_claim = bool(
+                canonical_best_action == "claim_draw_with_intended_move"
+                and score.is_best_engine_move
+                and (score.raw_centipawn_loss is None or score.raw_centipawn_loss == 0)
+            )
+            if is_intended_claim:
+                score.missed_draw_claim = False
+                score.action_equivalent = True
+                score.missed_draw_claim_kind = "none"
+            else:
+                score.missed_draw_claim = True
+                score.is_best_action = False
+                score.action_equivalent = False
+                score.missed_draw_claim_kind = (
+                    "immediate" if rule_before.can_claim_now else "intended_move"
+                )
     return score
 

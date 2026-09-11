@@ -64,7 +64,7 @@ async def test_claim50_persist_001_no_false_blunder_when_draw_preserved():
     assert res.centipawn_loss == 0
     assert res.raw_centipawn_loss == 0
     assert res.effective_loss == 0
-    assert res.action_equivalent is True
+    assert res.action_equivalent is False
     assert res.classification_verified is True
 
 

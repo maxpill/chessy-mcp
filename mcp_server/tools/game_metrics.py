@@ -175,6 +175,7 @@ def _compute_game_metrics(
             (cpl is not None and cpl >= 150)
             or (effective_loss is not None and effective_loss >= 150)
             or mc in ("blunder", "mistake")
+            or score.missed_draw_claim
         ):
             turning_points.append(
                 PlyAnalysisItem(
@@ -192,6 +193,7 @@ def _compute_game_metrics(
                     best_move_san=best_san,
                     best_action=score.best_action,
                     missed_draw_claim=score.missed_draw_claim,
+                    missed_draw_claim_kind=getattr(score, "missed_draw_claim_kind", "none"),
                     conceded_draw_claim=score.conceded_draw_claim,
                     claim_reason=score.claim_reason,
                     claim_move=score.claim_move,

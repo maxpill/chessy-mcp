@@ -33,6 +33,15 @@ def _score_played_move(*args: Any, **kwargs: Any) -> Any:
     return _impl(*args, **kwargs)
 
 
+class AnalysisConfidence(BaseModel):
+    """Evidential strength signal for engine evaluation and move classification."""
+
+    level: Literal["low", "medium", "normal", "high"] = "normal"
+    reason_codes: list[str] = Field(default_factory=list)
+    requested_depth: int | None = None
+    searched_depth: int | None = None
+
+
 class PlayedMoveScore(BaseModel):
     """Per-move score returned from ``score_played_move``."""
 
@@ -54,6 +63,7 @@ class PlayedMoveScore(BaseModel):
     action_equivalent: bool = False
     action_type: str = "play_move"
     missed_draw_claim: bool = False
+    missed_draw_claim_kind: Literal["none", "immediate", "intended_move"] = "none"
     conceded_draw_claim: bool = False
     claim_reason: str | None = None
     claim_move: str | None = None
@@ -126,6 +136,7 @@ class MCPMoveAnalysis(BaseModel):
     played_canonical_value: int | None = None
     best_canonical_value: int | None = None
     missed_draw_claim: bool = False
+    missed_draw_claim_kind: Literal["none", "immediate", "intended_move"] = "none"
     conceded_draw_claim: bool = False
     claim_reason: str | None = None
     claim_move: str | None = None
@@ -138,6 +149,7 @@ class MCPMoveAnalysis(BaseModel):
     move_quality_class: str = "best"
     requested_depth: int | None = None
     searched_depth: int | None = None
+    analysis_confidence: AnalysisConfidence | None = None
 
     @computed_field  # type: ignore[misc]
     @property
@@ -178,6 +190,17 @@ class MCPMoveAnalysis(BaseModel):
             and not self.action_equivalent
         ):
             self.is_best_action = False
+        if self.missed_draw_claim:
+            self.is_best_action = False
+            self.action_equivalent = False
+            if self.action_quality_class in ("best", "good"):
+                self.action_quality_class = "suboptimal_rule_action"
+            if self.action_class in ("best", "good"):
+                self.action_class = "suboptimal_rule_action"
+            if self.missed_draw_claim_kind == "none":
+                self.missed_draw_claim_kind = (
+                    "immediate" if self.can_claim_now else "intended_move"
+                )
         return self
 
     @classmethod
@@ -285,6 +308,7 @@ class MCPMoveAnalysis(BaseModel):
             played_action_obj=played_action_obj,
             best_action_obj=best_action_payload,
             missed_draw_claim=score.missed_draw_claim,
+            missed_draw_claim_kind=getattr(score, "missed_draw_claim_kind", "none"),
             conceded_draw_claim=score.conceded_draw_claim,
             claim_reason=score.claim_reason,
             claim_move=score.claim_move,
@@ -312,6 +336,7 @@ class PlyAnalysisItem(BaseModel):
     best_move_san: str | None = None
     best_action: str = "play_move"
     missed_draw_claim: bool = False
+    missed_draw_claim_kind: Literal["none", "immediate", "intended_move"] = "none"
     conceded_draw_claim: bool = False
     claim_reason: str | None = None
     claim_move: str | None = None
