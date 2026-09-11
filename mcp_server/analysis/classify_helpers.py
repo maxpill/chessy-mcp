@@ -119,13 +119,29 @@ def build_classification(
         score.best_action, eval_before, board, board.turn
     )
 
-    is_same_move = (
+    is_same_move = bool(
         eval_before.best_move and played_uci and eval_before.best_move.lower() == played_uci.lower()
     )
-    unify_best_with_played = is_same_move and action_type == "play_move"
+    is_same_action = (
+        action_type == score.best_action
+        and (
+            action_type != "play_move"
+            or is_same_move
+            or score.is_best_action
+            or score.is_best_engine_move
+        )
+    )
+    unify_best_with_played = is_same_action and action_type == "play_move"
     if unify_best_with_played:
         best_post_cp = eval_after.cp
         best_post_mate = eval_after.mate
+        best_outcome = played_outcome
+        best_value = played_value
+    elif is_same_action:
+        best_post_cp = eval_before.cp
+        best_post_mate = eval_before.mate
+        best_outcome = played_outcome
+        best_value = played_value
     else:
         best_post_cp = eval_before.cp
         best_post_mate = eval_before.mate

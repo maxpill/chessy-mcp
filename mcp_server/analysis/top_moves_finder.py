@@ -213,6 +213,8 @@ class TopMovesFinder:
             for idx, item in enumerate(res_list, start=1):
                 prov = dict(item.search_provenance or {})
                 prov["multipv"] = idx
+                if "score_comparability" not in prov:
+                    prov["score_comparability"] = "same_root_multipv"
                 res_list[idx - 1] = item.model_copy(update={"multipv": idx, "search_provenance": prov})
             await self._cache_set_top_moves(cache_key, res_list)
             return res_list

@@ -434,6 +434,12 @@ class GameAnalyzer:
         identity = self._identity(pool)
 
         if not moves:
+            if getattr(metadata, "empty_game_reason", None) is None:
+                metadata.empty_game_reason = "no_mainline_moves"
+                if not strict:
+                    metadata.metadata_warnings.append(
+                        "Input PGN contains no mainline moves; returning a zero-ply game."
+                    )
             detected_opening, detected_eco = (
                 lookup_opening([])[:2] if is_standard_start else (None, None)
             )
@@ -507,7 +513,11 @@ class GameAnalyzer:
                 accuracy_method="win_probability_logistic",
                 mate_penalty_policy="1000_cp_mate_transition",
                 coaching=zero_ply_coaching,
-                requested_max_critical_moments=raw_requested_max_critical_moments or max_critical_moments,
+                requested_max_critical_moments=(
+                    raw_requested_max_critical_moments
+                    if raw_requested_max_critical_moments is not None
+                    else max_critical_moments
+                ),
                 clamped_max_critical_moments=max_critical_moments,
                 returned_critical_moments=len(zero_ply_coaching.critical_moments) if zero_ply_coaching else 0,
                 empty_game_reason=getattr(metadata, "empty_game_reason", None),
@@ -639,7 +649,11 @@ class GameAnalyzer:
             accuracy_method="win_probability_logistic",
             mate_penalty_policy="1000_cp_mate_transition",
             coaching=coaching,
-            requested_max_critical_moments=raw_requested_max_critical_moments or max_critical_moments,
+            requested_max_critical_moments=(
+                raw_requested_max_critical_moments
+                if raw_requested_max_critical_moments is not None
+                else max_critical_moments
+            ),
             clamped_max_critical_moments=max_critical_moments,
             returned_critical_moments=len(coaching.critical_moments) if coaching else 0,
             empty_game_reason=getattr(metadata, "empty_game_reason", None),

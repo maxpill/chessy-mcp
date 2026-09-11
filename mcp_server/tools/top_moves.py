@@ -130,7 +130,7 @@ async def top_moves(
 
     Continuation-endpoint reconstruction adds no new Stockfish search; it uses
     only candidate PVs that were already returned by the existing engine work.
-    ``proof_defenses`` controls the sampled defense count and is clamped to 1-8.
+    ``proof_defenses`` controls the sampled defense count (valid minimum is 1 and lower values are rejected; values above 8 are clamped to 8).
 
     Action semantics:
     - Root candidate action: ``recommended_action`` / ``root_candidate_action`` on each candidate
@@ -165,7 +165,7 @@ async def top_moves(
                 f"INVALID_ARGUMENT: proof_defenses must be >= 1 in tactical proof mode (got {proof_defenses})"
             )
         clamped_proof_defenses = (
-            max(1, min(int(proof_defenses), 8)) if proof_mode == "tactical" else None
+            min(int(proof_defenses), 8) if proof_mode == "tactical" else None
         )
         requested_proof_defenses = proof_defenses if proof_mode == "tactical" else None
 

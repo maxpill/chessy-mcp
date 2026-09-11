@@ -91,11 +91,7 @@ async def evaluate_candidate(
         pv=candidate.pv,
         depth=candidate.depth,
     )
-    cand_recommended_action = (
-        "game_over"
-        if (cand_post_terminal is not None and cand_post_terminal != "checkmate")
-        else "play_move"
-    )
+    cand_recommended_action = "play_move"
     cand_best_action_obj = _candidate_best_action_obj(
         candidate=candidate,
         board=board,
@@ -124,7 +120,7 @@ async def evaluate_candidate(
             "build_sha": identity["build_sha"],
             "engine_config": identity["engine_config"],
             "best_move": candidate.best_move,
-            "executable_move": candidate.best_move if cand_recommended_action == "play_move" else None,
+            "executable_move": candidate.best_move,
             "post_terminal_status": cand_post_terminal,
             "candidate_san": cand_san_val,
             "post_can_claim_draw": cand_can_claim_draw,
@@ -141,6 +137,7 @@ async def evaluate_candidate(
                 "kind": "multipv_root",
                 "depth": getattr(candidate, "depth", depth),
                 "multipv": multipv if multipv is not None else getattr(candidate, "multipv", 1),
+                "score_comparability": "same_root_multipv",
             },
             "post_state_cp": post_state_cp,
             "post_state_mate": post_state_mate,
@@ -256,13 +253,6 @@ def _candidate_best_action_obj(
     cand_winner: str | None = None,
     cand_rule: Any = None,
 ) -> dict[str, Any]:
-    if cand_post_terminal is not None and cand_post_terminal != "checkmate":
-        outcome = "draw"
-        return {
-            "type": "game_over",
-            "outcome": outcome,
-            "reason": cand_post_terminal,
-        }
     bm_uci = candidate.best_move or ""
     bm_san = cand_san_val
     if bm_san is None and bm_uci and board is not None:

@@ -321,21 +321,24 @@ def score_cp_to_mate(
             action_type=action_type,
         )
 
+    # Outcome dominance (audit P0): a move discovering a forced win strictly
+    # dominates a root engine move with only finite centipawns.
+    is_forced_win_discovery = mover_mate_after > 0 and eval_before.mate is None
+    effective_best_move = is_best_engine_move or is_forced_win_discovery
+
     score = PlayedMoveScore(
-        move_class=MoveClass.BEST if is_best_engine_move else MoveClass.GOOD,
+        move_class=MoveClass.BEST if effective_best_move else MoveClass.GOOD,
         centipawn_loss=0,
         raw_centipawn_loss=0,
         raw_centipawn_delta=0,
         mate_distance_loss=0,
         effective_loss=0,
         loss_kind="none",
-        is_best_engine_move=is_best_engine_move,
+        is_best_engine_move=effective_best_move,
         win_loss=0.0,
         best_action=canonical_best_action,
-        is_best_action=is_best_engine_move,
-        # Bug fix (chessy-mcp-deep-audit §5): action_equivalent requires the
-        # same action_type as canonical_best_action.
-        action_equivalent=is_best_engine_move and canonical_best_action == action_type,
+        is_best_action=effective_best_move,
+        action_equivalent=effective_best_move and canonical_best_action == action_type,
         missed_draw_claim=False,
         conceded_draw_claim=False,
         claim_reason=None,

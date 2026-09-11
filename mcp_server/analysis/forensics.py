@@ -467,9 +467,10 @@ async def _candidate_evidence(
         search_provenance={
             "kind": "candidate_research",
             "depth": getattr(ev, "depth", depth),
+            "score_comparability": "independent_search",
         }
         if ev is not None
-        else {"kind": "terminal", "depth": 0},
+        else {"kind": "terminal", "depth": 0, "score_comparability": "exact_rule"},
         opponent_best_reply=_reply_from_eval(post, ev) if ev is not None else None,
         tactical_snapshot_after=snapshot,
         continuation_uci=continuation.uci,

@@ -86,8 +86,8 @@ class MCPEval(BaseModel):
         deprecated=True,
     )
     legal_rule_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
-    legal_move_uci: list[str] = Field(default_factory=list[str])
-    board_legal_move_uci: list[str] = Field(default_factory=list[str])
+    legal_move_uci: list[str] | None = Field(default_factory=list[str])
+    board_legal_move_uci: list[str] | None = Field(default_factory=list[str])
     multipv: int | None = None
     search_provenance: dict[str, Any] | None = None
     legal_move_count: int | None = None
@@ -213,10 +213,11 @@ class MCPEval(BaseModel):
     def _enforce_inv(self) -> MCPEval:
         if self.root_candidate_action is None:
             self.root_candidate_action = self.recommended_action
-        if not self.board_legal_move_uci and self.legal_move_uci:
-            self.board_legal_move_uci = list(self.legal_move_uci)
-        elif not self.legal_move_uci and self.board_legal_move_uci:
-            self.legal_move_uci = list(self.board_legal_move_uci)
+        if self.board_legal_move_uci is not None and self.legal_move_uci is not None:
+            if not self.board_legal_move_uci and self.legal_move_uci:
+                self.board_legal_move_uci = list(self.legal_move_uci)
+            elif not self.legal_move_uci and self.board_legal_move_uci and self.recommended_action != "game_over":
+                self.legal_move_uci = list(self.board_legal_move_uci)
         if self.recommended_action == "game_over":
             self.executable_move = None
         return self
@@ -284,8 +285,10 @@ class MCPEval(BaseModel):
             best_action_obj=self.best_action_obj,
             legal_actions=list(self.legal_actions),
             legal_rule_actions=list(self.legal_rule_actions),
-            legal_move_uci=list(self.legal_move_uci),
-            board_legal_move_uci=list(self.board_legal_move_uci),
+            legal_move_uci=list(self.legal_move_uci) if self.legal_move_uci is not None else None,
+            board_legal_move_uci=(
+                list(self.board_legal_move_uci) if self.board_legal_move_uci is not None else None
+            ),
             can_claim_draw=self.can_claim_draw,
             claim_reasons=list(self.claim_reasons),
             claim_move=self.claim_move,

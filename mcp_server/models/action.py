@@ -27,8 +27,8 @@ class ActionBlock(BaseModel):
     # is the explicit name; ``legal_move_uci`` is the full UCI list.
     legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     legal_rule_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
-    legal_move_uci: list[str] = Field(default_factory=list[str])
-    board_legal_move_uci: list[str] = Field(default_factory=list[str])
+    legal_move_uci: list[str] | None = Field(default_factory=list[str])
+    board_legal_move_uci: list[str] | None = Field(default_factory=list[str])
     can_claim_draw: bool = False
     claim_reasons: list[str] = Field(default_factory=list[str])
     claim_move: str | None = None

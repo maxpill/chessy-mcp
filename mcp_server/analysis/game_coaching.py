@@ -927,7 +927,19 @@ async def _final_assessment(
         except Exception:
             reasonable_count = None
 
-    rule_status = evaluate_rule_status(board, history_complete="complete")
+    sign = 1 if board.turn == chess.WHITE else -1
+    mover_score = (
+        sign * ev.cp
+        if ev.cp is not None
+        else (sign * ev.mate * 1000 if ev.mate is not None else None)
+    )
+    mate_for_mover = sign * ev.mate if ev.mate is not None else None
+    rule_status = evaluate_rule_status(
+        board,
+        mover_score=mover_score,
+        mate_for_mover=mate_for_mover,
+        history_complete="complete",
+    )
     is_terminal = board.is_game_over(claim_draw=False)
     continued_play = (not is_terminal) and legal_count > 0
     return FinalPositionAssessment(

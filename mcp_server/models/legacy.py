@@ -372,7 +372,7 @@ class GameAnalysisResult(BaseModel):
     is_compact: bool = False
     is_minimal: bool = False
     empty_game_reason: (
-        Literal["result_only", "comments_only", "headers_only", "custom_fen_only"] | None
+        Literal["result_only", "comments_only", "headers_only", "custom_fen_only", "no_mainline_moves"] | None
     ) = None
 
 
@@ -391,8 +391,8 @@ class TopMovesResult(BaseModel):
     best_action_obj: dict[str, Any] | None = None
     legal_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     legal_rule_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
-    legal_move_uci: list[str] = Field(default_factory=list[str])
-    board_legal_move_uci: list[str] = Field(default_factory=list[str])
+    legal_move_uci: list[str] | None = Field(default_factory=list[str])
+    board_legal_move_uci: list[str] | None = Field(default_factory=list[str])
     history_completeness: str = "complete"
     repetition_status: str = "none"
     requested_depth: int | None = None
@@ -425,10 +425,11 @@ class TopMovesResult(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_top_moves_invariants(self) -> TopMovesResult:
-        if not self.board_legal_move_uci and self.legal_move_uci:
-            self.board_legal_move_uci = list(self.legal_move_uci)
-        elif not self.legal_move_uci and self.board_legal_move_uci:
-            self.legal_move_uci = list(self.board_legal_move_uci)
+        if self.board_legal_move_uci is not None and self.legal_move_uci is not None:
+            if not self.board_legal_move_uci and self.legal_move_uci:
+                self.board_legal_move_uci = list(self.legal_move_uci)
+            elif not self.legal_move_uci and self.board_legal_move_uci and self.recommended_action != "game_over":
+                self.legal_move_uci = list(self.board_legal_move_uci)
         if self.returned_n is None:
             self.returned_n = len(self.result)
         return self

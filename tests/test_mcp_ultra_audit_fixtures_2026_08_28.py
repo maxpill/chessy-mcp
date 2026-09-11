@@ -221,8 +221,9 @@ async def test_r_05_underpromotion_terminal_draw_no_contradiction():
         # `cp` reflects the post-position cp (drawn = 0) — NOT engine eval
         assert cand.cp == 0
         assert cand.decision_value["outcome"] == "draw"
-        # Recommended action on candidate = game_over (terminal post-state)
-        assert cand.recommended_action == "game_over"
+        # Candidate root action remains play_move; post-state recommended action is game_over
+        assert cand.recommended_action == "play_move"
+        assert cand.post_position is not None and cand.post_position.get("recommended_action") == "game_over"
 
 
 # ---------------------------------------------------------------------------

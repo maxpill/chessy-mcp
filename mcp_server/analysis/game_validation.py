@@ -54,7 +54,7 @@ class GameMetadata:
     syntax_warnings: list[str] = field(default_factory=list[str])
     duplicate_tag_counts: dict[str, int] = field(default_factory=dict[str, int])
     empty_game_reason: (
-        Literal["result_only", "comments_only", "headers_only", "custom_fen_only"] | None
+        Literal["result_only", "comments_only", "headers_only", "custom_fen_only", "no_mainline_moves"] | None
     ) = None
 
 

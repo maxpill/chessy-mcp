@@ -377,6 +377,7 @@ async def enrich_top_moves_result(
                             "depth": comp.searched_depth or depth,
                             "multipv": cand_multipv,
                             "sources": ["include_moves"],
+                            "score_comparability": "independent_search",
                         },
                     }
                 )
@@ -390,6 +391,8 @@ async def enrich_top_moves_result(
                 for idx, item in enumerate(new_items):
                     if (item.best_move or "").lower() == comp_uci:
                         prov = dict(item.search_provenance or {})
+                        if "score_comparability" not in prov:
+                            prov["score_comparability"] = "same_root_multipv"
                         sources = set(prov.get("sources") or [prov.get("kind", "multipv_root")])
                         sources.add("include_moves")
                         prov["sources"] = sorted(sources)

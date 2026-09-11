@@ -55,6 +55,7 @@ def build_terminal_mcpeval(
         for a in terminal_legal_actions
         if a.get("type") in ("claim_draw", "claim_draw_with_intended_move")
     ]
+    geom_moves = [m.uci() for m in board.legal_moves]
     return MCPEval(
         status=terminal_status,
         winner=rule_status.winner,
@@ -77,6 +78,10 @@ def build_terminal_mcpeval(
         best_action_obj=terminal_best_action,
         legal_actions=terminal_legal_actions,
         legal_rule_actions=terminal_rule_actions,
+        legal_move_uci=[],
+        board_legal_move_uci=geom_moves,
+        legal_move_count=0,
+        board_legal_move_count=len(geom_moves),
         canonical_fen=canonical_fen_str,
         fen_was_canonicalized=False,
         decision_value={
