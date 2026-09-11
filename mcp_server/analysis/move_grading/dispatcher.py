@@ -10,6 +10,7 @@ from __future__ import annotations
 
 
 import chess
+from core.engines.types import MoveClass
 
 from mcp_server.analysis.move_grading.helpers import (
     is_after_losing,
@@ -69,6 +70,10 @@ def dispatch_score(
         and eval_before.best_move
         and move.uci().lower() == eval_before.best_move.lower()
     )
+    is_only_legal_move = bool(
+        action_type == "play_move"
+        and len(list(board_before.legal_moves)) == 1
+    )
 
     eval_move_eval = eval_played if eval_played is not None else eval_after
 
@@ -98,6 +103,40 @@ def dispatch_score(
     rule_after = evaluate_rule_status(board_after, history_complete=history_state)
     canonical_best_action = eval_before.best_action or rule_before.recommended_action
 
+    def _enforce_invariants(res_score: PlayedMoveScore) -> PlayedMoveScore:
+        if res_score.loss_kind == "mate_transition" and not is_only_legal_move:
+            return res_score
+        if (is_best_engine_move or is_only_legal_move) and canonical_best_action == action_type:
+            if (
+                res_score.move_class in (MoveClass.BLUNDER, MoveClass.MISTAKE, MoveClass.INACCURACY)
+                or (res_score.effective_loss is not None and res_score.effective_loss > 0)
+            ):
+                return res_score.model_copy(
+                    update={
+                        "move_class": MoveClass.BEST,
+                        "effective_loss": 0,
+                        "centipawn_loss": 0,
+                        "raw_centipawn_loss": 0,
+                        "raw_centipawn_delta": 0,
+                        "mate_distance_loss": 0 if res_score.mate_distance_loss is not None else None,
+                        "outcome_penalty": None,
+                        "mate_distance_penalty": None,
+                        "is_best_engine_move": True if is_best_engine_move else res_score.is_best_engine_move,
+                        "is_best_action": True,
+                        "action_equivalent": True,
+                        "win_loss": 0.0,
+                    }
+                )
+            if is_best_engine_move:
+                return res_score.model_copy(
+                    update={
+                        "is_best_engine_move": True,
+                        "is_best_action": True,
+                        "action_equivalent": True,
+                    }
+                )
+        return res_score
+
     # win_before = is_before_winning(before_mover, mover_mate_before)
     # print(
     #     f"DISPATCHER: rule_after.cn={rule_after.can_claim_now} eval_after.cn={eval_after.can_claim_now} eval_after.cd={eval_after.can_claim_draw} win_before={win_before} before_mover={before_mover} canonical_best_action={canonical_best_action} board_after.fen={board_after.fen()} board_after.hm={board_after.halfmove_clock} board_after.is_repetition(3)={board_after.is_repetition(3)}",
@@ -122,19 +161,21 @@ def dispatch_score(
     ):
         score = dispatched()
         if score is not None:
-            return score
+            return _enforce_invariants(score)
 
     # 2. Draw-claim action (audit P0/P1).
     if action_type in ("claim_draw", "claim_draw_with_intended_move"):
-        return score_claim_draw_action(
-            action_type=action_type,
-            move=move,
-            eval_before=eval_before,
-            rule_before=rule_before,
-            canonical_best_action=canonical_best_action,
-            before_mover=before_mover,
-            mover_mate_before=mover_mate_before,
-            is_best_engine_move=is_best_engine_move,
+        return _enforce_invariants(
+            score_claim_draw_action(
+                action_type=action_type,
+                move=move,
+                eval_before=eval_before,
+                rule_before=rule_before,
+                canonical_best_action=canonical_best_action,
+                before_mover=before_mover,
+                mover_mate_before=mover_mate_before,
+                is_best_engine_move=is_best_engine_move,
+            )
         )
 
     is_auto_terminal_draw = bool(
@@ -261,16 +302,19 @@ def dispatch_score(
     ):
         score = dispatched()
         if score is not None:
-            return score
+            return _enforce_invariants(score)
 
-    return score_standard_cp(
-        is_best_engine_move=is_best_engine_move,
-        canonical_best_action=canonical_best_action,
-        rule_before=rule_before,
-        eval_before=eval_before,
-        raw_cpl=raw_cpl,
-        raw_board_delta=raw_board_delta,
-        baseline_mover=baseline_mover,
-        after_mover=after_mover,
-        action_type=action_type,
+    return _enforce_invariants(
+        score_standard_cp(
+            is_best_engine_move=is_best_engine_move,
+            canonical_best_action=canonical_best_action,
+            rule_before=rule_before,
+            eval_before=eval_before,
+            raw_cpl=raw_cpl,
+            raw_board_delta=raw_board_delta,
+            baseline_mover=baseline_mover,
+            after_mover=after_mover,
+            action_type=action_type,
+        )
     )
+

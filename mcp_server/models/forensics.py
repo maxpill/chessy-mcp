@@ -477,6 +477,10 @@ class ForensicTopMovesResult(TopMovesResult):
     """Backward-compatible ``top_moves`` result with opt-in evidence."""
 
     forensics: TopMovesForensicEvidence | None = None
+    requested_proof_defenses: int | None = None
+    clamped_proof_defenses: int | None = None
+    forensic_compute_triggered_by: list[str] = Field(default_factory=list)
+
 
 
 class ForensicEvidence(BaseModel):

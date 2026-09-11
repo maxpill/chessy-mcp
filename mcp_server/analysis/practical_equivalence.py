@@ -182,10 +182,14 @@ def build_practical_equivalence_evidence(
         status = "indeterminate"
         practical_equivalent = None
         reason_codes.append("NON_MOVE_ACTION")
-    elif result.is_best_engine_move and mover_won_by_mate:
+    elif result.is_best_engine_move or getattr(result, "is_engine_best", False):
         status = "equivalent"
         practical_equivalent = True
-        reason_codes.append("ENGINE_BEST_WINNING_MOVE")
+        if mover_won_by_mate:
+            reason_codes.append("ENGINE_BEST_WINNING_MOVE")
+        else:
+            reason_codes.append("ENGINE_BEST_MOVE")
+
     elif mate_deterioration:
         status = "not_equivalent"
         practical_equivalent = False

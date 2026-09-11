@@ -40,11 +40,13 @@ def make_rule_status(
         history_dependent_status=history_dep,
         requires_move_stack=history_dep,
         fen_sufficient_for_status=not history_dep,
+        repetition_sufficient_without_history=not history_dep,
         history_completeness=(
             "not_required" if terminal in TERMINAL_VS_HISTORY_INDEPENDENT else history_state
         ),
         repetition_status=repetition,
     )
+
 
 
 def evaluate_rule_status(

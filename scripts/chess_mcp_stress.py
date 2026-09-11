@@ -30,7 +30,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.audit.build_identity import validate_call_build_identity, validate_observed_build_shas  # noqa: E402
-from scripts.audit.case_generation import build_600_case_specs  # noqa: E402
+from scripts.audit.case_generation import build_600_case_specs, build_adversarial_1000_case_specs  # noqa: E402
 from scripts.audit.case_spec import CaseSpec  # noqa: E402
 from scripts.audit.reporting import CallRecord, generate_markdown_summary, write_jsonl  # noqa: E402
 from scripts.audit.response_normalization import normalize_call_tool_result  # noqa: E402
@@ -203,7 +203,7 @@ async def run_stress_suite(
                 seq = global_seq
                 eff_hash = effective_hashes.get(spec.case_id, spec.raw_argument_hash)
                 async with _sem:
-                    return await _execute_single_call(
+                    rec = await _execute_single_call(
                         spec=spec,
                         sequence=seq,
                         call_func=call_func,
@@ -213,6 +213,13 @@ async def run_stress_suite(
                         strict_certification=strict_certification,
                         observed_shas=observed_shas,
                     )
+                    if seq % 25 == 0 or seq == len(cases) or not rec.semantic_ok or not rec.transport_ok:
+                        print(
+                            f"[PROGRESS] {seq:03d}/{len(cases):03d} | {spec.tool} ({spec.case_id}) "
+                            f"phase={_concurrency}x elapsed={rec.elapsed_ms:.0f}ms status={rec.status}",
+                            flush=True,
+                        )
+                    return rec
 
             tasks = [asyncio.create_task(_worker(s)) for s in phase_specs]
             records = await asyncio.gather(*tasks)
@@ -222,21 +229,26 @@ async def run_stress_suite(
 
 
 async def main_async(args: argparse.Namespace) -> int:
-    cases = build_600_case_specs()
-    print(f"[INFO] Built {len(cases)} case specifications.")
+    if args.calls and args.calls > 600:
+        cases = build_adversarial_1000_case_specs()
+    else:
+        cases = build_600_case_specs()
+    if args.calls and args.calls < len(cases):
+        cases = cases[: args.calls]
+    print(f"[INFO] Built {len(cases)} case specifications.", flush=True)
 
     # Preflight case validation (R2-003, R2-004, R2-017)
     errors, eff_hashes = preflight_validate_cases(cases)
     if errors:
-        print(f"[FAIL] Preflight case validation failed with {len(errors)} errors:")
+        print(f"[FAIL] Preflight case validation failed with {len(errors)} errors:", flush=True)
         for err in errors[:15]:
-            print(f"  - {err}")
+            print(f"  - {err}", flush=True)
         return 1
 
-    print(f"[OK] Preflight validation passed: {len(eff_hashes)} unique effective argument hashes.")
+    print(f"[OK] Preflight validation passed: {len(eff_hashes)} unique effective argument hashes.", flush=True)
 
     if args.validate_cases_only:
-        print("[SUCCESS] Cases validated successfully. Exiting per --validate-cases-only.")
+        print("[SUCCESS] Cases validated successfully. Exiting per --validate-cases-only.", flush=True)
         return 0
 
     cli_expected_sha = (args.expected_sha or "").strip()
@@ -248,19 +260,22 @@ async def main_async(args: argparse.Namespace) -> int:
         from mcp_server import server as server_module
 
         pool = await server_module._get_analyzer_pool()
-        print(f"[INFO] Initialized in-process analyzer pool: {pool.name}")
+        print(f"[INFO] Initialized in-process analyzer pool: {pool.name}", flush=True)
 
         async def in_process_caller(tool: str, arguments: dict[str, Any]) -> Any:
             fn = getattr(server_module, tool)
-            return await fn(**arguments)
+            try:
+                return await fn(**arguments)
+            except Exception as exc:
+                return exc
 
-        # Preflight pinning call
-        preflight_res = await in_process_caller("evaluate_position", {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "depth": 1})
-        norm_pre = normalize_call_tool_result(preflight_res)
+        # Preflight call to pin SHA before concurrency
+        pre_res = await in_process_caller("evaluate_position", {"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "depth": 1})
+        norm_pre = normalize_call_tool_result(pre_res)
         if norm_pre.build_sha:
             pinned_sha = norm_pre.build_sha
             observed_shas.add(pinned_sha)
-            print(f"[INFO] Pinned in-process build SHA: {pinned_sha}")
+            print(f"[INFO] Pinned in-process build SHA: {pinned_sha}", flush=True)
 
         try:
             records = await run_stress_suite(
@@ -275,34 +290,46 @@ async def main_async(args: argparse.Namespace) -> int:
             await server_module.close_analyzer_pool()
     else:
         # Remote HTTP transport
+        import certifi
+        import httpx2
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
 
         mcp_url = args.target.rstrip("/") + "/mcp"
-        print(f"[INFO] Connecting to remote MCP: {mcp_url}")
+        print(f"[INFO] Connecting to remote MCP: {mcp_url}", flush=True)
 
-        async with streamable_http_client(mcp_url) as streams:
+        http_client = httpx2.AsyncClient(
+            headers={"User-Agent": "ChatGPT-Connectors/1.0"},
+            timeout=httpx2.Timeout(connect=30.0, read=120.0, write=30.0, pool=120.0),
+            verify=certifi.where(),
+        )
+
+        async with streamable_http_client(mcp_url, http_client=http_client) as streams:
             read_stream, write_stream, *_ = streams
             async with ClientSession(read_stream, write_stream) as session:
                 init_res = await session.initialize()
-                print(f"[INFO] Remote session initialized: {init_res}")
+                print(f"[INFO] Remote session initialized: {init_res}", flush=True)
 
                 # Preflight call to pin SHA before concurrency
-                pre_res = await session.call_tool("evaluate_position", arguments={"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "depth": 1})
+                pre_res = await session.call_tool(
+                    "evaluate_position",
+                    arguments={"fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "depth": 1},
+                    read_timeout_seconds=30.0,
+                )
                 norm_pre = normalize_call_tool_result(pre_res)
                 if not norm_pre.build_sha:
-                    print("[FAIL] Preflight call failed to return build_sha! Cannot certify.")
+                    print("[FAIL] Preflight call failed to return build_sha! Cannot certify.", flush=True)
                     return 1
 
                 pinned_sha = norm_pre.build_sha
                 observed_shas.add(pinned_sha)
-                print(f"[INFO] Pinned remote build SHA: {pinned_sha}")
+                print(f"[INFO] Pinned remote build SHA: {pinned_sha}", flush=True)
                 if cli_expected_sha and not pinned_sha.startswith(cli_expected_sha):
-                    print(f"[FAIL] Pinned SHA '{pinned_sha}' does not match expected '{cli_expected_sha}'!")
+                    print(f"[FAIL] Pinned SHA '{pinned_sha}' does not match expected '{cli_expected_sha}'!", flush=True)
                     return 1
 
                 async def http_caller(tool: str, arguments: dict[str, Any]) -> Any:
-                    return await session.call_tool(tool, arguments=arguments)
+                    return await session.call_tool(tool, arguments=arguments, read_timeout_seconds=90.0)
 
                 records = await run_stress_suite(
                     cases=cases,
@@ -314,24 +341,32 @@ async def main_async(args: argparse.Namespace) -> int:
                 )
 
     # Serialize artifacts
-    write_jsonl(records, args.jsonl_out)
-    generate_markdown_summary(records, pinned_sha, observed_shas, args.md_out)
-    print(f"[INFO] Artifacts written to {args.jsonl_out} and {args.md_out}")
+    jsonl_out = args.jsonl_out
+    md_out = args.md_out
+    if len(cases) > 600:
+        if jsonl_out == "artifacts/chess_mcp_ultra_600.jsonl":
+            jsonl_out = f"artifacts/chess_mcp_ultra_{len(cases)}.jsonl"
+        if md_out == "artifacts/chess_mcp_ultra_600.md":
+            md_out = f"artifacts/chess_mcp_ultra_{len(cases)}.md"
+
+    write_jsonl(records, jsonl_out)
+    generate_markdown_summary(records, pinned_sha, observed_shas, md_out)
+    print(f"[INFO] Artifacts written to {jsonl_out} and {md_out}", flush=True)
 
     # Validate final build SHAs
     final_sha_errs = validate_observed_build_shas(observed_shas, pinned_sha)
     if final_sha_errs:
         for fse in final_sha_errs:
-            print(f"[FAIL] {fse}")
+            print(f"[FAIL] {fse}", flush=True)
         return 1
 
     # Check for failures
     failures = [r for r in records if not r.semantic_ok or not r.transport_ok]
     if failures:
-        print(f"[FAIL] Stress run finished with {len(failures)} failed calls out of {len(records)}.")
+        print(f"[FAIL] Stress run finished with {len(failures)} failed calls out of {len(records)}.", flush=True)
         return 1
 
-    print(f"[SUCCESS] All {len(records)} stress calls passed successfully with 0 failures!")
+    print(f"[SUCCESS] All {len(records)} stress calls passed successfully with 0 failures!", flush=True)
     return 0
 
 

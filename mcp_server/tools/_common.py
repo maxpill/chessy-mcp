@@ -283,6 +283,7 @@ _ERROR_CODE_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
     ("INVALID_VERBOSITY", "invalid_verbosity"),
     ("INVALID_DETAIL", "invalid_detail"),
     ("INVALID_ARGUMENT", "invalid_argument"),
+    ("SCHEMA_VALIDATION_ERROR", "schema_validation_error"),
     ("INVALID_ACTION_TYPE", "invalid_action_type"),
     ("ILLEGAL_ACTION", "illegal_action"),
     ("STRICT", "strict_validation_error"),

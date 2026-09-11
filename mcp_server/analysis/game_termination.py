@@ -87,12 +87,24 @@ def build_game_termination_assessment(
     result = str(game.headers.get("Result", "*") or "*").strip()
     termination_raw = str(game.headers.get("Termination", "") or "").strip()
     termination_header = termination_raw or None
-    winner, loser = _winner_loser(result)
-    decisive = winner is not None
-    explicit_resignation = _explicit_resignation(termination_header)
     terminal = board.is_game_over(claim_draw=False)
+
     checkmate = board.is_checkmate()
+    if checkmate:
+        winner: str | None = "black" if board.turn == chess.WHITE else "white"
+        loser: str | None = "white" if board.turn == chess.WHITE else "black"
+        decisive = True
+    elif terminal:
+        winner = None
+        loser = None
+        decisive = False
+    else:
+        winner, loser = _winner_loser(result)
+        decisive = winner is not None
+
+    explicit_resignation = _explicit_resignation(termination_header)
     norm_term = normalize_termination(termination_header)
+
 
     moves_count = sum(1 for _ in game.mainline_moves())
     initial_terminal = game.board().is_game_over(claim_draw=False)

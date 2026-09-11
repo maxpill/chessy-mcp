@@ -113,7 +113,17 @@ async def evaluate_game_position_cached(
     )
     cached = await cache.get_eval(ckey)
     if cached is not None:
-        return cached.model_copy(update={"requested_depth": req_d}), True
+
+
+        updates: dict[str, Any] = {"requested_depth": req_d}
+        if cached.engine_eval is not None:
+            updates["engine_eval"] = {
+                **cached.engine_eval,
+                "requested_depth": req_d,
+                "searched_depth": cached.depth,
+            }
+        return cached.model_copy(update=updates), True
+
 
     async def _compute_pos() -> MCPEval:
         # Bug fix (chessy-mcp-deep-audit §8): wrap the engine call with a
@@ -186,7 +196,15 @@ async def evaluate_game_position_cached(
         return mcp_eval
 
     res = cast(MCPEval, await single_flight.do(ckey, _compute_pos))
-    return res.model_copy(update={"requested_depth": req_d}), False
+    updates: dict[str, Any] = {"requested_depth": req_d}
+    if res.engine_eval is not None:
+        updates["engine_eval"] = {
+            **res.engine_eval,
+            "requested_depth": req_d,
+            "searched_depth": res.depth,
+        }
+    return res.model_copy(update=updates), False
+
 
 
 async def _maybe_zeroing_best_override(

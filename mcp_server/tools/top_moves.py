@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from mcp.server.mcpserver import Context
@@ -153,9 +153,29 @@ async def top_moves(
         if detail not in {"standard", "coach", "forensic"}:
             raise ValueError(f"INVALID_DETAIL: {detail}")
         if proof_mode not in {"none", "tactical"}:
-            raise ValueError(f"INVALID_PROOF_MODE: {proof_mode}")
-        if len(include_moves or []) > MAX_INCLUDE_MOVES:
-            raise ValueError("INVALID_PARAMETER_COUNT: include_moves supports at most 8 moves")
+            raise ValueError(
+                f"SCHEMA_VALIDATION_ERROR: Invalid proof_mode: {proof_mode!r}. Allowed: ['none', 'tactical']"
+            )
+        if include_moves and len(include_moves) > MAX_INCLUDE_MOVES:
+            raise ValueError(
+                f"INVALID_ARGUMENT: Too many include_moves: supports at most {MAX_INCLUDE_MOVES} moves (got {len(include_moves)})."
+            )
+        if proof_mode == "tactical" and proof_defenses < 1:
+            raise ValueError(
+                f"INVALID_ARGUMENT: proof_defenses must be >= 1 in tactical proof mode (got {proof_defenses})"
+            )
+        clamped_proof_defenses = (
+            max(1, min(int(proof_defenses), 8)) if proof_mode == "tactical" else None
+        )
+        requested_proof_defenses = proof_defenses if proof_mode == "tactical" else None
+
+        forensic_triggers: list[str] = []
+        if detail != "standard":
+            forensic_triggers.append("detail")
+        if include_moves:
+            forensic_triggers.append("include_moves")
+        if proof_mode != "none":
+            forensic_triggers.append("proof_mode")
 
         verbosity_mode = _resolve_verbosity(verbosity)
         out = await _FINDER.run(
@@ -171,7 +191,12 @@ async def top_moves(
             ctx=ctx,
             include_moves=include_moves,
         )
-        result = ForensicTopMovesResult(**out.result.model_dump())
+        result = ForensicTopMovesResult(
+            **out.result.model_dump(),
+            requested_proof_defenses=requested_proof_defenses,
+            clamped_proof_defenses=clamped_proof_defenses,
+            forensic_compute_triggered_by=forensic_triggers,
+        )
 
         rich_requested = detail != "standard" or bool(include_moves) or proof_mode != "none"
         if rich_requested and result.status == "active":
@@ -194,29 +219,32 @@ async def top_moves(
                 detail=effective_detail,
                 include_moves=include_moves,
                 proof_mode=proof_mode,
-                proof_defenses=max(1, min(int(proof_defenses), 8)),
+                proof_defenses=clamped_proof_defenses or 3,
                 strict=strict,
             )
             result = upgrade_top_moves_forensics(result, board)
 
+        top_updates: dict[str, Any] = {
+            "requested_proof_defenses": requested_proof_defenses,
+            "clamped_proof_defenses": clamped_proof_defenses,
+            "forensic_compute_triggered_by": forensic_triggers,
+        }
         if verbosity_mode == "compact":
-            result = result.model_copy(
-                update={
-                    "result": [
-                        _compact_mcpeval(c) if not getattr(c, "is_compact", False) else c
-                        for c in result.result
-                    ]
-                }
-            )
+            top_updates["result"] = [
+                _compact_mcpeval(c) if not getattr(c, "is_compact", False) else c
+                for c in result.result
+            ]
+            if detail == "standard":
+                top_updates["forensics"] = None
         elif verbosity_mode == "minimal":
-            result = result.model_copy(
-                update={
-                    "result": [
-                        _minimal_mcpeval(c) if not getattr(c, "is_minimal", False) else c
-                        for c in result.result
-                    ]
-                }
-            )
+            top_updates["result"] = [
+                _minimal_mcpeval(c) if not getattr(c, "is_minimal", False) else c
+                for c in result.result
+            ]
+            if detail != "forensic":
+                top_updates["forensics"] = None
+        result = result.model_copy(update=top_updates)
+
 
         await metrics.record(
             "top_moves",

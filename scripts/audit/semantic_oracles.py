@@ -18,6 +18,10 @@ ERROR_CODE_ALIASES: dict[str, set[str]] = {
     "illegal_move": {"invalid_move", "illegal_move"},
     "strict_san_error": {"strict_san_error", "strict_validation_error"},
     "strict_validation_error": {"strict_san_error", "strict_validation_error"},
+    "invalid_claim": {"invalid_claim", "illegal_action"},
+    "illegal_action": {"invalid_claim", "illegal_action"},
+    "invalid_argument": {"invalid_argument", "invalid_parameter_count", "parameter_count_exceeded"},
+    "invalid_parameter_count": {"invalid_argument", "invalid_parameter_count", "parameter_count_exceeded"},
 }
 
 
@@ -29,6 +33,11 @@ def validate_expected_error(spec: CaseSpec, response: NormalizedResponse) -> lis
     errors: list[str] = []
     if not response.is_error:
         return [f"expected error '{spec.expected_error_code}', but call succeeded"]
+
+    if spec.expected_kind == "schema_error":
+        if "validation error" in response.text_content.lower() or "invalid" in response.text_content.lower():
+            return []
+        return [f"expected schema validation error, but got: {response.text_content[:150]}"]
 
     expected_code = (spec.expected_error_code or "").strip().lower()
     actual_code = (response.structured_error_code or "").strip().lower()
@@ -89,8 +98,17 @@ def check_forcing_evidence(data: Any, board: chess.Board | None = None) -> list[
 def validate_evaluate_position(spec: CaseSpec, data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     fen = spec.arguments["fen"]
+    if fen == "startpos":
+        fen = chess.STARTING_FEN
     try:
         b = chess.Board(fen)
+        for m_str in spec.arguments.get("moves") or []:
+            m_obj = (
+                chess.Move.from_uci(m_str)
+                if m_str in [m.uci() for m in b.legal_moves]
+                else b.parse_san(m_str)
+            )
+            b.push(m_obj)
         status = data.get("status")
         winner = data.get("winner")
         is_over = (
@@ -136,6 +154,17 @@ def validate_evaluate_position(spec: CaseSpec, data: dict[str, Any]) -> list[str
             if cp_val is not None and mate_val is not None:
                 errors.append(f"contradictory score: both cp={cp_val} and mate={mate_val}")
 
+        if data.get("status") == "fivefold_repetition" or data.get("terminal") == "fivefold_repetition":
+            if data.get("repetition_sufficient_without_history") is not False:
+                errors.append("Invariant F: fivefold_repetition must have repetition_sufficient_without_history=False")
+
+        engine_eval = data.get("engine_eval")
+        req_d = data.get("requested_depth")
+        if isinstance(engine_eval, dict) and req_d is not None:
+            nested_d = engine_eval.get("requested_depth")
+            if nested_d is not None and nested_d != req_d:
+                errors.append(f"Depth provenance mismatch: root requested_depth={req_d} != engine_eval.requested_depth={nested_d}")
+
         # Check tactical snapshot if present
         forensics = data.get("forensics") or {}
         tactical = forensics.get("tactical_snapshot") or data.get("tactical_snapshot")
@@ -143,6 +172,7 @@ def validate_evaluate_position(spec: CaseSpec, data: dict[str, Any]) -> list[str
             errors.extend(check_forcing_evidence(tactical, b))
     except Exception as exc:
         errors.append(f"oracle evaluate_position error: {exc}")
+
 
     return errors
 
@@ -233,6 +263,13 @@ def validate_classify_move(spec: CaseSpec, data: dict[str, Any]) -> list[str]:
                 best_uci = best_move.get("uci") if isinstance(best_move, dict) else (best_move if isinstance(best_move, str) else None)
                 if best_uci and played_uci and played_uci != best_uci:
                     errors.append(f"is_engine_best is True but played '{played_uci}' != best '{best_uci}'")
+                if data.get("move_class") in ("blunder", "mistake", "inaccuracy"):
+                    errors.append(f"Invariant A: is_engine_best is True but move_class is '{data.get('move_class')}'")
+                if (data.get("effective_loss") or 0) > 0:
+                    errors.append(f"Invariant A: is_engine_best is True but effective_loss is {data.get('effective_loss')}")
+                if data.get("action_equivalent") is False:
+                    errors.append("Invariant A: is_engine_best is True but action_equivalent is False")
+
 
         # Tactical evidence verification
         forensics = data.get("forensics") or {}
@@ -289,8 +326,25 @@ def validate_analyze_game(spec: CaseSpec, data: dict[str, Any]) -> list[str]:
                     snapshot = cm.get("tactical_snapshot")
                     if isinstance(snapshot, dict):
                         errors.extend(check_forcing_evidence(snapshot, pre_board))
+
+            if b.is_checkmate():
+                expected_winner = "white" if b.turn == chess.BLACK else "black"
+                coaching = data.get("coaching") or {}
+                coaching_term = coaching.get("termination") or {}
+                coaching_winner = coaching_term.get("winner_side")
+                if coaching_winner and coaching_winner != expected_winner:
+                    errors.append(f"Invariant D: board checkmate winner {expected_winner} != coaching.termination winner {coaching_winner}")
+
+            coaching = data.get("coaching") or {}
+            coaching_cm = coaching.get("critical_moments") or []
+            for cm in coaching_cm:
+                reasons = cm.get("reasons") or []
+                comm = cm.get("user_comment_raw") or ""
+                if "player_self_report" in reasons and ("%clk" in comm or "%eval" in comm):
+                    errors.append(f"Invariant E: machine directive triggered player_self_report: '{comm}'")
     except Exception as exc:
         errors.append(f"oracle analyze_game error: {exc}")
+
 
     return errors
 

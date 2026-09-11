@@ -10,6 +10,7 @@ re-searches only the chosen moments at higher depth.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from itertools import pairwise
@@ -254,6 +255,21 @@ def _segment_stability(
     return "low", raw_changes
 
 
+_MACHINE_DIRECTIVE_RE = re.compile(
+    r"\[%[A-Za-z0-9_]+(?:\s+[^\]]*)?\]|(?<!\w)%(?:clk|eval|emt|csl|cal)\s+[^\s]+",
+    re.IGNORECASE,
+)
+
+
+
+def _clean_human_comment(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    cleaned = _MACHINE_DIRECTIVE_RE.sub("", raw).strip()
+    cleaned = re.sub(r"\n\s*\n", "\n", cleaned).strip()
+    return cleaned if cleaned else None
+
+
 def _mainline_comments(game: chess.pgn.Game) -> dict[int, str]:
     comments: dict[int, str] = {}
     node: chess.pgn.GameNode = game
@@ -264,9 +280,11 @@ def _mainline_comments(game: chess.pgn.Game) -> dict[int, str]:
         comment = str(getattr(node, "comment", "") or "").strip()
         starting = str(getattr(node, "starting_comment", "") or "").strip()
         combined = "\n".join(part for part in (starting, comment) if part)
-        if combined:
-            comments[ply] = combined
+        cleaned = _clean_human_comment(combined)
+        if cleaned:
+            comments[ply] = cleaned
     return comments
+
 
 
 def _best_san(board: chess.Board, ev: MCPEval) -> str | None:

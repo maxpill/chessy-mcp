@@ -106,6 +106,30 @@ def score_mate_to_mate(
                 rule_before=rule_before,
                 action_type=action_type,
             )
+        if is_best_engine_move:
+            score = PlayedMoveScore(
+                move_class=MoveClass.BEST,
+                centipawn_loss=0,
+                raw_centipawn_loss=0,
+                raw_centipawn_delta=0,
+                mate_distance_loss=None,
+                effective_loss=0,
+                loss_kind="none",
+                is_best_engine_move=True,
+                win_loss=0.0,
+                best_action=canonical_best_action,
+                is_best_action=True,
+                action_equivalent=canonical_best_action == action_type,
+                missed_draw_claim=False,
+                conceded_draw_claim=False,
+                claim_reason=None,
+            )
+            return finalize_score(
+                score,
+                canonical_best_action=canonical_best_action,
+                rule_before=rule_before,
+                action_type=action_type,
+            )
         score = PlayedMoveScore(
             move_class=MoveClass.BLUNDER,
             centipawn_loss=None,
@@ -129,6 +153,7 @@ def score_mate_to_mate(
             rule_before=rule_before,
             action_type=action_type,
         )
+
     if mover_mate_before < 0 and mover_mate_after < 0:
         # Defender perspective: allowing faster mate against self is a loss
         # of resistance.
@@ -216,10 +241,16 @@ def score_mate_to_cp(
             rule_before=rule_before,
             action_type=action_type,
         )
-    wp_after = _win_pct(after_mover)
-    win_loss = max(0.0, 100.0 - wp_after)
-    final_class = MoveClass.BLUNDER if win_loss >= 20.0 else MoveClass.MISTAKE
-    eff_loss = 1000 if final_class == MoveClass.BLUNDER else 300
+    if is_best_engine_move:
+        final_class = MoveClass.BEST
+        eff_loss = 0
+        w_loss = 0.0
+    else:
+        wp_after = _win_pct(after_mover)
+        win_loss = max(0.0, 100.0 - wp_after)
+        final_class = MoveClass.BLUNDER if win_loss >= 20.0 else MoveClass.MISTAKE
+        eff_loss = 1000 if final_class == MoveClass.BLUNDER else 300
+        w_loss = win_loss
     score = PlayedMoveScore(
         move_class=final_class,
         centipawn_loss=raw_cpl,
@@ -227,12 +258,13 @@ def score_mate_to_cp(
         raw_centipawn_delta=raw_board_delta,
         mate_distance_loss=None,
         effective_loss=eff_loss,
-        loss_kind="outcome_penalty",
-        outcome_penalty=eff_loss,
-        is_best_engine_move=False,
-        win_loss=win_loss,
+        loss_kind="outcome_penalty" if not is_best_engine_move else "none",
+        outcome_penalty=eff_loss if not is_best_engine_move else None,
+        is_best_engine_move=is_best_engine_move,
+        win_loss=w_loss,
         best_action=canonical_best_action,
-        is_best_action=False,
+        is_best_action=is_best_engine_move,
+        action_equivalent=is_best_engine_move and canonical_best_action == action_type,
         missed_draw_claim=False,
         conceded_draw_claim=False,
         claim_reason=None,
@@ -288,6 +320,7 @@ def score_cp_to_mate(
             rule_before=rule_before,
             action_type=action_type,
         )
+
     score = PlayedMoveScore(
         move_class=MoveClass.BEST if is_best_engine_move else MoveClass.GOOD,
         centipawn_loss=0,

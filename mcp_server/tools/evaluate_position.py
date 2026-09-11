@@ -8,7 +8,7 @@ and opt-in deterministic position-integrity evidence.
 from __future__ import annotations
 
 import time
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from mcp.server.mcpserver import Context
@@ -115,14 +115,20 @@ async def evaluate_position(
             history_complete=history_complete,
         )
         await metrics.record("evaluate_position", (time.time() - t0) * 1000, cache_hit=is_hit)
-        result = res.model_copy(
-            update={
+        eval_updates: dict[str, Any] = {
+            "requested_depth": raw_requested_depth,
+            "input_fen": input_fen,
+            "canonical_fen": canonical_fen,
+            "fen_was_canonicalized": fen_was_canonicalized,
+        }
+        if res.engine_eval is not None:
+            eval_updates["engine_eval"] = {
+                **res.engine_eval,
                 "requested_depth": raw_requested_depth,
-                "input_fen": input_fen,
-                "canonical_fen": canonical_fen,
-                "fen_was_canonicalized": fen_was_canonicalized,
+                "searched_depth": res.depth,
             }
-        )
+        result = res.model_copy(update=eval_updates)
+
         if verbosity_mode == VERBOSITY_COMPACT:
             result = _compact_mcpeval(result)
         elif verbosity_mode == VERBOSITY_MINIMAL:

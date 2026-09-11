@@ -245,6 +245,14 @@ class MCPEval(BaseModel):
     def eval_block(self) -> EvalBlock | None:
         if self.is_compact or self.is_minimal:
             return None
+        engine_eval_val = self.engine_eval
+        if engine_eval_val is not None and self.requested_depth is not None:
+            if engine_eval_val.get("requested_depth") != self.requested_depth:
+                engine_eval_val = {
+                    **engine_eval_val,
+                    "requested_depth": self.requested_depth,
+                    "searched_depth": self.depth,
+                }
         return EvalBlock(
             cp=self.cp,
             mate=self.mate,
@@ -258,8 +266,9 @@ class MCPEval(BaseModel):
             root_score_mate=self.root_score_mate,
             post_state_cp=self.post_state_cp,
             post_state_mate=self.post_state_mate,
-            engine_eval=self.engine_eval,
+            engine_eval=engine_eval_val,
         )
+
 
     @computed_field  # type: ignore[misc]
     @property

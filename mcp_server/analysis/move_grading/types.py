@@ -26,4 +26,8 @@ def finalize_score(
     score.can_claim_with_intended_move = rule_before.can_claim_with_intended_move
     score.claim_moves = rule_before.claim_moves
     score.action_type = action_type
+    if score.is_best_engine_move and canonical_best_action == action_type:
+        score.action_equivalent = True
+        score.is_best_action = True
     return score
+
