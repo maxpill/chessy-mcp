@@ -229,11 +229,16 @@ def validate_strict_mainline_surface(text: str, game: chess.pgn.Game) -> None:
     board = game.board()
     move_index = 0
 
-    for token in tokens:
+    for idx, token in enumerate(tokens):
         clean = token.strip()
         if not clean:
             continue
         if clean in _RESULT_TOKENS:
+            trailing = [t.strip() for t in tokens[idx + 1 :] if t.strip()]
+            if trailing:
+                raise ValueError(
+                    f"STRICT_PGN_ERROR: PGN contains trailing tokens after game termination marker: {' '.join(trailing)!r}."
+                )
             break
         nag = re.fullmatch(r"\$(\d+)", clean)
         if nag:

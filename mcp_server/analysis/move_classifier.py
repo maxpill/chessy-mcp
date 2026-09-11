@@ -11,8 +11,7 @@ from core.engines.types import Eval, MoveClass
 from mcp_server.claims.draw_projection import force_draw_outcome
 from mcp_server.models import MCPMoveAnalysis, MCPEval, PlayedMoveScore
 from mcp_server.parsers import (
-    _build_board,
-    _history_provenance_for_input,
+    _build_board_from_history,
     parse_move_with_details,
 )
 from mcp_server.rules import evaluate_rule_status, is_terminal_position
@@ -75,8 +74,7 @@ def validate_classify_input(
                 "and action_type='claim_draw_with_intended_move'"
             )
 
-    board = _build_board(fen, moves or [], strict=strict)
-    history_complete = _history_provenance_for_input(fen, moves)
+    board, history_complete = _build_board_from_history(fen, moves, strict=strict)
     rule_before = evaluate_rule_status(board, history_complete=history_complete)
 
     if action_type == "claim_draw":

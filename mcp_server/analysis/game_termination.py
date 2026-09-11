@@ -19,6 +19,9 @@ from mcp_server.models.game_coaching import (
     FinalPositionAssessment,
     GameTerminationAssessment,
 )
+from mcp_server.parsers.pgn.movetext import find_movetext_result
+from mcp_server.parsers.pgn.tags import TAG_PAIR_REGEX
+from mcp_server.tools._common import normalize_termination
 
 Side = Literal["white", "black"]
 
@@ -89,15 +92,80 @@ def build_game_termination_assessment(
     explicit_resignation = _explicit_resignation(termination_header)
     terminal = board.is_game_over(claim_draw=False)
     checkmate = board.is_checkmate()
+    norm_term = normalize_termination(termination_header)
+
+    moves_count = sum(1 for _ in game.mainline_moves())
+    initial_terminal = game.board().is_game_over(claim_draw=False)
+
+    has_result_header = False
+    for m in TAG_PAIR_REGEX.finditer(pgn):
+        if m.group(1).lower() == "result":
+            has_result_header = True
+            break
+    result_movetext = find_movetext_result(pgn)
+
+    result_source: Literal[
+        "pgn_header",
+        "movetext",
+        "initial_fen_terminal_state",
+        "inferred_final_board",
+        "movetext_metadata_only",
+    ] | None
+    if moves_count == 0 and initial_terminal:
+        result_source = "initial_fen_terminal_state"
+    elif moves_count == 0 and not has_result_header and result_movetext is not None:
+        result_source = "movetext_metadata_only"
+    elif has_result_header:
+        result_source = "pgn_header"
+    elif result_movetext is not None:
+        result_source = "movetext"
+    elif terminal:
+        result_source = "inferred_final_board"
+    else:
+        result_source = None
+
+    board_outcome: str
+    if checkmate:
+        board_outcome = "checkmate"
+    elif board.is_stalemate():
+        board_outcome = "stalemate"
+    elif board.is_insufficient_material():
+        board_outcome = "insufficient_material"
+    elif board.is_seventyfive_moves():
+        board_outcome = "seventyfive_moves"
+    elif board.is_fivefold_repetition():
+        board_outcome = "fivefold_repetition"
+    elif terminal:
+        board_outcome = "rules_terminal"
+    elif moves_count == 0 and not terminal:
+        board_outcome = "unknown"
+    else:
+        board_outcome = "nonterminal"
 
     if checkmate:
         status = "board_checkmate"
         confidence = "high"
     elif terminal:
-        status = "other_terminal_result"
+        status = "rules_terminal"
         confidence = "high"
-    elif explicit_resignation and decisive:
-        status = "explicit_resignation"
+    elif norm_term == "resignation" or explicit_resignation:
+        if decisive:
+            status = "explicit_resignation"
+            confidence = "high"
+        else:
+            status = "ongoing_or_unknown"
+            confidence = "medium"
+    elif norm_term == "time_forfeit":
+        status = "explicit_time_forfeit"
+        confidence = "high"
+    elif norm_term == "abandoned":
+        status = "explicit_abandoned"
+        confidence = "high"
+    elif norm_term == "adjudication":
+        status = "explicit_adjudication"
+        confidence = "high"
+    elif norm_term == "rules_infraction":
+        status = "rules_infraction"
         confidence = "high"
     elif decisive and termination_header is None:
         status = "candidate_nonterminal_decisive_result"
@@ -129,11 +197,6 @@ def build_game_termination_assessment(
         )
 
     loser_to_move = loser is not None and final_position.side_to_move == loser
-    # F-006 fix (2026-09-09): when there is no loser-to-move, the resource
-    # assessment is "not applicable" rather than "measured zero". Returning
-    # ``None`` for ``legal_resource_count``/``defensive_resources_exist`` and
-    # ``resources_applicable=False`` lets consumers distinguish an ongoing
-    # game (no loser) from an actual checkmate (measured zero).
     return GameTerminationAssessment(
         pgn_result=result,
         termination_header=termination_header,
@@ -159,4 +222,6 @@ def build_game_termination_assessment(
             final_position.defensive_resources_exist if loser_to_move else None
         ),
         resources_applicable=loser_to_move,
+        result_source=result_source,
+        board_outcome=board_outcome,
     )

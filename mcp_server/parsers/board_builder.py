@@ -31,6 +31,7 @@ log = logging.getLogger("chessy_mcp.board_builder")
 
 __all__ = [
     "build_board",
+    "build_board_from_history",
     "build_board_with_metadata",
     "history_provenance_for_input",
 ]
@@ -275,7 +276,74 @@ def build_board_with_metadata(
     return board, input_fen, canonical, was_canonicalized
 
 
+def build_board_from_history(
+    fen_or_pgn: str,
+    moves: list[str] | None,
+    strict: bool = False,
+) -> tuple[chess.Board, str]:
+    """Build a chess.Board from FEN and/or history without double-applying moves.
+
+    When ``moves`` is provided, it represents the move history from startpos
+    leading to the position to establish threefold/fivefold repetition state.
+    If ``fen_or_pgn`` is a custom FEN, the replayed history must reach that
+    exact position. If they disagree, raises ``POSITION_HISTORY_MISMATCH``.
+    """
+    if moves:
+        cleaned = (
+            fen_or_pgn.replace("\u00a0", " ")
+            .replace("\u200b", "")
+            .replace("\ufeff", "")
+            .strip("`'\" \t\r\n")
+        )
+        is_start = cleaned.lower() in ("startpos", "initial", "start") or cleaned == chess.STARTING_FEN
+        target_board = _build_board(fen_or_pgn, [], strict=strict)
+
+        # 1. Check if moves from startpos reaches target_board (Finding 1: history leading to FEN)
+        replay_start = chess.Board()
+        startpos_valid = True
+        for move_str in moves:
+            try:
+                move, _ = _parse_move_on_board_with_warning(replay_start, move_str, strict=strict)
+                replay_start.push(move)
+            except Exception:
+                startpos_valid = False
+                break
+
+        if startpos_valid and (is_start or replay_start.fen() == target_board.fen()):
+            return replay_start, "complete"
+
+        # 2. Check if moves can be replayed starting from target_board
+        replay_from_target = target_board.copy(stack=True)
+        target_valid = True
+        target_err: Exception | None = None
+        for move_str in moves:
+            try:
+                move, _ = _parse_move_on_board_with_warning(replay_from_target, move_str, strict=strict)
+                replay_from_target.push(move)
+            except Exception as e:
+                target_valid = False
+                target_err = e
+                break
+
+        if target_valid:
+            return replay_from_target, "complete"
+
+        # 3. If neither, report history mismatch or error
+        if startpos_valid:
+            raise ValueError(
+                f"POSITION_HISTORY_MISMATCH: Move history replayed from startpos ends at "
+                f"'{replay_start.fen()}', which does not match supplied FEN '{target_board.fen()}'."
+            )
+        if target_err:
+            raise target_err
+
+    board = _build_board(fen_or_pgn, None, strict=strict)
+    history_prov = _history_provenance_for_input(fen_or_pgn, None)
+    return board, history_prov
+
+
 # Underscored aliases for backwards-compatible import paths.
+_build_board_from_history = build_board_from_history
 _build_board_with_metadata = build_board_with_metadata
 _history_provenance_for_input = history_provenance_for_input
 _build_board = build_board

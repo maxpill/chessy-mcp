@@ -110,6 +110,20 @@ def parse_mainline(
             curr_board, reached_terminal, auto_termination
         )
 
+    res_idx = None
+    for i, tok in enumerate(movetext_tokens):
+        clean_tok = tok.strip(".,;:!?")
+        if clean_tok in ("1-0", "0-1", "1/2-1/2", "*"):
+            res_idx = i
+            break
+    if res_idx is not None:
+        trailing = [t for t in movetext_tokens[res_idx + 1 :] if t.strip()]
+        if trailing:
+            warning = f"TRAILING_TOKENS_AFTER_RESULT: PGN contains trailing tokens after game termination marker: {' '.join(trailing)!r}."
+            if strict:
+                raise ValueError(f"STRICT_PGN_ERROR: {warning}")
+            syntax_warnings.append(warning)
+
     return positions, moves, syntax_warnings, ignored_trailing_plies, cleaned_movetext
 
 

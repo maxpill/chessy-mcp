@@ -20,6 +20,7 @@ import chess.pgn
 
 from mcp_server.analysis.position_integrity import build_rich_tactical_snapshot
 from mcp_server.models import MCPEval
+from mcp_server.rules import evaluate_rule_status
 from mcp_server.models.game_coaching import (
     AdvantageEvent,
     CriticalMoment,
@@ -908,9 +909,12 @@ async def _final_assessment(
         except Exception:
             reasonable_count = None
 
+    rule_status = evaluate_rule_status(board, history_complete="complete")
+    is_terminal = board.is_game_over(claim_draw=False)
+    continued_play = (not is_terminal) and legal_count > 0
     return FinalPositionAssessment(
         perspective=perspective,
-        position_terminal_by_rules=board.is_game_over(claim_draw=False),
+        position_terminal_by_rules=is_terminal,
         checkmate=board.is_checkmate(),
         stalemate=board.is_stalemate(),
         forced_mate=board.is_checkmate() or ev.mate is not None,
@@ -919,9 +923,17 @@ async def _final_assessment(
         wdl=ev.wdl,
         side_to_move=_side_name(board.turn),
         legal_move_count=legal_count,
+        board_legal_move_count=legal_count,
+        continued_play_legal_under_rules=continued_play,
+        can_claim_draw=rule_status.can_claim_draw,
+        can_claim_now=rule_status.can_claim_now,
+        claim_reasons_now=rule_status.claim_reasons_now,
+        can_claim_with_intended_move=rule_status.can_claim_with_intended_move,
+        claim_moves=rule_status.claim_moves,
+        recommended_action=rule_status.recommended_action,
         best_move_uci=best_uci,
         best_move_san=best_san,
-        defensive_resources_exist=not board.is_game_over(claim_draw=False) and legal_count > 0,
+        defensive_resources_exist=continued_play,
         reasonable_resource_count=reasonable_count,
         verification_depth=verification_depth if detail == "forensic" else None,
     )

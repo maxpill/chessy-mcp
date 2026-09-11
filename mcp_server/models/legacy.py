@@ -136,6 +136,8 @@ class MCPMoveAnalysis(BaseModel):
     action_class: str = "best"
     action_quality_class: str = "best"
     move_quality_class: str = "best"
+    requested_depth: int | None = None
+    searched_depth: int | None = None
 
     @computed_field  # type: ignore[misc]
     @property
@@ -290,6 +292,8 @@ class MCPMoveAnalysis(BaseModel):
             can_claim_with_intended_move=score.can_claim_with_intended_move,
             claim_moves=score.claim_moves,
             classification_verified=verified,
+            requested_depth=eval_bef.requested_depth,
+            searched_depth=eval_bef.searched_depth,
         )
 
 
@@ -365,6 +369,11 @@ class GameAnalysisResult(BaseModel):
     engine_config: dict[str, Any] = Field(default_factory=dict)
     accuracy_method: str = "win_probability_logistic"
     mate_penalty_policy: str = "1000_cp_mate_transition"
+    is_compact: bool = False
+    is_minimal: bool = False
+    empty_game_reason: (
+        Literal["result_only", "comments_only", "headers_only", "custom_fen_only"] | None
+    ) = None
 
 
 class TopMovesResult(BaseModel):

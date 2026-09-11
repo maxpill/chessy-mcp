@@ -203,6 +203,8 @@ async def classify_move(
                 update={
                     "eval_before": eval_bef,
                     "eval_after": eval_aft,
+                    "requested_depth": raw_requested_depth,
+                    "searched_depth": getattr(eval_bef, "searched_depth", None) or getattr(eval_bef, "depth", None),
                     "syntax_warning": outcome.syntax_warning,
                     "normalization_kind": outcome.normalization_kind,
                     "normalization_changes": outcome.normalization_changes,

@@ -124,6 +124,13 @@ class MechanismCandidateEvidence(BaseModel):
         "engine_supported",
         "pure_geometry",
     ] = "pure_geometry"
+    evidence_level: Literal[
+        "pure_geometry",
+        "legally_actionable",
+        "exchange_validated",
+        "engine_supported",
+        "forced_or_exhaustively_proven",
+    ] = "pure_geometry"
 
     @model_validator(mode="before")
     @classmethod
@@ -145,6 +152,18 @@ class MechanismCandidateEvidence(BaseModel):
                     data["relevance"] = "engine_supported"
                 else:
                     data["relevance"] = "pure_geometry"
+            if "evidence_level" not in data or data["evidence_level"] is None:
+                priority = data.get("presentation_priority", "pure_geometry")
+                if priority == "immediate_mate":
+                    data["evidence_level"] = "forced_or_exhaustively_proven"
+                elif priority == "engine_pv_supported":
+                    data["evidence_level"] = "engine_supported"
+                elif priority in ("checking_move", "capturing_move", "forced_reply", "promotion"):
+                    data["evidence_level"] = "legally_actionable"
+                elif priority in ("new_en_prise", "pinned_defender"):
+                    data["evidence_level"] = "exchange_validated"
+                else:
+                    data["evidence_level"] = "pure_geometry"
         return data
 
 
@@ -152,13 +171,11 @@ class TacticalSnapshot(BaseModel):
     side_to_move: Literal["white", "black"]
     checks: list[ForcingMoveEvidence] = Field(default_factory=list)
     captures: list[ForcingMoveEvidence] = Field(default_factory=list)
-    # F-009 fix (2026-09-09 master audit): split the loose_pieces geometric
-    # fact into three explicit categories. ``loose_pieces`` is preserved as
-    # a back-compat alias for ``undefended_pieces`` (any piece with zero
-    # defenders). New consumers should prefer the explicit fields.
     loose_pieces: list[PieceEvidence] = Field(default_factory=list)
     undefended_pieces: list[PieceEvidence] = Field(default_factory=list)
     attacked_undefended_pieces: list[PieceEvidence] = Field(default_factory=list)
+    tactically_loose_pieces: list[PieceEvidence] = Field(default_factory=list)
+    attacked_pieces: list[PieceEvidence] = Field(default_factory=list)
     en_prise_pieces: list[PieceEvidence] = Field(default_factory=list)
     pinned_pieces: list[PieceEvidence] = Field(default_factory=list)
     tactically_hanging_candidates: list[TacticalHangingEvidence] = Field(default_factory=list)

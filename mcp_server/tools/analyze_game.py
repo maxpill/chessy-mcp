@@ -22,6 +22,8 @@ from mcp_server.analysis.game_analyzer import GameAnalyzer
 from mcp_server.metrics import metrics
 from mcp_server.models.game_coaching import ForensicGameAnalysisResult
 from mcp_server.tools._common import (
+    VerbosityInput,
+    _resolve_verbosity,
     _tool_error,
     _validate_requested_depth,
     error_code_for,
@@ -64,6 +66,12 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             description="Maximum number of critical moments to extract (clamped between 1 and 7, default 6)."
         ),
     ] = 6,
+    verbosity: Annotated[
+        VerbosityInput | None,
+        Field(
+            description="Response verbosity: 'full' (default), 'compact', or 'minimal' (aliases 'min', 'standard', 'default' accepted)."
+        ),
+    ] = None,
     ctx: Context | None = None,
 ) -> ForensicGameAnalysisResult:
     """Analyze a full PGN, optionally as a structured coaching post-mortem.
@@ -128,7 +136,9 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             message=f"INVALID_PERSPECTIVE: {perspective}",
             tool="analyze_game",
         )
-    max_critical_moments = max(1, min(max_critical_moments, 7))
+    raw_requested_moments = max_critical_moments
+    clamped_moments = max(1, min(max_critical_moments, 7))
+    verbosity_mode = _resolve_verbosity(verbosity)
 
     try:
         return await _ANALYZER.analyze(
@@ -137,7 +147,9 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
             strict=strict,
             detail=detail,
             perspective=perspective,
-            max_critical_moments=max_critical_moments,
+            max_critical_moments=clamped_moments,
+            raw_requested_max_critical_moments=raw_requested_moments,
+            verbosity_mode=verbosity_mode,
             ctx=ctx,
             metrics=metrics,
         )

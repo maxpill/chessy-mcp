@@ -88,6 +88,7 @@ class MCPEval(BaseModel):
     legal_rule_actions: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     legal_move_uci: list[str] = Field(default_factory=list[str])
     board_legal_move_uci: list[str] = Field(default_factory=list[str])
+    multipv: int | None = None
     search_provenance: dict[str, Any] | None = None
     legal_move_count: int | None = None
     # Bug fix (chessy-mcp-deep-audit §12): terminal positions previously

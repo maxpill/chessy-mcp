@@ -54,7 +54,9 @@ def test_tactical_snapshot_lists_checks_captures_en_prise_and_pins() -> None:
     assert qxe7.is_check is True
     assert qxe7.is_capture is True
     assert qxe7.captured_piece == "black_rook"
-    assert any(piece.square == "e7" for piece in snapshot.en_prise_pieces)
+    assert any(piece.square == "e7" for piece in snapshot.attacked_pieces)
+    en_prise_board = chess.Board("4k3/4r3/8/8/8/8/4R3/4K3 w - - 0 1")
+    assert any(piece.square == "e7" for piece in build_tactical_snapshot(en_prise_board).en_prise_pieces)
 
     pinned = chess.Board("4k3/4n3/8/8/8/8/8/4R1K1 w - - 0 1")
     pinned_snapshot = build_tactical_snapshot(pinned)

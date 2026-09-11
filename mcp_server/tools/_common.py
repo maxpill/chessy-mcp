@@ -148,7 +148,6 @@ def _compact_mcpeval(mcp_eval: Any) -> Any:
             "lichess_image": None,
             "decision_value": None,
             "engine_eval": None,
-            "input_fen": None,
             # F-004 fix: heavy nested/legacy/forensic fields.
             "legal_actions": [],
             "legal_rule_actions": [],
@@ -298,6 +297,7 @@ _ERROR_CODE_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
     ("ILLEGAL_MOVE", "illegal_move"),
     ("AMBIGUOUS_SAN", "ambiguous_san"),
     ("GAME_ALREADY_OVER", "game_already_over"),
+    ("POSITION_HISTORY_MISMATCH", "position_history_mismatch"),
     ("INVALID_PGN", "invalid_pgn"),
     ("Could not parse PGN", "invalid_pgn"),
     ("Invalid PGN", "invalid_pgn"),

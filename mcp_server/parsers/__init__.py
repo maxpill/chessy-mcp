@@ -12,9 +12,11 @@ parsing stages:
 
 from mcp_server.parsers.board_builder import (
     _build_board,
+    _build_board_from_history,
     _build_board_with_metadata,
     _history_provenance_for_input,
     build_board,
+    build_board_from_history,
     build_board_with_metadata,
     history_provenance_for_input,
 )
@@ -106,9 +108,11 @@ from mcp_server.parsers.pgn_validate import (
 __all__ = [  # noqa: RUF022 - grouped by parser stage for navigability
     # board_builder
     "build_board",
+    "build_board_from_history",
     "build_board_with_metadata",
     "history_provenance_for_input",
     "_build_board",
+    "_build_board_from_history",
     "_build_board_with_metadata",
     "_history_provenance_for_input",
     # move_parser

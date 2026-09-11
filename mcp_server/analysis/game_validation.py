@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from mcp_server.parsers import (
     TAG_PAIR_REGEX,
@@ -53,6 +53,9 @@ class GameMetadata:
     metadata_warnings: list[str] = field(default_factory=list[str])
     syntax_warnings: list[str] = field(default_factory=list[str])
     duplicate_tag_counts: dict[str, int] = field(default_factory=dict[str, int])
+    empty_game_reason: (
+        Literal["result_only", "comments_only", "headers_only", "custom_fen_only"] | None
+    ) = None
 
 
 _CANONICAL_RESULTS = frozenset({"1-0", "0-1", "1/2-1/2", "*"})
@@ -232,11 +235,26 @@ def extract_game_metadata(
     if md.time_control is not None and not _is_valid_pgn_time_control(md.time_control):
         md.metadata_warnings.append(f"Invalid TimeControl header tag '{md.time_control}'.")
 
-    if is_comment_only_input and not strict:
-        md.metadata_warnings.append(
-            "Input PGN contained only comments (and optionally a result "
-            "token) with no moves; returning an empty game."
-        )
+    if is_comment_only_input:
+        has_custom_fen = bool(tags.get("fen") or h.get("FEN"))
+        has_comments = bool(re.search(r"\{[^{}]*\}|;[^\r\n]*", canonical_pgn))
+        has_headers = bool(tags)
+        if has_custom_fen:
+            reason: Literal["result_only", "comments_only", "headers_only", "custom_fen_only"] = "custom_fen_only"
+            msg = "Input PGN contains a custom FEN and no mainline moves; returning a zero-ply game."
+        elif has_comments:
+            reason = "comments_only"
+            msg = "Input PGN contained only comments (and optionally a result token) with no moves; returning a zero-ply game."
+        elif has_headers:
+            reason = "headers_only"
+            msg = "Input PGN contains only headers and no mainline moves; returning a zero-ply game."
+        else:
+            reason = "result_only"
+            msg = "Input PGN contains no mainline moves; returning a zero-ply game."
+
+        md.empty_game_reason = reason
+        if not strict:
+            md.metadata_warnings.append(msg)
 
     setup_header = h.get("SetUp")
     fen_header = h.get("FEN")

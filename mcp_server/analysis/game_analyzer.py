@@ -112,6 +112,40 @@ def _finalize_coaching_evidence(
     )
 
 
+def _compact_coaching_evidence(
+    coaching: GameCoachingEvidence,
+    *,
+    is_minimal: bool,
+) -> GameCoachingEvidence:
+    compact_moments = []
+    for m in coaching.critical_moments:
+        updates: dict[str, Any] = {
+            "opponent_forcing_moves_after_played": [],
+            "newly_enabled_opponent_forcing_moves_after_played": [],
+            "resolved_opponent_forcing_threat_candidates": [],
+            "strengthened_opponent_forcing_moves": [],
+            "weakened_opponent_forcing_moves": [],
+            "forcing_move_semantic_transitions": [],
+            "mate_in_one_moves_before": [],
+            "opponent_mate_in_one_threats_if_pass_before": [],
+            "opponent_mate_in_one_moves_after_played": [],
+        }
+        if is_minimal:
+            updates["causal_trace"] = None
+        compact_moments.append(m.model_copy(update=updates))
+
+    coaching_updates: dict[str, Any] = {
+        "critical_moments": compact_moments,
+    }
+    if is_minimal:
+        coaching_updates["advantage_events"] = []
+        coaching_updates["root_cause_links"] = []
+        coaching_updates["failure_corpus"] = None
+        coaching_updates["critical_evidence_signature_counts"] = {}
+        coaching_updates["critical_reason_counts"] = {}
+    return coaching.model_copy(update=coaching_updates)
+
+
 def _build_fifty_move_short_circuit(
     *,
     game_result: str,
@@ -234,9 +268,12 @@ def _build_zero_ply_coaching(
     record set so the rich-mode response schema is satisfied.
     """
     legal_count = board.legal_moves.count()
+    rule_status = evaluate_rule_status(board, history_complete="complete")
+    is_terminal = board.is_game_over(claim_draw=False)
+    continued_play = (not is_terminal) and legal_count > 0
     final_position = FinalPositionAssessment(
         perspective=perspective,
-        position_terminal_by_rules=board.is_game_over(claim_draw=False),
+        position_terminal_by_rules=is_terminal,
         checkmate=board.is_checkmate(),
         stalemate=board.is_stalemate(),
         forced_mate=board.is_checkmate(),
@@ -245,9 +282,17 @@ def _build_zero_ply_coaching(
         wdl=None,
         side_to_move="white" if board.turn == chess.WHITE else "black",
         legal_move_count=legal_count,
+        board_legal_move_count=legal_count,
+        continued_play_legal_under_rules=continued_play,
+        can_claim_draw=rule_status.can_claim_draw,
+        can_claim_now=rule_status.can_claim_now,
+        claim_reasons_now=rule_status.claim_reasons_now,
+        can_claim_with_intended_move=rule_status.can_claim_with_intended_move,
+        claim_moves=rule_status.claim_moves,
+        recommended_action=rule_status.recommended_action,
         best_move_uci=None,
         best_move_san=None,
-        defensive_resources_exist=not board.is_game_over(claim_draw=False) and legal_count > 0,
+        defensive_resources_exist=continued_play,
         reasonable_resource_count=None,
         verification_depth=scan_depth if detail == "forensic" else None,
     )
@@ -306,6 +351,8 @@ class GameAnalyzer:
         detail: GameDetail = "standard",
         perspective: GamePerspective = "white",
         max_critical_moments: int = 6,
+        raw_requested_max_critical_moments: int | None = None,
+        verbosity_mode: str = "full",
         metrics: Any | None = None,
     ) -> ForensicGameAnalysisResult:
         t0 = time.time()
@@ -404,6 +451,10 @@ class GameAnalyzer:
                     scan_depth=raw_requested_depth,
                     pgn=pgn,
                 )
+            if zero_ply_coaching is not None and verbosity_mode in ("compact", "minimal"):
+                zero_ply_coaching = _compact_coaching_evidence(
+                    zero_ply_coaching, is_minimal=(verbosity_mode == "minimal")
+                )
             if metrics is not None:
                 await metrics.record("analyze_game", (time.time() - t0) * 1000, cache_hit=True)
             return ForensicGameAnalysisResult(
@@ -435,7 +486,7 @@ class GameAnalyzer:
                 result_header=metadata.result_header,
                 result_header_raw=metadata.result_header_raw,
                 result_movetext=result_movetext,
-                result_inferred=None,
+                result_inferred=reconciled.result_inferred,
                 white_elo=metadata.white_elo,
                 black_elo=metadata.black_elo,
                 time_control=metadata.time_control,
@@ -456,6 +507,12 @@ class GameAnalyzer:
                 accuracy_method="win_probability_logistic",
                 mate_penalty_policy="1000_cp_mate_transition",
                 coaching=zero_ply_coaching,
+                requested_max_critical_moments=raw_requested_max_critical_moments or max_critical_moments,
+                clamped_max_critical_moments=max_critical_moments,
+                returned_critical_moments=len(zero_ply_coaching.critical_moments) if zero_ply_coaching else 0,
+                empty_game_reason=getattr(metadata, "empty_game_reason", None),
+                is_compact=(verbosity_mode in ("compact", "minimal")),
+                is_minimal=(verbosity_mode == "minimal"),
             )
 
         batch_depth = depth
@@ -526,6 +583,12 @@ class GameAnalyzer:
                 cache_hit=all_cached,
             )
 
+        if coaching is not None and verbosity_mode in ("compact", "minimal"):
+            coaching = _compact_coaching_evidence(
+                coaching, is_minimal=(verbosity_mode == "minimal")
+            )
+        turning_pts = [] if verbosity_mode == "minimal" else game_metrics.turning_points
+
         return ForensicGameAnalysisResult(
             total_plies=len(moves),
             white_accuracy=game_metrics.white_accuracy,
@@ -544,7 +607,7 @@ class GameAnalyzer:
             black_blunders=game_metrics.black_blunders,
             black_mistakes=game_metrics.black_mistakes,
             black_inaccuracies=game_metrics.black_inaccuracies,
-            turning_points=game_metrics.turning_points,
+            turning_points=turning_pts,
             white=metadata.white,
             black=metadata.black,
             event=metadata.event,
@@ -576,6 +639,12 @@ class GameAnalyzer:
             accuracy_method="win_probability_logistic",
             mate_penalty_policy="1000_cp_mate_transition",
             coaching=coaching,
+            requested_max_critical_moments=raw_requested_max_critical_moments or max_critical_moments,
+            clamped_max_critical_moments=max_critical_moments,
+            returned_critical_moments=len(coaching.critical_moments) if coaching else 0,
+            empty_game_reason=getattr(metadata, "empty_game_reason", None),
+            is_compact=(verbosity_mode in ("compact", "minimal")),
+            is_minimal=(verbosity_mode == "minimal"),
         )
 
 

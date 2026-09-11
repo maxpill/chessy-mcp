@@ -66,6 +66,10 @@ def _detect_san_normalization(
     if raw_s != trimmed:
         changes.append("whitespace_trimmed")
 
+    # 0. Annotation suffixes (!, ?, !?, ?!, !!, ??)
+    if re.search(r"[\?!]+$", raw_s):
+        changes.append("annotation_suffix_removed")
+
     # 1. Capture claims
     claimed_capture = "x" in raw_s or ":" in raw_s
     actual_capture = board.is_capture(move)
@@ -87,6 +91,7 @@ def _detect_san_normalization(
 
     if claimed_mate and not is_mate:
         changes.append("mate_marker_removed")
+        changes.append("mate_suffix_corrected")
         is_semantic = True
     elif not claimed_mate and is_mate:
         changes.append("mate_marker_added")
@@ -94,6 +99,7 @@ def _detect_san_normalization(
 
     if claimed_check and not is_check:
         changes.append("check_marker_removed")
+        changes.append("check_suffix_corrected")
         is_semantic = True
     elif not claimed_check and is_check and not claimed_mate:
         changes.append("check_marker_added")
@@ -101,6 +107,7 @@ def _detect_san_normalization(
 
     # 3. Promotion notation
     if "=" not in raw_s and "=" in canonical:
+        changes.append("promotion_equals_inserted")
         changes.append("promotion_syntax_normalized")
 
     # 4. Castling variants

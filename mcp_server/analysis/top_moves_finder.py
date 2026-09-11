@@ -162,7 +162,7 @@ class TopMovesFinder:
             needs_post_eval = bool(
                 rule_status.can_claim_now or rule_status.can_claim_with_intended_move
             )
-            for r in results:
+            for idx, r in enumerate(results, start=1):
                 mcp_eval = await evaluate_candidate(
                     board=board,
                     candidate=r,
@@ -173,6 +173,7 @@ class TopMovesFinder:
                     raw_requested_depth=raw_requested_depth,
                     depth=depth,
                     needs_post_eval=needs_post_eval,
+                    multipv=idx,
                 )
                 res_list.append(mcp_eval)
             # Bug fix (chessy-mcp-deep-audit §4): at halfmove >= 100 the root
@@ -209,6 +210,10 @@ class TopMovesFinder:
                         else:
                             res_list.append(synthetic)
             res_list.sort(key=lambda item: rank_candidate(item, sign=sign), reverse=True)
+            for idx, item in enumerate(res_list, start=1):
+                prov = dict(item.search_provenance or {})
+                prov["multipv"] = idx
+                res_list[idx - 1] = item.model_copy(update={"multipv": idx, "search_provenance": prov})
             await self._cache_set_top_moves(cache_key, res_list)
             return res_list
 

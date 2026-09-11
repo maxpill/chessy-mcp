@@ -31,6 +31,7 @@ from mcp_server.models.forensics import (
 )
 from mcp_server.models import MCPEval
 from mcp_server.models.legacy import TopMovesResult
+from mcp_server.tools._common import _compact_mcpeval, _minimal_mcpeval
 
 
 MATE_VALUE = 100_000
@@ -329,6 +330,8 @@ async def enrich_top_moves_result(
 
     new_items = list(result.result)
     existing_ucis = {c.best_move.lower() for c in new_items if c.best_move}
+    root_is_minimal = any(getattr(c, "is_minimal", False) for c in result.result)
+    root_is_compact = root_is_minimal or any(getattr(c, "is_compact", False) for c in result.result)
 
     if include_moves:
         from core.engines.types import Eval
@@ -351,6 +354,7 @@ async def enrich_top_moves_result(
                     pv=[comp.uci, *list(comp.continuation_uci)],
                     depth=comp.searched_depth or depth,
                 )
+                cand_multipv = len(new_items) + 1
                 cand_mcpeval = await evaluate_candidate(
                     board=board,
                     candidate=cand_eval,
@@ -363,16 +367,23 @@ async def enrich_top_moves_result(
                     needs_post_eval=bool(
                         rule_status.can_claim_now or rule_status.can_claim_with_intended_move
                     ),
+                    multipv=cand_multipv,
                 )
                 cand_mcpeval = cand_mcpeval.model_copy(
                     update={
+                        "multipv": cand_multipv,
                         "search_provenance": {
                             "kind": "candidate_research",
                             "depth": comp.searched_depth or depth,
+                            "multipv": cand_multipv,
                             "sources": ["include_moves"],
-                        }
+                        },
                     }
                 )
+                if root_is_minimal:
+                    cand_mcpeval = _minimal_mcpeval(cand_mcpeval)
+                elif root_is_compact:
+                    cand_mcpeval = _compact_mcpeval(cand_mcpeval)
                 new_items.append(cand_mcpeval)
                 existing_ucis.add(comp_uci)
             else:
@@ -427,6 +438,17 @@ async def enrich_top_moves_result(
 
     returned_candidate_ucis = {(c.best_move or "").lower() for c in new_items if c.best_move}
     unique_included = seen_include_ucis.intersection(returned_candidate_ucis)
+
+    if root_is_minimal:
+        new_items = [
+            _minimal_mcpeval(c) if not getattr(c, "is_minimal", False) else c
+            for c in new_items
+        ]
+    elif root_is_compact:
+        new_items = [
+            _compact_mcpeval(c) if not getattr(c, "is_compact", False) else c
+            for c in new_items
+        ]
 
     result = result.model_copy(
         update={

@@ -122,6 +122,7 @@ def test_each_tool_has_canonical_parameter_set() -> None:
         "detail",
         "max_critical_moments",
         "perspective",
+        "verbosity",
     } <= ag_props
 
 
@@ -144,7 +145,7 @@ def test_verbosity_enums_match_supported_inputs() -> None:
     from mcp_server.tools._common import SUPPORTED_VERBOSITY_INPUTS
 
     schemas = _tool_schemas()
-    for tool_name in ("evaluate_position", "top_moves"):
+    for tool_name in ("evaluate_position", "top_moves", "analyze_game"):
         verbosity_prop = schemas[tool_name]["properties"]["verbosity"]
         enum_values = None
         for item in verbosity_prop.get("anyOf", []):

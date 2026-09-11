@@ -34,6 +34,8 @@ from mcp_server.rules.constants import (
 )
 from mcp_server.tools._common import (
     VerbosityInput,
+    _compact_mcpeval,
+    _minimal_mcpeval,
     _resolve_verbosity,
     _tool_error,
     _validate_requested_depth,
@@ -196,6 +198,25 @@ async def top_moves(
                 strict=strict,
             )
             result = upgrade_top_moves_forensics(result, board)
+
+        if verbosity_mode == "compact":
+            result = result.model_copy(
+                update={
+                    "result": [
+                        _compact_mcpeval(c) if not getattr(c, "is_compact", False) else c
+                        for c in result.result
+                    ]
+                }
+            )
+        elif verbosity_mode == "minimal":
+            result = result.model_copy(
+                update={
+                    "result": [
+                        _minimal_mcpeval(c) if not getattr(c, "is_minimal", False) else c
+                        for c in result.result
+                    ]
+                }
+            )
 
         await metrics.record(
             "top_moves",

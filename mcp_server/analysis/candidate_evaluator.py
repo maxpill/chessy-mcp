@@ -32,6 +32,7 @@ async def evaluate_candidate(
     raw_requested_depth: int,
     depth: int,
     needs_post_eval: bool,
+    multipv: int | None = None,
 ) -> MCPEval:
     """Build the :class:`MCPEval` entry for one MultiPV candidate.
 
@@ -135,10 +136,11 @@ async def evaluate_candidate(
             "best_action": cand_recommended_action,
             "best_action_type": cand_recommended_action,
             "best_action_obj": cand_best_action_obj,
+            "multipv": multipv if multipv is not None else getattr(candidate, "multipv", 1),
             "search_provenance": {
                 "kind": "multipv_root",
                 "depth": getattr(candidate, "depth", depth),
-                "multipv": getattr(candidate, "multipv", None),
+                "multipv": multipv if multipv is not None else getattr(candidate, "multipv", 1),
             },
             "post_state_cp": post_state_cp,
             "post_state_mate": post_state_mate,

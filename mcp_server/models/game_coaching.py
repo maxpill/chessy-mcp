@@ -176,6 +176,14 @@ class FinalPositionAssessment(BaseModel):
     wdl: tuple[int, int, int] | None = None
     side_to_move: Literal["white", "black"]
     legal_move_count: int
+    board_legal_move_count: int | None = None
+    continued_play_legal_under_rules: bool = True
+    can_claim_draw: bool = False
+    can_claim_now: bool = False
+    claim_reasons_now: list[str] = Field(default_factory=list)
+    can_claim_with_intended_move: bool = False
+    claim_moves: list[str] = Field(default_factory=list)
+    recommended_action: str | None = None
     best_move_uci: str | None = None
     best_move_san: str | None = None
     defensive_resources_exist: bool
@@ -206,12 +214,41 @@ class GameTerminationAssessment(BaseModel):
     loser_side: Literal["white", "black"] | None = None
     status: Literal[
         "explicit_resignation",
+        "explicit_time_forfeit",
+        "explicit_abandoned",
+        "explicit_adjudication",
+        "rules_infraction",
+        "rules_terminal",
         "candidate_nonterminal_decisive_result",
         "board_checkmate",
         "other_terminal_result",
         "ongoing_or_unknown",
     ] = "ongoing_or_unknown"
     confidence: Literal["high", "medium", "low"] = "low"
+    result_source: (
+        Literal[
+            "pgn_header",
+            "movetext",
+            "initial_fen_terminal_state",
+            "inferred_final_board",
+            "movetext_metadata_only",
+        ]
+        | None
+    ) = None
+    board_outcome: (
+        Literal[
+            "checkmate",
+            "stalemate",
+            "insufficient_material",
+            "seventyfive_moves",
+            "fivefold_repetition",
+            "draw_by_rule",
+            "rules_terminal",
+            "nonterminal",
+            "unknown",
+        ]
+        | None
+    ) = None
     final_board_terminal: bool = False
     final_board_checkmate: bool = False
     continued_play_was_legal: bool = False
@@ -294,3 +331,6 @@ class ForensicGameAnalysisResult(GameAnalysisResult):
     """Backward-compatible ``analyze_game`` result with opt-in coaching evidence."""
 
     coaching: GameCoachingEvidence | None = None
+    requested_max_critical_moments: int | None = None
+    clamped_max_critical_moments: int | None = None
+    returned_critical_moments: int | None = None

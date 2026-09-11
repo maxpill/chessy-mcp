@@ -233,6 +233,8 @@ def build_classification(
             )
         ),
         move_quality_class=score.move_class.value,
+        requested_depth=getattr(eval_before, "requested_depth", None) or getattr(eval_before, "depth", None),
+        searched_depth=getattr(eval_before, "searched_depth", None) or getattr(eval_before, "depth", None),
     )
 
 

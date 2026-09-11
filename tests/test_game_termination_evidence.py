@@ -87,7 +87,9 @@ def test_explicit_non_resignation_termination_is_not_relabelled_as_resignation()
 """
     assessment = build_game_termination_assessment(pgn, final_position=_final())
 
-    assert assessment.status == "ongoing_or_unknown"
+    assert assessment.status == "explicit_time_forfeit"
+    assert assessment.status != "explicit_resignation"
+    assert assessment.confidence == "high"
     assert assessment.termination_header == "time forfeit"
     assert assessment.objectively_forced is False
 

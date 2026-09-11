@@ -170,33 +170,68 @@ def _classify_presentation_priority(
 
 
 def build_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
+    from mcp_server.analysis.tactical_snapshot_extensions import (
+        MAX_LOCAL_EXCHANGE_PLIES,
+        _local_exchange_minimax,
+    )
+
     checks: list[ForcingMoveEvidence] = []
     captures: list[ForcingMoveEvidence] = []
     en_prise_squares: set[chess.Square] = set()
+
+    root_color = board.turn
+    baseline = sum(
+        PIECE_VALUES[p.piece_type] for p in board.piece_map().values() if p.color == root_color
+    ) - sum(
+        PIECE_VALUES[p.piece_type] for p in board.piece_map().values() if p.color != root_color
+    )
+
     for move in board.legal_moves:
         if board.gives_check(move):
             checks.append(_move_evidence(board, move))
         if board.is_capture(move):
             captures.append(_move_evidence(board, move))
             if not board.is_en_passant(move) and board.piece_at(move.to_square) is not None:
-                en_prise_squares.add(move.to_square)
+                target = board.piece_at(move.to_square)
+                assert target is not None
+                defenders = len(board.attackers(target.color, move.to_square))
+                if defenders == 0:
+                    en_prise_squares.add(move.to_square)
+                else:
+                    post = board.copy(stack=True)
+                    post.push(move)
+                    gain, _, _, _ = _local_exchange_minimax(
+                        post,
+                        move.to_square,
+                        root_color=root_color,
+                        baseline_material=baseline,
+                        plies_left=MAX_LOCAL_EXCHANGE_PLIES - 1,
+                        memo={},
+                    )
+                    if gain >= 0:
+                        en_prise_squares.add(move.to_square)
 
     loose: list[PieceEvidence] = []
+    undefended: list[PieceEvidence] = []
     attacked_undefended: list[PieceEvidence] = []
+    tactically_loose: list[PieceEvidence] = []
+    attacked: list[PieceEvidence] = []
     en_prise: list[PieceEvidence] = []
     pinned: list[PieceEvidence] = []
     for square, piece in board.piece_map().items():
         if piece.piece_type == chess.KING:
             continue
         evidence = _piece_evidence(board, square, piece)
+        if evidence.attackers > 0:
+            attacked.append(evidence)
         if evidence.defenders == 0:
             loose.append(evidence)
-            # F-009 fix (2026-09-09): attacked_undefended distinguishes pieces
-            # that are merely undefended (geometric fact, often harmless such
-            # as the starting a1 rook) from pieces that are also attacked and
-            # thus capturable in one move.
+            undefended.append(evidence)
             if evidence.attackers > 0:
                 attacked_undefended.append(evidence)
+                tactically_loose.append(evidence)
+            elif square not in (chess.A1, chess.H1, chess.A8, chess.H8):
+                tactically_loose.append(evidence)
         if square in en_prise_squares:
             en_prise.append(evidence)
         if board.is_pinned(piece.color, square):
@@ -207,8 +242,10 @@ def build_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
         checks=sorted(checks, key=lambda item: item.san),
         captures=sorted(captures, key=lambda item: item.san),
         loose_pieces=sorted(loose, key=_piece_sort_key),
-        undefended_pieces=sorted(loose, key=_piece_sort_key),
+        undefended_pieces=sorted(undefended, key=_piece_sort_key),
         attacked_undefended_pieces=sorted(attacked_undefended, key=_piece_sort_key),
+        tactically_loose_pieces=sorted(tactically_loose, key=_piece_sort_key),
+        attacked_pieces=sorted(attacked, key=_piece_sort_key),
         en_prise_pieces=sorted(en_prise, key=_piece_sort_key),
         pinned_pieces=sorted(pinned, key=_piece_sort_key),
     )

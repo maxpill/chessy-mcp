@@ -612,14 +612,14 @@ async def test_cat_a_openings_matrix(opening_moves: str) -> None:
 @pytest.mark.parametrize("term_header,result_str,expected_status", [
     ("White resigned", "0-1", "explicit_resignation"),
     ("Black resigned", "1-0", "explicit_resignation"),
-    ("Time forfeit", "1-0", "ongoing_or_unknown"),
-    ("Time forfeit", "0-1", "ongoing_or_unknown"),
-    ("Adjudication", "1-0", "ongoing_or_unknown"),
+    ("Time forfeit", "1-0", "explicit_time_forfeit"),
+    ("Time forfeit", "0-1", "explicit_time_forfeit"),
+    ("Adjudication", "1-0", "explicit_adjudication"),
     ("Normal", "1-0", "ongoing_or_unknown"),
     ("Normal", "0-1", "ongoing_or_unknown"),
     ("Resignation", "1-0", "explicit_resignation"),
     ("Resignation", "0-1", "explicit_resignation"),
-    ("Rules infraction", "1-0", "ongoing_or_unknown"),
+    ("Rules infraction", "1-0", "rules_infraction"),
 ])
 async def test_cat_b_termination_matrix(term_header: str, result_str: str, expected_status: str) -> None:
     pgn = f'[Termination "{term_header}"]\n[Result "{result_str}"]\n\n1. e4 e5 2. Nf3 Nc6 {result_str}'

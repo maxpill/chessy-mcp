@@ -46,7 +46,8 @@ def validate_strict_header_syntax(text: str) -> None:
     raw_lines = normalized.splitlines()
     masked_lines = masked.splitlines()
     for index, visible in enumerate(masked_lines):
-        if not re.match(r"^\s*\[[A-Za-z0-9_]+\b", visible):
+        stripped = visible.strip()
+        if not stripped.startswith("["):
             continue
         raw = raw_lines[index] if index < len(raw_lines) else visible
         if not is_canonical_tag_line(raw):
@@ -73,12 +74,10 @@ def sanitize_malformed_pgn_header_lines(text: str, strict: bool = False) -> tupl
             break
 
     prefix = "".join(lines[:first_move_line])
-    if TAG_PAIR_REGEX.search(_mask_comments_and_escapes(prefix)) is None:
+    has_tag_candidate = bool(re.search(r"^\s*\[", prefix, re.MULTILINE))
+    if not has_tag_candidate and TAG_PAIR_REGEX.search(_mask_comments_and_escapes(prefix)) is None:
         return normalized, []
 
-    # Header-only PGNs (no first-move line) sanitize every line in the prefix;
-    # previously the early-return silently dropped malformed headers in
-    # header-only inputs.
     scan_end = first_move_line if first_move_line < len(lines) else len(lines)
 
     warnings: list[str] = []
@@ -96,7 +95,7 @@ def sanitize_malformed_pgn_header_lines(text: str, strict: bool = False) -> tupl
             continue
         warning = f"Malformed PGN header line ignored: {stripped!r}."
         if strict:
-            raise ValueError(f"STRICT_VALIDATION_ERROR: {warning}")
+            raise ValueError(f"STRICT_PGN_ERROR: {warning}")
         warnings.append(warning)
         newline = (
             "\r\n" if lines[idx].endswith("\r\n") else ("\n" if lines[idx].endswith("\n") else "")

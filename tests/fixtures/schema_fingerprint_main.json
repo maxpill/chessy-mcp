@@ -1,5 +1,5 @@
 {
-  "fingerprint": "70e8e4d8a48e25f8becbe2d2428379ee02a8408189889150e1c4e1ef3a0cdbeb",
+  "fingerprint": "a1d4ce59d22b0cacb95cb1237df1199e4f9a8cb1e1854dc1b098ad9179390e94",
   "tools": {
     "analyze_game": {
       "properties": {
@@ -46,6 +46,27 @@
           "description": "When True, reject non-canonical SAN syntax or move numbers.",
           "title": "Strict",
           "type": "boolean"
+        },
+        "verbosity": {
+          "anyOf": [
+            {
+              "enum": [
+                "minimal",
+                "compact",
+                "full",
+                "min",
+                "standard",
+                "default"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Response verbosity: 'full' (default), 'compact', or 'minimal' (aliases 'min', 'standard', 'default' accepted).",
+          "title": "Verbosity"
         }
       },
       "required": [
