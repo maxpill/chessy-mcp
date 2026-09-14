@@ -203,9 +203,7 @@ class MCPMoveAnalysis(BaseModel):
             if self.action_class in ("best", "good"):
                 self.action_class = "suboptimal_rule_action"
             if self.missed_draw_claim_kind == "none":
-                self.missed_draw_claim_kind = (
-                    "immediate" if self.can_claim_now else "intended_move"
-                )
+                self.missed_draw_claim_kind = "immediate" if self.can_claim_now else "intended_move"
         return self
 
     @classmethod
@@ -421,7 +419,10 @@ class GameAnalysisResult(BaseModel):
     is_compact: bool = False
     is_minimal: bool = False
     empty_game_reason: (
-        Literal["result_only", "comments_only", "headers_only", "custom_fen_only", "no_mainline_moves"] | None
+        Literal[
+            "result_only", "comments_only", "headers_only", "custom_fen_only", "no_mainline_moves"
+        ]
+        | None
     ) = None
 
 
@@ -466,6 +467,13 @@ class TopMovesResult(BaseModel):
     canonical_fen: str | None = None
     fen_was_canonicalized: bool = False
     result: list[MCPEval] = Field(default_factory=list[MCPEval])
+    # Audit Phase 11 (2026-09-14): the field exists on the parent model so
+    # ``TopMovesResult.model_dump()`` preserves the deterministic terminal
+    # forensic root attached by ``_build_terminal_forensic_root`` without
+    # pydantic stripping it. ``ForensicTopMovesResult`` redeclares this
+    # field with the proper ``TopMovesForensicEvidence`` annotation; this
+    # declaration only acts as a tag for the parent.
+    forensics: Any | None = None
 
     @property
     def candidates(self) -> list[MCPEval]:
@@ -477,7 +485,11 @@ class TopMovesResult(BaseModel):
         if self.board_legal_move_uci is not None and self.legal_move_uci is not None:
             if not self.board_legal_move_uci and self.legal_move_uci:
                 self.board_legal_move_uci = list(self.legal_move_uci)
-            elif not self.legal_move_uci and self.board_legal_move_uci and self.recommended_action != "game_over":
+            elif (
+                not self.legal_move_uci
+                and self.board_legal_move_uci
+                and self.recommended_action != "game_over"
+            ):
                 self.legal_move_uci = list(self.board_legal_move_uci)
         if self.returned_n is None:
             self.returned_n = len(self.result)
