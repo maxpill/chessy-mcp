@@ -19,6 +19,10 @@ import re
 
 import chess
 
+from mcp_server.contracts.normalized_input import (
+    InputKind,
+    NormalizedPositionInput,
+)
 from mcp_server.parsers.move_parser import _parse_move_on_board_with_warning
 from mcp_server.parsers.pgn import _extract_game
 from mcp_server.parsers.pgn_validate import (
@@ -33,8 +37,40 @@ __all__ = [
     "build_board",
     "build_board_from_history",
     "build_board_with_metadata",
+    "build_normalized_position",
     "history_provenance_for_input",
 ]
+
+
+_FEN_FIELD_NAMES: tuple[str, ...] = (
+    "placement",
+    "side",
+    "castling",
+    "en_passant",
+    "halfmove",
+    "fullmove",
+)
+
+
+def _classify_input_kind(cleaned: str, tokens: list[str]) -> InputKind:
+    if cleaned.lower() in ("startpos", "initial", "start"):
+        return "startpos"
+    if cleaned.startswith("["):
+        return "pgn"
+    if "/" in cleaned and not tokens[0].endswith("."):
+        if 1 <= len(tokens) <= 6:
+            return "fen"
+        if len(tokens) > 6:
+            return "fen"
+    return "pgn"
+
+
+def _defaulted_fields_for_fen(token_count: int) -> tuple[str, ...]:
+    if token_count >= 6:
+        return ()
+    if token_count <= 0:
+        return _FEN_FIELD_NAMES
+    return _FEN_FIELD_NAMES[token_count:]
 
 
 def build_board(
@@ -246,34 +282,89 @@ def build_board_with_metadata(
     and python-chess's Board constructor drops the e3 to "-" because
     no piece can actually capture en passant.
     """
-    input_fen: str | None = None
-    cleaned = (
-        fen_or_pgn.replace("\u00a0", " ")
-        .replace("\u200b", "")
-        .replace("\ufeff", "")
-        .strip("`'\" \t\r\n")
-    )
-    # Try to capture the raw input FEN so callers can see if we rewrote it.
-    tokens = cleaned.split()
-    if (
-        1 <= len(tokens) <= 6
-        and not cleaned.startswith("[")
-        and not tokens[0].endswith(".")
-        and "/" in cleaned
-    ):
-        input_fen = cleaned
-
-    # Canonicalization is a property of the supplied FEN itself, not of any
-    # suffix moves replayed after that FEN. Compare the input against a board
-    # parsed before replaying the suffix, then return the final board FEN.
-    canonical_input_fen: str | None = None
-    if input_fen is not None:
-        canonical_input_fen = _build_board(fen_or_pgn, [], strict).fen()
-
+    normalized = build_normalized_position(fen_or_pgn, moves, strict)
     board = _build_board(fen_or_pgn, moves, strict)
     canonical = board.fen()
-    was_canonicalized = bool(input_fen) and input_fen != canonical_input_fen
-    return board, input_fen, canonical, was_canonicalized
+    input_fen: str | None = None
+    if normalized.input_kind == "fen" and normalized.raw_fen_fields:
+        input_fen = " ".join(normalized.raw_fen_fields)
+    return board, input_fen, canonical, normalized.was_canonicalized
+def build_normalized_position(
+    fen_or_pgn: str,
+    moves: list[str] | None = None,
+    strict: bool = False,
+) -> NormalizedPositionInput:
+    """Build a :class:`NormalizedPositionInput` — full caller-provenance record.
+
+    Audit Phase 12 (2026-09-14): preserves caller provenance (raw input,
+    input kind, which FEN fields were auto-completed) for partial-FEN
+    callers in lenient mode.
+    """
+    raw_input = fen_or_pgn
+    cleaned = (
+        fen_or_pgn.replace(" ", " ")
+        .replace("", "")
+        .replace("﻿", "")
+        .strip("`'\"" + " \t\r\n")
+    )
+    tokens = cleaned.split()
+    input_kind = _classify_input_kind(cleaned, tokens)
+
+    raw_fen_fields: tuple[str, ...] | None = None
+    defaulted_fields: tuple[str, ...] = ()
+    normalization_changes: list[str] = []
+    canonical_fen: str | None = None
+    was_canonicalized = False
+
+    if input_kind == "startpos":
+        canonical_fen = chess.Board().fen()
+    elif input_kind == "fen":
+        raw_fen_fields = tuple(tokens)
+        defaulted_fields = _defaulted_fields_for_fen(len(tokens))
+        for name in defaulted_fields:
+            normalization_changes.append(f"defaulted_{name}")
+        if strict and 1 <= len(tokens) < 6:
+            raise ValueError(
+                f"INVALID_FEN: Position '{cleaned}' has {len(tokens)} whitespace-separated "
+                f"field(s); a FEN has exactly 6 (placement, side, castling, en-passant, "
+                f"halfmove, fullmove). Strict mode does not auto-complete FEN fields."
+            )
+        if len(tokens) > 6:
+            raise ValueError(
+                f"INVALID_FEN: Position '{cleaned}' has {len(tokens)} whitespace-separated "
+                f"fields; a FEN has exactly 6 (placement, side, castling, en-passant, "
+                f"halfmove, fullmove). The extra trailing field(s) cannot be parsed."
+            )
+        try:
+            _, _, counter_warnings = _validate_fen_counters(cleaned, strict)
+        except ValueError:
+            counter_warnings = []
+        for warn in counter_warnings:
+            head = warn.split(" ", 1)[0].lower() if warn else ""
+            if head:
+                normalization_changes.append(f"stripped_impossible_{head}")
+        try:
+            board = chess.Board(cleaned)
+        except (ValueError, IndexError) as exc:
+            raise ValueError(
+                f"INVALID_FEN: Position '{cleaned}' could not be parsed as a valid FEN: {exc}"
+            ) from exc
+        canonical_fen = board.fen()
+        was_canonicalized = cleaned != canonical_fen
+
+    history_complete = history_provenance_for_input(fen_or_pgn, moves)
+
+    return NormalizedPositionInput(
+        raw_input=raw_input,
+        input_kind=input_kind,
+        raw_fen_fields=raw_fen_fields,
+        defaulted_fields=defaulted_fields,
+        canonical_fen=canonical_fen,
+        was_canonicalized=was_canonicalized,
+        normalization_changes=tuple(normalization_changes),
+        history_completeness=history_complete,
+    )
+
 
 
 def build_board_from_history(

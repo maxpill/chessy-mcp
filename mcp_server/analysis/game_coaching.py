@@ -261,7 +261,6 @@ _MACHINE_DIRECTIVE_RE = re.compile(
 )
 
 
-
 def _clean_human_comment(raw: str | None) -> str | None:
     if not raw:
         return None
@@ -270,7 +269,25 @@ def _clean_human_comment(raw: str | None) -> str | None:
     return cleaned if cleaned else None
 
 
-def _mainline_comments(game: chess.pgn.Game) -> dict[int, str]:
+def _mainline_comments(
+    game: chess.pgn.Game,
+    semicolon_comments: list[tuple[int, str]] | None = None,
+) -> dict[int, str]:
+    """Return ``{ply: cleaned_comment_text}`` for the mainline.
+
+    Brace ``{...}`` comments are pulled directly from the chess.pgn parse
+    tree. Phase 14 (2026-09-14) layers in ``;`` comments recovered by
+    ``extract_semicolon_comments``: when both exist on the same ply, the
+    brace form wins (python-chess's parse tree is the primary source) and
+    the semicolon capture is silently dropped. Multiple semicolon comments
+    on one ply are joined with a newline.
+    """
+    semi_by_ply: dict[int, list[str]] = {}
+    if semicolon_comments:
+        for ply, text in semicolon_comments:
+            if text:
+                semi_by_ply.setdefault(ply, []).append(text)
+
     comments: dict[int, str] = {}
     node: chess.pgn.GameNode = game
     ply = 0
@@ -283,8 +300,13 @@ def _mainline_comments(game: chess.pgn.Game) -> dict[int, str]:
         cleaned = _clean_human_comment(combined)
         if cleaned:
             comments[ply] = cleaned
+            continue
+        semis = semi_by_ply.get(ply)
+        if semis:
+            cleaned = _clean_human_comment("\n".join(semis))
+            if cleaned:
+                comments[ply] = cleaned
     return comments
-
 
 
 def _best_san(board: chess.Board, ev: MCPEval) -> str | None:
@@ -673,7 +695,6 @@ def _strongest_reply_fact(
     return move.uci(), board.san(move), is_check, is_capture, is_mate
 
 
-
 def _piece_evidence_label(item: Any) -> str:
     return f"{item.color}_{item.piece}@{item.square}"
 
@@ -981,8 +1002,9 @@ async def build_game_coaching_evidence(
     scan_depth: int,
     pool: Any,
     evaluate_positions: Callable[..., Awaitable[list[tuple[MCPEval, bool]]]],
+    semicolon_comments: list[tuple[int, str]] | None = None,
 ) -> GameCoachingEvidence:
-    comments = _mainline_comments(game)
+    comments = _mainline_comments(game, semicolon_comments=semicolon_comments)
     records = _build_records(
         positions,
         moves,

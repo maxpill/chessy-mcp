@@ -109,6 +109,9 @@ class MCPEval(BaseModel):
     input_fen: str | None = None
     canonical_fen: str | None = None
     fen_was_canonicalized: bool = False
+    # Audit Phase 12 (2026-09-14): names of FEN fields python-chess silently
+    # filled in for a partial-FEN caller in lenient mode. Empty otherwise.
+    defaulted_fields: list[str] = Field(default_factory=list)
     action_policy: ActionPolicyMetadata | None = Field(default_factory=ActionPolicyMetadata)
     post_terminal_status: str | None = None
     candidate_san: str | None = None
@@ -193,6 +196,7 @@ class MCPEval(BaseModel):
                 "input_fen",
                 "canonical_fen",
                 "fen_was_canonicalized",
+                "defaulted_fields",
                 "post_fen",
                 "history_dependent_status",
                 "lichess_url_reproduces_history",
@@ -317,6 +321,7 @@ class MCPEval(BaseModel):
             input_fen=self.input_fen,
             canonical_fen=self.canonical_fen,
             fen_was_canonicalized=self.fen_was_canonicalized,
+            defaulted_fields=list(self.defaulted_fields),
             post_fen=self.post_fen,
             history_dependent_status=self.history_dependent_status,
             lichess_url_reproduces_history=self.lichess_url_reproduces_history,

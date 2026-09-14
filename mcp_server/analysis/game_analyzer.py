@@ -519,7 +519,9 @@ class GameAnalyzer:
                     else max_critical_moments
                 ),
                 clamped_max_critical_moments=max_critical_moments,
-                returned_critical_moments=len(zero_ply_coaching.critical_moments) if zero_ply_coaching else 0,
+                returned_critical_moments=len(zero_ply_coaching.critical_moments)
+                if zero_ply_coaching
+                else 0,
                 empty_game_reason=getattr(metadata, "empty_game_reason", None),
                 is_compact=(verbosity_mode in ("compact", "minimal")),
                 is_minimal=(verbosity_mode == "minimal"),
@@ -567,6 +569,7 @@ class GameAnalyzer:
 
         coaching = None
         if detail != "standard":
+            semicolon_comments = list(getattr(game, "_semicolon_comments", []) or [])
             coaching = await build_game_coaching_evidence(
                 positions=positions,
                 moves=moves,
@@ -578,6 +581,7 @@ class GameAnalyzer:
                 scan_depth=depth,
                 pool=pool,
                 evaluate_positions=self._evaluate_positions,
+                semicolon_comments=semicolon_comments,
             )
             coaching = enrich_game_critical_forensics(
                 coaching,

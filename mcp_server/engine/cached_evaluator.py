@@ -83,8 +83,14 @@ async def evaluate_game_position_cached(
     history_complete: str | bool = "incomplete",
     reuse_tt: bool = False,
     analyzer: object | None = None,
+    input_fen: str | None = None,
+    fen_was_canonicalized: bool = False,
+    defaulted_fields: list[str] | None = None,
 ) -> tuple[MCPEval, bool]:
-    """Evaluate a single board state with rule status, terminal short-circuits, and multi-tier cache."""
+    """Evaluate a single board state with rule status, terminal short-circuits, and multi-tier cache.
+
+    Audit Phase 12 (2026-09-14): partial-FEN caller-provenance kwargs.
+    """
     req_d = requested_depth if requested_depth is not None else depth
     history_state = (
         ("complete" if history_complete else "incomplete")
@@ -95,15 +101,19 @@ async def evaluate_game_position_cached(
 
     rule_status = evaluate_rule_status(b, history_complete=history_state)
     if rule_status.terminal is not None:
-        return (
-            build_terminal_mcpeval(
-                rule_status=rule_status,
-                board=b,
-                requested_depth=req_d,
-                pool=pool,
-            ),
-            True,
+        terminal_eval = build_terminal_mcpeval(
+            rule_status=rule_status,
+            board=b,
+            requested_depth=req_d,
+            pool=pool,
         )
+        return terminal_eval.model_copy(
+            update={
+                "input_fen": input_fen,
+                "fen_was_canonicalized": fen_was_canonicalized,
+                "defaulted_fields": list(defaulted_fields or []),
+            }
+        ), True
 
     ckey = eval_cache_key(
         b,
@@ -115,7 +125,12 @@ async def evaluate_game_position_cached(
     if cached is not None:
 
 
-        updates: dict[str, Any] = {"requested_depth": req_d}
+        updates: dict[str, Any] = {
+            "requested_depth": req_d,
+            "input_fen": input_fen,
+            "fen_was_canonicalized": fen_was_canonicalized,
+            "defaulted_fields": list(defaulted_fields or []),
+        }
         if cached.engine_eval is not None:
             updates["engine_eval"] = {
                 **cached.engine_eval,
@@ -163,6 +178,9 @@ async def evaluate_game_position_cached(
             history_complete=history_state,
             zeroing_move_best_score=zeroing_best.cp,
             zeroing_move_best_mate=zeroing_best.mate,
+            input_fen=input_fen,
+            fen_was_canonicalized=fen_was_canonicalized,
+            defaulted_fields=defaulted_fields,
         )
         identity = build_identity(pool)
         mcp_eval = mcp_eval.model_copy(
@@ -196,7 +214,12 @@ async def evaluate_game_position_cached(
         return mcp_eval
 
     res = cast(MCPEval, await single_flight.do(ckey, _compute_pos))
-    updates: dict[str, Any] = {"requested_depth": req_d}
+    updates: dict[str, Any] = {
+        "requested_depth": req_d,
+        "input_fen": input_fen,
+        "fen_was_canonicalized": fen_was_canonicalized,
+        "defaulted_fields": list(defaulted_fields or []),
+    }
     if res.engine_eval is not None:
         updates["engine_eval"] = {
             **res.engine_eval,

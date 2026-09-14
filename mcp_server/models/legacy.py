@@ -150,6 +150,11 @@ class MCPMoveAnalysis(BaseModel):
     requested_depth: int | None = None
     searched_depth: int | None = None
     analysis_confidence: AnalysisConfidence | None = None
+    # Audit Phase 12 (2026-09-14): partial-FEN caller provenance.
+    input_fen: str | None = None
+    canonical_fen: str | None = None
+    fen_was_canonicalized: bool = False
+    defaulted_fields: list[str] = Field(default_factory=list)
 
     @computed_field  # type: ignore[misc]
     @property
@@ -221,12 +226,27 @@ class MCPMoveAnalysis(BaseModel):
             "play_move", "claim_draw", "claim_draw_with_intended_move"
         ] = "play_move",
         history_complete: str | bool = "incomplete",
+        input_fen: str | None = None,
+        fen_was_canonicalized: bool = False,
+        defaulted_fields: list[str] | None = None,
     ) -> MCPMoveAnalysis:
         eval_bef = MCPEval.from_eval(
-            ma.eval_before, fen_before, board=board_before, history_complete=history_complete
+            ma.eval_before,
+            fen_before,
+            board=board_before,
+            history_complete=history_complete,
+            input_fen=input_fen,
+            fen_was_canonicalized=fen_was_canonicalized,
+            defaulted_fields=defaulted_fields,
         )
         eval_aft = MCPEval.from_eval(
-            ma.eval_after, fen_after, board=board_after, history_complete=history_complete
+            ma.eval_after,
+            fen_after,
+            board=board_after,
+            history_complete=history_complete,
+            input_fen=input_fen,
+            fen_was_canonicalized=fen_was_canonicalized,
+            defaulted_fields=defaulted_fields,
         )
         b_bef = board_before or chess.Board(fen_before)
         m = chess.Move.from_uci(ma.played)
@@ -318,6 +338,10 @@ class MCPMoveAnalysis(BaseModel):
             classification_verified=verified,
             requested_depth=eval_bef.requested_depth,
             searched_depth=eval_bef.searched_depth,
+            input_fen=input_fen,
+            canonical_fen=fen_before,
+            fen_was_canonicalized=fen_was_canonicalized,
+            defaulted_fields=list(defaulted_fields or []),
         )
 
 

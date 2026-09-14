@@ -147,9 +147,23 @@ with the player's self-report before assigning process labels such as
 "incomplete CCT" or "calculation stopped too early".
 
 The response also echoes a canonical piece map, material, side to move,
-castling/en-passant state and a deterministic position hash. That gives
-screen-based clients a position-verification handshake before they explain a
-puzzle or game position.
+castling/en-passant state and two deterministic position hashes. The legacy
+single `position_hash` field is deprecated in favor of two explicitly-named
+identities so downstream consumers can pick the right semantics:
+
+- `fen_hash` — SHA-256 of the full 6-field canonical FEN (includes the
+  halfmove + fullmove bookkeeping counters). Changes whenever any FEN field
+  changes.
+- `repetition_key` — SHA-256 of the 4-field FIDE repetition identity
+  (piece placement + side to move + castling rights + en-passant square).
+  Invariant to clock changes; matches FIDE's "same position" rule for
+  threefold and fivefold repetition tracking.
+
+The `position_hash` field is kept as a deprecated alias of `fen_hash` for one
+release. Reading it emits a single `DeprecationWarning` per process.
+
+These hashes give screen-based clients a position-verification handshake
+before they explain a puzzle or game position.
 
 ## Performance
 

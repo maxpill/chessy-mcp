@@ -9,12 +9,21 @@ error without the engine service pretending to read the player's mind.
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from mcp_server.models.legacy import MCPMoveAnalysis, TopMovesResult
 from mcp_server.models.mcpeval import MCPEval
+
+# Audit Phase 15 (2026-09-14): a single ``position_hash`` field is overloaded
+# with two distinct chess identities. The model now exposes both:
+#   - ``fen_hash`` includes the halfmove / fullmove clocks (full FEN state).
+#   - ``repetition_key`` matches FIDE repetition identity (board placement +
+#     side + castling + EP square) and is invariant to clock changes.
+# ``position_hash`` survives as a deprecated alias of ``fen_hash``.
+POSITION_HASH_DEPRECATION_EMITTED: bool = False
 
 
 class PositionFingerprint(BaseModel):
@@ -26,7 +35,57 @@ class PositionFingerprint(BaseModel):
     en_passant: str | None = None
     in_check: bool
     legal_move_count: int
-    position_hash: str
+    fen_hash: str
+    repetition_key: str
+    position_hash: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_legacy_position_hash(cls, values: Any) -> Any:
+        """Map a legacy ``position_hash`` construction to ``fen_hash``.
+
+        Older callers / cached responses may construct fingerprints with only
+        the legacy field. We mirror the value into ``fen_hash`` and emit a
+        once-per-process deprecation warning.
+        """
+        global POSITION_HASH_DEPRECATION_EMITTED
+        if isinstance(values, dict):
+            if "fen_hash" not in values and "position_hash" in values:
+                values["fen_hash"] = values["position_hash"]
+                if not POSITION_HASH_DEPRECATION_EMITTED:
+                    warnings.warn(
+                        "PositionFingerprint(position_hash=...) is deprecated; use "
+                        "fen_hash for full-FEN state or repetition_key for FIDE "
+                        "repetition identity.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                    POSITION_HASH_DEPRECATION_EMITTED = True
+            # If only fen_hash is provided, mirror it to position_hash so older
+            # readers still see the field.
+            if "position_hash" not in values and "fen_hash" in values:
+                values["position_hash"] = values["fen_hash"]
+        return values
+
+    def __getattribute__(self, name: str) -> Any:
+        """Emit a one-shot deprecation warning when ``position_hash`` is read.
+
+        Behavior contract: callers that still read the legacy field get the
+        same value they used to (``fen_hash``), with a single warning per
+        process — not per call.
+        """
+        if name == "position_hash":
+            global POSITION_HASH_DEPRECATION_EMITTED
+            if not POSITION_HASH_DEPRECATION_EMITTED:
+                warnings.warn(
+                    "Reading PositionFingerprint.position_hash is deprecated; "
+                    "use fen_hash (full FEN state) or repetition_key (FIDE "
+                    "repetition identity) instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                POSITION_HASH_DEPRECATION_EMITTED = True
+        return super().__getattribute__(name)
 
 
 class ForcingMoveEvidence(BaseModel):
@@ -480,7 +539,6 @@ class ForensicTopMovesResult(TopMovesResult):
     requested_proof_defenses: int | None = None
     clamped_proof_defenses: int | None = None
     forensic_compute_triggered_by: list[str] = Field(default_factory=list)
-
 
 
 class ForensicEvidence(BaseModel):

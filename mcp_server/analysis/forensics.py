@@ -97,6 +97,19 @@ _move_evidence = build_forcing_move_evidence
 
 def build_position_fingerprint(board: chess.Board) -> PositionFingerprint:
     canonical_fen = board.fen()
+    # Audit Phase 15 (2026-09-14): split identity into ``fen_hash`` (full
+    # FEN, includes clocks) and ``repetition_key`` (FIDE repetition identity
+    # only — board placement + side + castling + EP square, no clocks).
+    fen_hash = hashlib.sha256(canonical_fen.encode()).hexdigest()[:16]
+    # python-chess ``board_fen()`` returns the 4-field board state: placement,
+    # side, castling, EP. That's the FIDE-relevant repetition identity.
+    repetition_payload = (
+        f"{board.board_fen()}|{_color_name(board.turn)}|"
+        f"{board.castling_xfen() or '-'}|"
+        f"{chess.square_name(board.ep_square) if board.ep_square is not None else '-'}"
+    )
+    repetition_key = hashlib.sha256(repetition_payload.encode()).hexdigest()[:16]
+
     piece_map: dict[str, dict[str, list[str]]] = {
         "white": {name: [] for name in PIECE_NAMES.values()},
         "black": {name: [] for name in PIECE_NAMES.values()},
@@ -120,7 +133,9 @@ def build_position_fingerprint(board: chess.Board) -> PositionFingerprint:
         en_passant=ep,
         in_check=board.is_check(),
         legal_move_count=board.legal_moves.count(),
-        position_hash=hashlib.sha256(canonical_fen.encode()).hexdigest()[:16],
+        fen_hash=fen_hash,
+        repetition_key=repetition_key,
+        position_hash=fen_hash,
     )
 
 
@@ -182,9 +197,7 @@ def build_tactical_snapshot(board: chess.Board) -> TacticalSnapshot:
     root_color = board.turn
     baseline = sum(
         PIECE_VALUES[p.piece_type] for p in board.piece_map().values() if p.color == root_color
-    ) - sum(
-        PIECE_VALUES[p.piece_type] for p in board.piece_map().values() if p.color != root_color
-    )
+    ) - sum(PIECE_VALUES[p.piece_type] for p in board.piece_map().values() if p.color != root_color)
 
     for move in board.legal_moves:
         if board.gives_check(move):

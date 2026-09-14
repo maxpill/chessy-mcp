@@ -17,7 +17,9 @@ import re
 import chess
 import chess.pgn
 
+from mcp_server.contracts.pgn_resolver import resolve_pgn_tags, rewrite_text_first_wins
 from mcp_server.parsers.pgn.parse_candidate import parse_pgn_game_candidate
+from mcp_server.parsers.pgn.semicolon import attach_semicolon_comments
 from mcp_server.parsers.pgn.tags import TAG_PAIR_REGEX
 from mcp_server.parsers.pgn.unicode import normalize_movetext_figurines
 from mcp_server.parsers.pgn_sanitize import (
@@ -41,26 +43,30 @@ def extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
     substitute a different move).
     """
     masked_cleaned = _mask_comments_and_escapes(cleaned)
-    for m in TAG_PAIR_REGEX.finditer(masked_cleaned):
-        tag_name = m.group(1).lower()
-        if tag_name == "variant":
-            _validate_variant(_unescape_pgn_tag_value(m.group(2)))
-        if tag_name == "fen":
-            fen_val = _unescape_pgn_tag_value(m.group(2))
-            if fen_val:
-                fen_tokens = fen_val.split()
-                if "/" in fen_val and len(fen_tokens) > 6:
-                    raise ValueError(
-                        f"INVALID_FEN: FEN header value '{fen_val}' has "
-                        f"{len(fen_tokens)} whitespace-separated fields; a "
-                        f"FEN has exactly 6 (placement, side, castling, "
-                        f"en-passant, halfmove, fullmove). The extra "
-                        f"trailing field(s) cannot be parsed."
-                    )
-                _validate_fen_counters(fen_val, strict)
+    resolved_tags = resolve_pgn_tags(masked_cleaned, strict)
+    variant_tag = resolved_tags.get("variant")
+    if variant_tag is not None and variant_tag.selected is not None:
+        _validate_variant(variant_tag.selected)
+    fen_tag = resolved_tags.get("fen")
+    if fen_tag is not None and fen_tag.selected:
+        fen_val = fen_tag.selected
+        fen_tokens = fen_val.split()
+        if "/" in fen_val and len(fen_tokens) > 6:
+            raise ValueError(
+                f"INVALID_FEN: FEN header value '{fen_val}' has "
+                f"{len(fen_tokens)} whitespace-separated fields; a "
+                f"FEN has exactly 6 (placement, side, castling, "
+                f"en-passant, halfmove, fullmove). The extra "
+                f"trailing field(s) cannot be parsed."
+            )
+        _validate_fen_counters(fen_val, strict)
+    # Strip duplicate tag pairs so downstream python-chess (which uses
+    # last-write-wins for FEN, Variant, etc.) honors our first-wins policy.
+    cleaned = rewrite_text_first_wins(cleaned, resolved_tags)
 
     comment_only = _try_build_comment_only_game(cleaned)
     if comment_only is not None:
+        attach_semicolon_comments(comment_only, cleaned)
         return comment_only
 
     norm_text = _normalize_text(cleaned)
@@ -75,6 +81,7 @@ def extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
                     raise ValueError(
                         f"INVALID_PGN: Could not parse legal moves from movetext '{norm_text[:100]}'."
                     )
+            attach_semicolon_comments(g, norm_text)
             return g
 
     g = parse_pgn_game_candidate(norm_text, strict=strict)
@@ -85,6 +92,7 @@ def extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
                 raise ValueError(
                     f"INVALID_PGN: Could not parse legal moves from movetext '{norm_text[:100]}'."
                 )
+        attach_semicolon_comments(g, norm_text)
         return g
 
     for move_match in re.finditer(r"\b1\s*[\.\:]\s*[A-Za-z]", norm_text):
@@ -92,11 +100,14 @@ def extract_game_inner(cleaned: str, strict: bool = False) -> chess.pgn.Game:
         try:
             g = parse_pgn_game_candidate(sub_movetext, strict=strict)
             if g is not None and list(g.mainline_moves()):
+                attach_semicolon_comments(g, norm_text)
                 return g
         except Exception:
             continue
 
-    return _bare_moves_fallback(norm_text, cleaned)
+    fallback = _bare_moves_fallback(norm_text, cleaned)
+    attach_semicolon_comments(fallback, norm_text)
+    return fallback
 
 
 def _try_build_comment_only_game(cleaned: str) -> chess.pgn.Game | None:

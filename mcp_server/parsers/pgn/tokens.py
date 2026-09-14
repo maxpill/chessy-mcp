@@ -271,6 +271,22 @@ def validate_strict_mainline_surface(text: str, game: chess.pgn.Game) -> None:
         if move_index >= len(moves):
             raise ValueError(f"STRICT_PGN_ERROR: Unexpected trailing movetext token {clean!r}.")
 
+        # Audit Phase 16 (2026-09-14): reject chained PGN annotation glyphs in
+        # strict mode. Only the six canonical glyphs ('!', '?', '!!', '??',
+        # '!?', '?!') are accepted. ``clean.rstrip('!?')`` would silently
+        # strip a chained run, so we check the trailing glyph explicitly
+        # against the whitelist before any rstrip happens.
+        annotation_run = re.match(r"^[A-Za-z0-9+#\-=]+([!?]+)$", clean)
+        if annotation_run:
+            glyph = annotation_run.group(1)
+            allowed = {"!", "?", "!!", "??", "!?", "?!"}
+            if glyph not in allowed:
+                raise ValueError(
+                    f"STRICT_PGN_ERROR: chained or non-canonical PGN annotation "
+                    f"{glyph!r} in {clean!r}; accepted glyphs are '!', '?', "
+                    f"'!!', '??', '!?', '?!'."
+                )
+
         move = moves[move_index]
         canonical = board.san(move)
         supplied_san = clean.rstrip("!?")

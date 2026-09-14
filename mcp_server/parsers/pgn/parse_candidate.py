@@ -22,13 +22,14 @@ import re
 import chess
 import chess.pgn
 
+from mcp_server.contracts.pgn_resolver import resolve_pgn_tags
+from mcp_server.parsers.pgn.semicolon import attach_semicolon_comments
 from mcp_server.parsers.pgn.tokens import validate_movetext_tokens
 from mcp_server.parsers.pgn.tags import TAG_PAIR_REGEX
 from mcp_server.parsers.pgn.movetext import truncate_movetext_at_result
 from mcp_server.parsers.pgn_sanitize import (
     _mask_comments_and_escapes,
     _sanitize_brackets_in_variations_and_comments,
-    _unescape_pgn_tag_value,
 )
 from mcp_server.parsers.pgn_validate import _validate_variant
 from mcp_server.rules import format_fen_status_errors
@@ -45,9 +46,10 @@ def parse_pgn_game_candidate(text: str, strict: bool = False) -> chess.pgn.Game 
     """
     try:
         masked_for_tags = _mask_comments_and_escapes(text)
-        for m in TAG_PAIR_REGEX.finditer(masked_for_tags):
-            if m.group(1).lower() == "variant":
-                _validate_variant(_unescape_pgn_tag_value(m.group(2)))
+        resolved_tags = resolve_pgn_tags(masked_for_tags, strict)
+        variant_tag = resolved_tags.get("variant")
+        if variant_tag is not None and variant_tag.selected is not None:
+            _validate_variant(variant_tag.selected)
 
         has_real_tags = bool(TAG_PAIR_REGEX.search(masked_for_tags))
         text = truncate_movetext_at_result(text)
@@ -92,6 +94,7 @@ def parse_pgn_game_candidate(text: str, strict: bool = False) -> chess.pgn.Game 
                         f"Invalid PGN syntax or illegal move in game: {game.errors[0]}"
                     )
 
+            attach_semicolon_comments(game, text)
             return game
     except ValueError:
         raise

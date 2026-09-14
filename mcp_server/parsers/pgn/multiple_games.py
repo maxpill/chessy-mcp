@@ -22,6 +22,7 @@ import re
 import chess
 import chess.pgn
 
+from mcp_server.contracts.pgn_resolver import resolve_pgn_tags
 from mcp_server.parsers.pgn.tags import TAG_PAIR_REGEX
 from mcp_server.parsers.pgn_sanitize import (
     _mask_comments_and_escapes,
@@ -47,9 +48,10 @@ def check_multiple_games(cleaned: str) -> None:
     cleaned_escapes = _strip_pgn_escape_lines(cleaned)
     masked_cleaned = _mask_comments_and_escapes(cleaned_escapes)
 
-    for m in TAG_PAIR_REGEX.finditer(masked_cleaned):
-        if m.group(1).lower() == "variant":
-            _validate_variant(_unescape_pgn_tag_value(m.group(2)))
+    resolved_tags = resolve_pgn_tags(masked_cleaned, strict=False)
+    variant_tag = resolved_tags.get("variant")
+    if variant_tag is not None and variant_tag.selected is not None:
+        _validate_variant(variant_tag.selected)
 
     # 1. Multiple markdown fenced code blocks.
     fences = list(_FENCE_RE.finditer(cleaned_escapes))

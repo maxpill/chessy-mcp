@@ -6,7 +6,7 @@ status flags, repetition status, and the post-position FEN surface.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class HistoryBlock(BaseModel):
@@ -20,6 +20,9 @@ class HistoryBlock(BaseModel):
     lichess_url_reproduces_history: bool = True
     requires_move_stack: bool = False
     fen_sufficient_for_status: bool = True
+    # Audit Phase 12 (2026-09-14): names of FEN fields python-chess
+    # silently filled in for partial-FEN callers. Empty otherwise.
+    defaulted_fields: list[str] = Field(default_factory=list)
     history_completeness: str = "incomplete"  # complete | partial | incomplete | not_required
     repetition_status: str = "none"  # "unknown" | "none" | "threefold_claimable" | "fivefold"
     # 2026-09-08 ultra-hard test notes (early obs §6): repetition-side

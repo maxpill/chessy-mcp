@@ -84,7 +84,14 @@ async def top_moves(
     include_moves: Annotated[
         list[str] | None,
         Field(
-            description="Explicit legal candidate moves for the side to move that MUST be evaluated and included (up to 8 moves). Must be legal moves for the side to move, NOT opponent replies."
+            description=(
+                "Explicit legal candidate moves for the side to move that MUST "
+                "be evaluated and included (up to 8 unique canonical moves). "
+                "SAN and UCI aliases of the same move collapse to one entry; "
+                "raw strings are deduplicated before the cap is enforced. "
+                "Must be legal moves for the side to move, NOT opponent "
+                "replies."
+            )
         ),
     ] = None,
     proof_mode: Annotated[
@@ -96,7 +103,11 @@ async def top_moves(
     proof_defenses: Annotated[
         int,
         Field(
-            description="Number of defensive replies to analyze in tactical proof mode (default 3)."
+            description=(
+                "Number of defensive replies to analyze in tactical proof mode "
+                "(default 3). Must be in 1..8; values outside the range are "
+                "rejected with invalid_argument."
+            )
         ),
     ] = 3,
     ctx: Context | None = None,
@@ -164,9 +175,7 @@ async def top_moves(
             raise ValueError(
                 f"INVALID_ARGUMENT: proof_defenses must be >= 1 in tactical proof mode (got {proof_defenses})"
             )
-        clamped_proof_defenses = (
-            min(int(proof_defenses), 8) if proof_mode == "tactical" else None
-        )
+        clamped_proof_defenses = min(int(proof_defenses), 8) if proof_mode == "tactical" else None
         requested_proof_defenses = proof_defenses if proof_mode == "tactical" else None
 
         forensic_triggers: list[str] = []
@@ -243,7 +252,6 @@ async def top_moves(
             if detail != "forensic":
                 top_updates["forensics"] = None
         result = result.model_copy(update=top_updates)
-
 
         await metrics.record(
             "top_moves",

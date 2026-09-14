@@ -48,12 +48,20 @@ def build_mcpeval_from_eval(
     legal_engine_moves: list[Eval] | None = None,
     zeroing_move_best_score: int | None = None,
     zeroing_move_best_mate: int | None = None,
+    input_fen: str | None = None,
+    fen_was_canonicalized: bool = False,
+    defaulted_fields: list[str] | None = None,
 ) -> Any:
     """Build an ``MCPEval`` (the model's class) from a Stockfish ``Eval``.
 
     Returns an instance of ``cls`` (caller is expected to pass
     :class:`MCPEval`). The factory accepts ``cls`` so subclasses can
     share the construction logic.
+
+    Audit Phase 12 (2026-09-14): ``input_fen``, ``fen_was_canonicalized``,
+    and ``defaulted_fields`` are the partial-FEN provenance surface.
+    Previously ``fen_was_canonicalized`` was hard-coded to ``False`` here,
+    silently lying about python-chess EP rewrites.
     """
     url, img = lichess_urls(fen)
     clean_best_move = None if ev.best_move in (None, "(none)", "none") else ev.best_move
@@ -215,7 +223,9 @@ def build_mcpeval_from_eval(
     )
     history_block = HistoryBlock(
         canonical_fen=fen,
-        fen_was_canonicalized=False,
+        input_fen=input_fen,
+        fen_was_canonicalized=fen_was_canonicalized,
+        defaulted_fields=list(defaulted_fields or []),
         post_fen=b.fen() if board is None else board.fen(),
         history_dependent_status=rule_status.history_dependent_status,
         lichess_url_reproduces_history=rule_status.fen_sufficient_for_status,

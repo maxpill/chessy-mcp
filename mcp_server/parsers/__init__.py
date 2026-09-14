@@ -18,6 +18,7 @@ from mcp_server.parsers.board_builder import (
     build_board,
     build_board_from_history,
     build_board_with_metadata,
+    build_normalized_position,
     history_provenance_for_input,
 )
 from mcp_server.parsers.move_parser import (
@@ -110,6 +111,7 @@ __all__ = [  # noqa: RUF022 - grouped by parser stage for navigability
     "build_board",
     "build_board_from_history",
     "build_board_with_metadata",
+    "build_normalized_position",
     "history_provenance_for_input",
     "_build_board",
     "_build_board_from_history",

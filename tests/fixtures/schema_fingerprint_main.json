@@ -1,5 +1,5 @@
 {
-  "fingerprint": "a1d4ce59d22b0cacb95cb1237df1199e4f9a8cb1e1854dc1b098ad9179390e94",
+  "fingerprint": "b6de67c2977bdf84be3af3935c762b70c133e086ed215dcf1eeff6a581a0d13a",
   "tools": {
     "analyze_game": {
       "properties": {
@@ -101,7 +101,7 @@
             }
           ],
           "default": null,
-          "description": "Optional list of up to 8 alternative legal candidate moves FOR THE SAME PLAYER whose turn it is in the position (e.g. ['Nf3', 'd4']). Must be legal moves for the current player to move, NOT opponent replies.",
+          "description": "Optional list of up to 8 unique canonical alternative legal candidate moves FOR THE SAME PLAYER whose turn it is in the position (e.g. ['Nf3', 'd4']). SAN and UCI aliases of the same move collapse to one entry; raw strings are deduplicated before the cap is enforced. Must be legal moves for the current player to move, NOT opponent replies.",
           "title": "Compare Moves"
         },
         "depth": {
@@ -279,7 +279,7 @@
             }
           ],
           "default": null,
-          "description": "Explicit legal candidate moves for the side to move that MUST be evaluated and included (up to 8 moves). Must be legal moves for the side to move, NOT opponent replies.",
+          "description": "Explicit legal candidate moves for the side to move that MUST be evaluated and included (up to 8 unique canonical moves). SAN and UCI aliases of the same move collapse to one entry; raw strings are deduplicated before the cap is enforced. Must be legal moves for the side to move, NOT opponent replies.",
           "title": "Include Moves"
         },
         "moves": {
@@ -306,7 +306,7 @@
         },
         "proof_defenses": {
           "default": 3,
-          "description": "Number of defensive replies to analyze in tactical proof mode (default 3).",
+          "description": "Number of defensive replies to analyze in tactical proof mode (default 3). Must be in 1..8; values outside the range are rejected with invalid_argument.",
           "title": "Proof Defenses",
           "type": "integer"
         },

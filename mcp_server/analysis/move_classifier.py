@@ -9,6 +9,7 @@ import chess
 from core.engines.types import Eval, MoveClass
 
 from mcp_server.claims.draw_projection import force_draw_outcome
+from mcp_server.contracts.normalized_input import NormalizedPositionInput
 from mcp_server.models import MCPMoveAnalysis, MCPEval, PlayedMoveScore
 from mcp_server.parsers import (
     _build_board_from_history,
@@ -29,6 +30,11 @@ class _ValidationOutcome:
         syntax_warning: str | None,
         normalization_kind: str | None = None,
         normalization_changes: list[str] | None = None,
+        input_fen: str | None = None,
+        canonical_fen: str | None = None,
+        fen_was_canonicalized: bool = False,
+        defaulted_fields: list[str] | None = None,
+        input_kind: str = "fen",
     ):
         self.board = board
         self.history_complete = history_complete
@@ -37,6 +43,12 @@ class _ValidationOutcome:
         self.syntax_warning = syntax_warning
         self.normalization_kind = normalization_kind
         self.normalization_changes = normalization_changes or []
+        # Audit Phase 12 (2026-09-14): partial-FEN caller provenance.
+        self.input_fen = input_fen
+        self.canonical_fen = canonical_fen
+        self.fen_was_canonicalized = fen_was_canonicalized
+        self.defaulted_fields = defaulted_fields or []
+        self.input_kind = input_kind
 
 
 def validate_classify_input(
@@ -46,9 +58,26 @@ def validate_classify_input(
     move: str | None,
     action_type: str,
     strict: bool,
+    normalized: NormalizedPositionInput | None = None,
 ) -> _ValidationOutcome:
+    """Validate a ``classify_move`` request and return typed provenance.
+
+    Audit Phase 12 (2026-09-14): when ``normalized`` is supplied, the
+    input FEN and defaulted-fields list are recorded for the response so
+    partial-FEN callers see exactly which fields python-chess auto-
+    completed.
+    """
     if move is not None and not isinstance(move, str):
         raise ValueError(f"INVALID_INPUT: 'move' must be a string, got {type(move).__name__}.")
+    if isinstance(move, str) and move.strip().lower() in (
+        "null",
+        "none",
+        "nil",
+        "undefined",
+        "(none)",
+    ):
+        if action_type != "claim_draw" or move.strip().lower() != "(none)":
+            raise ValueError(f"ILLEGAL_MOVE: literal text {move!r} is not a valid chess move.")
     syntax_warning: str | None = None
     chess_move: chess.Move | None = None
     normalization_kind: str | None = None
@@ -77,6 +106,26 @@ def validate_classify_input(
     board, history_complete = _build_board_from_history(fen, moves, strict=strict)
     rule_before = evaluate_rule_status(board, history_complete=history_complete)
 
+    if normalized is not None:
+        input_fen: str | None = None
+        if normalized.input_kind == "fen" and normalized.raw_fen_fields:
+            input_fen = " ".join(normalized.raw_fen_fields)
+        canonical_fen = board.fen()
+        defaulted_fields = list(normalized.defaulted_fields)
+        fen_was_canonicalized = normalized.was_canonicalized
+        input_kind = normalized.input_kind
+        for change in normalized.normalization_changes:
+            if change and change not in normalization_changes:
+                normalization_changes.append(change)
+        if not normalization_kind and normalized.defaulted_fields:
+            normalization_kind = "partial_fen_autocomplete"
+    else:
+        input_fen = None
+        canonical_fen = board.fen()
+        defaulted_fields = []
+        fen_was_canonicalized = False
+        input_kind = "fen"
+
     if action_type == "claim_draw":
         if is_terminal_position(board):
             raise ValueError(
@@ -90,8 +139,11 @@ def validate_classify_input(
         parsed_res = parse_move_with_details(board, move, strict=strict)
         chess_move = parsed_res.move
         syntax_warn = parsed_res.warning
-        normalization_kind = parsed_res.normalization_kind
-        normalization_changes = parsed_res.normalization_changes
+        if parsed_res.normalization_kind and not normalization_kind:
+            normalization_kind = parsed_res.normalization_kind
+        for change in parsed_res.normalization_changes:
+            if change and change not in normalization_changes:
+                normalization_changes.append(change)
         if syntax_warn and not syntax_warning:
             syntax_warning = syntax_warn
         if (
@@ -107,6 +159,11 @@ def validate_classify_input(
         syntax_warning=syntax_warning,
         normalization_kind=normalization_kind,
         normalization_changes=normalization_changes,
+        input_fen=input_fen,
+        canonical_fen=canonical_fen,
+        fen_was_canonicalized=fen_was_canonicalized,
+        defaulted_fields=defaulted_fields,
+        input_kind=input_kind,
     )
 
 
@@ -150,6 +207,9 @@ class MoveClassifier:
             pool,
             requested_depth=raw_requested_depth,
             history_complete=history_complete,
+            input_fen=outcome.input_fen,
+            fen_was_canonicalized=outcome.fen_was_canonicalized,
+            defaulted_fields=outcome.defaulted_fields,
         )
         if action_type in ("claim_draw", "claim_draw_with_intended_move"):
             eval_after, _ = await self._evaluate_position(
@@ -158,6 +218,9 @@ class MoveClassifier:
                 pool,
                 requested_depth=raw_requested_depth,
                 history_complete=history_complete,
+                input_fen=outcome.input_fen,
+                fen_was_canonicalized=outcome.fen_was_canonicalized,
+                defaulted_fields=outcome.defaulted_fields,
             )
             eval_after = force_draw_outcome(eval_after)
             board_after = board.copy(stack=True)
@@ -172,6 +235,9 @@ class MoveClassifier:
                 pool,
                 requested_depth=raw_requested_depth,
                 history_complete=history_complete,
+                input_fen=outcome.input_fen,
+                fen_was_canonicalized=outcome.fen_was_canonicalized,
+                defaulted_fields=outcome.defaulted_fields,
             )
 
         score_move = chess_move if chess_move is not None else next(iter(board.legal_moves))

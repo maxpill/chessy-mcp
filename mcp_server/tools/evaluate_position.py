@@ -21,7 +21,11 @@ from mcp_server.analysis.tactical_snapshot_extensions import extend_position_eva
 from mcp_server.engine import _evaluate_game_position_cached, _get_analyzer_pool
 from mcp_server.metrics import metrics
 from mcp_server.models.forensics import ForensicEval
-from mcp_server.parsers import _build_board_with_metadata, _history_provenance_for_input
+from mcp_server.parsers import (
+    _build_board,
+    _history_provenance_for_input,
+    build_normalized_position,
+)
 from mcp_server.tools._common import (
     VERBOSITY_COMPACT,
     VERBOSITY_MINIMAL,
@@ -100,9 +104,19 @@ async def evaluate_position(
                 "INVALID_ARGUMENT: verbosity='minimal' is incompatible with detail='coach' or 'forensic'. "
                 "Use verbosity='compact' or 'full' for rich forensics."
             )
-        board, input_fen, canonical_fen, fen_was_canonicalized = _build_board_with_metadata(
-            fen, moves or [], strict=strict
-        )
+        normalized = build_normalized_position(fen, moves or [], strict=strict)
+        board = _build_board(fen, moves or [], strict=strict)
+        input_fen: str | None = None
+        if normalized.input_kind == "fen" and normalized.raw_fen_fields:
+            input_fen = " ".join(normalized.raw_fen_fields)
+        # canonical_fen is the FEN we actually evaluate (post-moves) so the
+        # response mirrors the board the engine saw. was_canonicalized is True
+        # iff the raw caller text differs from the canonical 6-field form
+        # (audit L-06), which is the pre-moves canonical — suffix moves are
+        # not a canonicalization.
+        canonical_fen = board.fen()
+        fen_was_canonicalized = normalized.was_canonicalized
+        defaulted_fields = list(normalized.defaulted_fields)
         pool = await _get_analyzer_pool(ctx)
         # History completeness is derived from whether the caller had the move
         # stack. Naked FEN (no moves) cannot detect threefold repetition.
@@ -113,6 +127,9 @@ async def evaluate_position(
             pool,
             requested_depth=raw_requested_depth,
             history_complete=history_complete,
+            input_fen=input_fen,
+            fen_was_canonicalized=fen_was_canonicalized,
+            defaulted_fields=defaulted_fields,
         )
         await metrics.record("evaluate_position", (time.time() - t0) * 1000, cache_hit=is_hit)
         eval_updates: dict[str, Any] = {
@@ -120,6 +137,7 @@ async def evaluate_position(
             "input_fen": input_fen,
             "canonical_fen": canonical_fen,
             "fen_was_canonicalized": fen_was_canonicalized,
+            "defaulted_fields": defaulted_fields,
         }
         if res.engine_eval is not None:
             eval_updates["engine_eval"] = {

@@ -47,6 +47,7 @@ from mcp_server.engine import (
     _get_analyzer_pool,
     _single_flight,
 )
+from mcp_server.parsers import build_normalized_position
 from mcp_server.metrics import metrics
 from mcp_server.models import MCPEval, MCPMoveAnalysis
 from mcp_server.models.forensics import ForensicMoveAnalysis
@@ -106,7 +107,14 @@ async def classify_move(
     compare_moves: Annotated[
         list[str] | None,
         Field(
-            description="Optional list of up to 8 alternative legal candidate moves FOR THE SAME PLAYER whose turn it is in the position (e.g. ['Nf3', 'd4']). Must be legal moves for the current player to move, NOT opponent replies."
+            description=(
+                "Optional list of up to 8 unique canonical alternative legal "
+                "candidate moves FOR THE SAME PLAYER whose turn it is in the "
+                "position (e.g. ['Nf3', 'd4']). SAN and UCI aliases of the "
+                "same move collapse to one entry; raw strings are deduplicated "
+                "before the cap is enforced. Must be legal moves for the "
+                "current player to move, NOT opponent replies."
+            )
         ),
     ] = None,
     ctx: Context | None = None,
@@ -167,16 +175,21 @@ async def classify_move(
             raise ValueError(f"INVALID_DETAIL: {detail}")
         if compare_moves is not None and len(compare_moves) > 8:
             raise ValueError("INVALID_PARAMETER_COUNT: at most 8 candidates are allowed")
-        effective_detail: DetailMode = (
-            "coach" if compare_moves and detail == "standard" else detail
-        )
+        effective_detail: DetailMode = "coach" if compare_moves and detail == "standard" else detail
 
+        # Audit Phase 12 (2026-09-14): call build_normalized_position first so
+        # partial-FEN caller provenance (raw input, defaulted fields, canonical
+        # state) is preserved into validate_classify_input and onward to the
+        # response. validate_classify_input still owns the move parsing and
+        # claim_draw / play_move branching.
+        normalized = build_normalized_position(fen, moves, strict=strict)
         outcome = validate_classify_input(
             fen=fen,
             moves=moves,
             move=move,
             action_type=action_type,
             strict=strict,
+            normalized=normalized,
         )
 
         if action_type not in {"play_move", "claim_draw", "claim_draw_with_intended_move"}:
@@ -204,10 +217,15 @@ async def classify_move(
                     "eval_before": eval_bef,
                     "eval_after": eval_aft,
                     "requested_depth": raw_requested_depth,
-                    "searched_depth": getattr(eval_bef, "searched_depth", None) or getattr(eval_bef, "depth", None),
+                    "searched_depth": getattr(eval_bef, "searched_depth", None)
+                    or getattr(eval_bef, "depth", None),
                     "syntax_warning": outcome.syntax_warning,
                     "normalization_kind": outcome.normalization_kind,
                     "normalization_changes": outcome.normalization_changes,
+                    "input_fen": outcome.input_fen,
+                    "canonical_fen": outcome.canonical_fen,
+                    "fen_was_canonicalized": outcome.fen_was_canonicalized,
+                    "defaulted_fields": outcome.defaulted_fields,
                 }
             )
             return await _finish_result(
@@ -235,6 +253,9 @@ async def classify_move(
                     action_type=action_type,
                     syntax_warning=None,
                     requested_depth=raw_requested_depth,
+                    input_fen=outcome.input_fen,
+                    fen_was_canonicalized=outcome.fen_was_canonicalized,
+                    defaulted_fields=outcome.defaulted_fields,
                 )
 
             eval_before, eval_after, score, _ = await _CLASSIFIER.compute(
@@ -307,6 +328,10 @@ async def classify_move(
                 "syntax_warning": outcome.syntax_warning,
                 "normalization_kind": outcome.normalization_kind,
                 "normalization_changes": outcome.normalization_changes,
+                "input_fen": outcome.input_fen,
+                "canonical_fen": outcome.canonical_fen,
+                "fen_was_canonicalized": outcome.fen_was_canonicalized,
+                "defaulted_fields": outcome.defaulted_fields,
             }
         )
         return await _finish_result(
@@ -436,6 +461,9 @@ def _build_from_pool_classify(
     action_type: ActionType,
     syntax_warning: str | None,
     requested_depth: int | None = None,
+    input_fen: str | None = None,
+    fen_was_canonicalized: bool = False,
+    defaulted_fields: list[str] | None = None,
 ) -> MCPMoveAnalysis:
     from mcp_server.models import MCPEval
     from mcp_server.move_grading import score_played_move
@@ -446,6 +474,9 @@ def _build_from_pool_classify(
         board=board,
         history_complete=outcome_history_complete,
         requested_depth=requested_depth,
+        input_fen=input_fen,
+        fen_was_canonicalized=fen_was_canonicalized,
+        defaulted_fields=defaulted_fields,
     )
     fen_after = board_after_fen_for_chess_move(board, chess_move)
     eval_aft = MCPEval.from_eval(
@@ -454,6 +485,9 @@ def _build_from_pool_classify(
         board=board_after_for_chess_move(board, chess_move),
         history_complete=outcome_history_complete,
         requested_depth=requested_depth,
+        input_fen=input_fen,
+        fen_was_canonicalized=fen_was_canonicalized,
+        defaulted_fields=defaulted_fields,
     )
     board_after = board_after_for_chess_move(board, chess_move)
     score = score_played_move(
@@ -480,7 +514,7 @@ def _build_from_pool_classify(
         from core.engines.analyzer import pv_to_san
 
         played_continuation = pv_to_san(board_after, eval_aft.pv)
-    return build_classification(
+    classification = build_classification(
         played_uci=chess_move.uci() if chess_move is not None else "",
         played_san=played_san,
         score=score,
@@ -494,4 +528,12 @@ def _build_from_pool_classify(
         played_continuation=played_continuation,
         action_type=action_type,
         syntax_warning=syntax_warning,
+    )
+    return classification.model_copy(
+        update={
+            "input_fen": input_fen,
+            "canonical_fen": board.fen(),
+            "fen_was_canonicalized": fen_was_canonicalized,
+            "defaulted_fields": list(defaulted_fields or []),
+        }
     )
