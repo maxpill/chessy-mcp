@@ -119,7 +119,6 @@ class TopMovesFinder:
                 ),
             )
 
-
         cache_key = top_moves_cache_key(
             board,
             depth,
@@ -215,7 +214,9 @@ class TopMovesFinder:
                 prov["multipv"] = idx
                 if "score_comparability" not in prov:
                     prov["score_comparability"] = "same_root_multipv"
-                res_list[idx - 1] = item.model_copy(update={"multipv": idx, "search_provenance": prov})
+                res_list[idx - 1] = item.model_copy(
+                    update={"multipv": idx, "search_provenance": prov}
+                )
             await self._cache_set_top_moves(cache_key, res_list)
             return res_list
 
@@ -275,6 +276,11 @@ def _terminal_response(
         legal_engine_moves=None,
     )
     req_inc = list(include_moves or [])
+    # Audit Phase 11 (2026-09-14): the terminal path now attaches a
+    # deterministic forensic root-evidence object so coach/forensic detail
+    # modes return non-null ``forensics`` even when the game is over. The
+    # evidence is built from the board alone — no Stockfish call.
+    terminal_forensics = _build_terminal_forensic_root(board, rule_status)
     return TopMovesResult(
         status=rule_status.terminal,
         winner=rule_status.winner,
@@ -307,8 +313,45 @@ def _terminal_response(
         engine_version=engine_name_str,
         **_build_identity(pool),
         result=[],
+        forensics=terminal_forensics,
     )
 
+
+def _build_terminal_forensic_root(board: chess.Board, rule_status: Any) -> Any:
+    """Build a deterministic coach-tier forensic root for terminal boards.
+
+    No Stockfish work; uses only the ``PositionFingerprint`` /
+    ``TacticalSnapshot`` builders which are pure board inspection. The shape
+    matches :class:`TopMovesForensicEvidence` but with empty
+    ``candidate_comparisons`` and an explicit
+    ``terminal_no_legal_game_actions`` marker so downstream consumers cannot
+    confuse it with active-board forensics.
+    """
+    from mcp_server.analysis.forensics import (
+        build_position_fingerprint,
+        build_tactical_snapshot,
+    )
+    from mcp_server.models.forensics import (
+        PositionFingerprint,
+        TacticalSnapshot,
+        TopMovesForensicEvidence,
+    )
+
+    position: PositionFingerprint = build_position_fingerprint(board)
+    snapshot: TacticalSnapshot = build_tactical_snapshot(board)
+    return TopMovesForensicEvidence(
+        detail="coach",
+        position=position,
+        tactical_snapshot=snapshot,
+        candidate_comparisons=[],
+        candidate_differences=[],
+        proof=None,
+        inference_boundary=(
+            f"Terminal position — {rule_status.terminal}. Deterministic root "
+            "evidence only; no Stockfish search was performed. "
+            "terminal_no_legal_game_actions."
+        ),
+    )
 
 
 def _assemble_response(
@@ -423,8 +466,6 @@ async def _synthetic_winning_mcpeval(
             depth=depth,
             needs_post_eval=False,
         )
-        return result.model_copy(
-            update={"post_state_cp": cp, "post_state_mate": mate}
-        )
+        return result.model_copy(update={"post_state_cp": cp, "post_state_mate": mate})
     except Exception:
         return None

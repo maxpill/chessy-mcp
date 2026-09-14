@@ -261,8 +261,19 @@ async def top_moves(
                 _minimal_mcpeval(c) if not getattr(c, "is_minimal", False) else c
                 for c in result.result
             ]
-            if detail != "forensic":
-                top_updates["forensics"] = None
+            # Audit Phase 11 (2026-09-14): verbosity='minimal' silently nulled
+            # the forensics block even on terminal boards where we just built a
+            # deterministic forensic root. Surface explicit omission
+            # metadata so consumers can distinguish "not computed" from "not
+            # serialized".
+            if not getattr(result, "forensics", None):
+                top_updates["forensics_omitted"] = True
+                top_updates["forensics_omitted_reason"] = "verbosity_minimal_no_forensics"
+            elif detail != "forensic":
+                top_updates["forensics_omitted"] = True
+                top_updates["forensics_omitted_reason"] = (
+                    "verbosity_minimal_forensic_detail_dropped"
+                )
         result = result.model_copy(update=top_updates)
 
         await metrics.record(

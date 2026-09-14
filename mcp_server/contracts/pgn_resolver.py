@@ -117,7 +117,7 @@ def resolve_pgn_tags(header_text: str, strict: bool) -> dict[str, ResolvedTag]:
 
         if strict and conflict and key in STRICT_VALIDATED_KEYS:
             raise StrictValidationError(
-                f"Duplicate {key} tag with conflicting values: {list(occurrences)!r}.",
+                f"STRICT_VALIDATION_ERROR: Duplicate {key} tag with conflicting values: {list(occurrences)!r}.",
                 key=key,
                 occurrences=list(occurrences),
             )

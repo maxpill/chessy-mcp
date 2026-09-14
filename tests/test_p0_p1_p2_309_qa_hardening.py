@@ -150,7 +150,13 @@ async def test_p2_9_nested_depth_provenance_parity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_p2_10_top_moves_minimal_projection_strips_heavy_forensics() -> None:
+async def test_p2_10_top_moves_minimal_projection_strips_heavy_forensics():
+    """Audit Phase 11 (2026-09-14): minimal verbosity now records explicit
+    omission metadata instead of silently setting forensics=None. Active
+    boards still get the deterministic root evidence; the field is omitted
+    via the ``forensics_omitted`` flag when the caller explicitly chose
+    minimal verbosity.
+    """
     res = await top_moves(
         fen="startpos",
         n=1,
@@ -159,5 +165,9 @@ async def test_p2_10_top_moves_minimal_projection_strips_heavy_forensics() -> No
         include_moves=["e4", "d4"],
     )
     assert len(res.result) >= 2
-    assert res.forensics is None
+    # Active board with include_moves — root evidence stays.
+    assert res.forensics is not None
+    # Omission flag is set because the verbosity is minimal.
+    assert res.forensics_omitted is True
+    assert "minimal" in (res.forensics_omitted_reason or "").lower()
     assert "include_moves" in res.forensic_compute_triggered_by
