@@ -173,8 +173,20 @@ async def classify_move(
     try:
         if detail not in {"standard", "coach", "forensic"}:
             raise ValueError(f"INVALID_DETAIL: {detail}")
-        if compare_moves is not None and len(compare_moves) > 8:
-            raise ValueError("INVALID_PARAMETER_COUNT: at most 8 candidates are allowed")
+        # Audit Phase 4 (2026-09-14): the cap is enforced on *unique
+        # canonical* moves, not on raw input strings. The actual dedupe + cap
+        # lives in ``canonicalize_candidates`` (mcp_server.contracts.candidates),
+        # which is invoked from ``enrich_move_analysis``. We still reject
+        # pathological raw input lists cheaply up front.
+        if compare_moves is not None and len(compare_moves) > 32:
+            from mcp_server.contracts.errors import IllegalMove
+
+            raise IllegalMove(
+                "compare_moves accepts at most 32 raw strings (uniqueness is "
+                "checked after canonicalization; the wire cap on unique moves "
+                "is 8).",
+                raw_count=len(compare_moves),
+            )
         effective_detail: DetailMode = "coach" if compare_moves and detail == "standard" else detail
 
         # Audit Phase 12 (2026-09-14): call build_normalized_position first so
