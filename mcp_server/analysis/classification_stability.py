@@ -54,17 +54,26 @@ def _class_name(value: Any) -> str:
     return str(getattr(value, "value", value))
 
 
-def _mate_signature(ev: MCPEval) -> Literal["white_mates", "black_mates", "no_mate"]:
-    if ev.status == "checkmate" or ev.mate == 0:
-        if ev.winner == "white":
-            return "white_mates"
-        if ev.winner == "black":
-            return "black_mates"
-        if ev.cp is not None and ev.cp != 0:
-            return "white_mates" if ev.cp > 0 else "black_mates"
-    if ev.mate is None:
-        return "no_mate"
-    return "white_mates" if ev.mate > 0 else "black_mates"
+def _mate_signature(
+    ev: MCPEval, *, board: chess.Board | None = None
+) -> Literal["white_mates", "black_mates", "no_mate"]:
+    from mcp_server.contracts.mate_state import (
+        coerce_legacy_signature,
+        semantic_mate_state,
+    )
+
+    # Audit Phase 8 (2026-09-14): the old fallback `return "white_mates" if
+    # ev.mate > 0 else "black_mates"` was color-asymmetric (Stockfish mate
+    # values are side-to-move perspective). Route through the canonical
+    # helper.
+    if board is None:
+        fen = ev.canonical_fen or ev.post_fen or ""
+        try:
+            board = chess.Board(fen)
+        except ValueError:
+            return "no_mate"
+    state = semantic_mate_state(board, ev)
+    return coerce_legacy_signature(state.value)
 
 
 def _wdl_expectation(
@@ -81,7 +90,9 @@ def _wdl_expectation(
     return white if color == chess.WHITE else 1.0 - white
 
 
-def _wdl_loss_percentage_points(before: MCPEval, after: MCPEval, mover: chess.Color) -> float | None:
+def _wdl_loss_percentage_points(
+    before: MCPEval, after: MCPEval, mover: chess.Color
+) -> float | None:
     before_expectation = _wdl_expectation(before.wdl, mover)
     after_expectation = _wdl_expectation(after.wdl, mover)
     if before_expectation is None or after_expectation is None:
@@ -235,16 +246,18 @@ def _comparison(
     verified_after: MCPEval,
     verified_score: Any,
     *,
+    board_before: chess.Board,
+    board_after: chess.Board,
     mover: chess.Color,
 ) -> dict[str, Any]:
     initial_class = _class_name(result.move_class)
     verified_class = _class_name(verified_score.move_class)
     initial_best = (result.eval_before.best_move or "").lower() or None
     verified_best = (verified_before.best_move or "").lower() or None
-    initial_mate_before = _mate_signature(result.eval_before)
-    initial_mate_after = _mate_signature(result.eval_after)
-    verified_mate_before = _mate_signature(verified_before)
-    verified_mate_after = _mate_signature(verified_after)
+    initial_mate_before = _mate_signature(result.eval_before, board=board_before)
+    initial_mate_after = _mate_signature(result.eval_after, board=board_after)
+    verified_mate_before = _mate_signature(verified_before, board=board_before)
+    verified_mate_after = _mate_signature(verified_after, board=board_after)
     initial_wdl_loss = _wdl_loss_percentage_points(result.eval_before, result.eval_after, mover)
     verified_wdl_loss = _wdl_loss_percentage_points(verified_before, verified_after, mover)
     numeric = _evaluation_magnitude_stability(
@@ -281,7 +294,9 @@ def _comparison(
         "tactical_context_for_pv_stability": tactical_context,
         "pv_before_prefix_stable": before_pv_stable,
         "pv_after_prefix_stable": after_pv_stable,
-        "pv_prefix_stable": bool(before_pv_stable and after_pv_stable) if (before_pv_stable is not None and after_pv_stable is not None) else None,
+        "pv_prefix_stable": bool(before_pv_stable and after_pv_stable)
+        if (before_pv_stable is not None and after_pv_stable is not None)
+        else None,
         "tactical_pv_stable": tactical_pv_stable,
         **numeric,
     }
@@ -316,6 +331,8 @@ def _verification_convergence_evidence(
     *,
     mover: chess.Color,
     tactical_context: bool,
+    board_before: chess.Board,
+    board_after: chess.Board,
 ) -> dict[str, Any]:
     first_wdl = _wdl_loss_percentage_points(first_before, first_after, mover)
     second_wdl = _wdl_loss_percentage_points(second_before, second_after, mover)
@@ -336,9 +353,10 @@ def _verification_convergence_evidence(
     best_converged = (second_before.best_move or "").lower() == (
         first_before.best_move or ""
     ).lower()
-    mate_converged = (
-        _mate_signature(second_before) == _mate_signature(first_before)
-        and _mate_signature(second_after) == _mate_signature(first_after)
+    mate_converged = _mate_signature(second_before, board=board_before) == _mate_signature(
+        first_before, board=board_before
+    ) and _mate_signature(second_after, board=board_after) == _mate_signature(
+        first_after, board=board_after
     )
     converged = bool(
         class_converged
@@ -384,6 +402,23 @@ async def verify_forensic_classification_stability(
 
     stability = dict(evidence.stability)
     initial_class = _class_name(result.move_class)
+
+    # Audit Phase 8 (2026-09-14): we need a board_after view to thread into
+    # the canonical mate signature helper. Build it upfront (cheaply) so the
+    # initial stability dict can call into the helper uniformly. If the
+    # played move is not legal on the reconstructed board, we fall back to a
+    # fresh copy of board_before so the semantic helper still gets a usable
+    # chess.Board instance.
+    if played_move is not None:
+        board_after_candidate = board_before.copy(stack=True)
+        try:
+            board_after_candidate.push(played_move)
+            board_after = board_after_candidate
+        except (ValueError, chess.IllegalMoveError, chess.InvalidMoveError):
+            board_after = board_before.copy(stack=True)
+    else:
+        board_after = board_before.copy(stack=True)
+
     stability.update(
         {
             "initial_depth": depth,
@@ -396,8 +431,8 @@ async def verify_forensic_classification_stability(
                 result.eval_after,
                 board_before.turn,
             ),
-            "initial_mate_before": _mate_signature(result.eval_before),
-            "initial_mate_after": _mate_signature(result.eval_after),
+            "initial_mate_before": _mate_signature(result.eval_before, board=board_before),
+            "initial_mate_after": _mate_signature(result.eval_after, board=board_after),
             "initial_pv_before_prefix": list(_pv_prefix(result.eval_before)),
             "initial_pv_after_prefix": list(_pv_prefix(result.eval_after)),
             "verification_performed": False,
@@ -446,13 +481,13 @@ async def verify_forensic_classification_stability(
             update={"forensics": evidence.model_copy(update={"stability": stability})}
         )
 
-    board_after = board_before.copy(stack=True)
-    if played_move not in board_after.legal_moves:
+    if played_move != board_after.peek():
         stability["verification_status"] = "played_move_not_legal_on_reconstructed_board"
         return result.model_copy(
             update={"forensics": evidence.model_copy(update={"stability": stability})}
         )
-    board_after.push(played_move)
+    # board_after already has the played move pushed (see top-of-function
+    # setup), so the legacy push() here is no longer needed.
 
     verification_depth = min(depth + 4, 24)
     try:
@@ -477,6 +512,8 @@ async def verify_forensic_classification_stability(
             verified_before,
             verified_after,
             verified_score,
+            board_before=board_before,
+            board_after=board_after,
             mover=board_before.turn,
         )
         stability.update(first)
@@ -519,6 +556,8 @@ async def verify_forensic_classification_stability(
                 escalated_score,
                 mover=board_before.turn,
                 tactical_context=bool(first["tactical_context_for_pv_stability"]),
+                board_before=board_before,
+                board_after=board_after,
             )
             verification_converged = bool(convergence["converged"])
             stability["escalation_depth"] = escalation_depth
@@ -535,6 +574,8 @@ async def verify_forensic_classification_stability(
             final_before,
             final_after,
             final_score,
+            board_before=board_before,
+            board_after=board_after,
             mover=board_before.turn,
         )
         stability.update(final_comparison)

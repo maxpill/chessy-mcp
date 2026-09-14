@@ -171,11 +171,23 @@ async def top_moves(
             raise ValueError(
                 f"INVALID_ARGUMENT: Too many include_moves: supports at most {MAX_INCLUDE_MOVES} moves (got {len(include_moves)})."
             )
-        if proof_mode == "tactical" and proof_defenses < 1:
-            raise ValueError(
-                f"INVALID_ARGUMENT: proof_defenses must be >= 1 in tactical proof mode (got {proof_defenses})"
+        if proof_mode == "tactical":
+            # Audit Phase 6 (2026-09-14): strict bounded 1..8. The asymmetric
+            # "lower rejects, upper clamps" behaviour was a contract bug — the
+            # upper clamp silently accepted garbage inputs. Both sides now
+            # reject with invalid_argument.
+            from mcp_server.contracts.constants import (
+                PROOF_DEFENSES_MAX,
+                PROOF_DEFENSES_MIN,
             )
-        clamped_proof_defenses = min(int(proof_defenses), 8) if proof_mode == "tactical" else None
+
+            if proof_defenses < PROOF_DEFENSES_MIN or proof_defenses > PROOF_DEFENSES_MAX:
+                raise ValueError(
+                    f"INVALID_ARGUMENT: proof_defenses must be in "
+                    f"{PROOF_DEFENSES_MIN}..{PROOF_DEFENSES_MAX} in tactical proof "
+                    f"mode (got {proof_defenses})"
+                )
+        clamped_proof_defenses = int(proof_defenses) if proof_mode == "tactical" else None
         requested_proof_defenses = proof_defenses if proof_mode == "tactical" else None
 
         forensic_triggers: list[str] = []

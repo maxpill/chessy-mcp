@@ -111,15 +111,68 @@ def test_concrete_forcing_punishment_blocks_equivalence_despite_small_wdl_delta(
 
 
 def test_new_forced_mate_against_mover_is_never_practically_equivalent() -> None:
-    result, board = _result(
-        before_wdl=None,
-        after_wdl=None,
-        effective_loss=0,
-        before_mate=None,
-        after_mate=-2,
+    # Audit Phase 8 (2026-09-14): under correct chess semantics, Stockfish
+    # mate values are side-to-move perspective. Construct a genuine
+    # mate-deterioration scenario: White plays a blunder that lets Black
+    # mate them. Stockfish reports mate=+N for the side to move.
+    board = chess.Board()
+    board.clear_stack()
+    board.push(chess.Move.from_uci("e2e4"))  # White plays e4
+    board.push(chess.Move.from_uci("e7e5"))  # Black plays e5
+    board.push(chess.Move.from_uci("g1f3"))  # White plays Nf3
+    board.push(chess.Move.from_uci("b8c6"))  # Black plays Nc6
+    board.push(chess.Move.from_uci("f1c4"))  # White plays Bc4
+    board.push(chess.Move.from_uci("f8c5"))  # Black plays Bc5
+    # White is now to move. Snapshot the BEFORE position (White about to play).
+    # Then apply White's bad move + Black's mating reply to produce AFTER.
+    board_before = board.copy(stack=True)
+    played_move = chess.Move.from_uci("d1f3")  # White's blunder
+    board.push(played_move)
+    board.push(chess.Move.from_uci("d8g5"))  # Black's mate threat
+    after = board.copy(stack=True)
+
+    evidence = ForensicEvidence(
+        detail="forensic",
+        position_before=build_position_fingerprint(board_before),
+        position_after_played=build_position_fingerprint(after),
+        tactical_before=build_tactical_snapshot(board_before),
+        tactical_after_played=build_tactical_snapshot(after),
+        position_delta=build_position_delta(board_before, after),
+        evidence_signatures=[],
+        forced_line=ForcedLineEvidence(),
+        stability={},
+    )
+    # Mover = White (just played Qf3 blunder). After board has White to move
+    # (Black's Qg5 was the reply; now White is mated next). Stockfish reports
+    # mate=-1 because White is being mated and is the side to move.
+    result = ForensicMoveAnalysis(
+        played=played_move.uci(),
+        played_san="Qf3",
+        move_class=MoveClass.MISTAKE,
+        is_engine_best=True,
+        is_best_engine_move=True,
+        same_outcome=True,
+        centipawn_loss=400,
+        effective_loss=400,
+        eval_before=MCPEval(
+            cp=20,
+            mate=None,
+            best_move="c1g5",
+            wdl=(400, 500, 100),
+        ),
+        eval_after=MCPEval(
+            cp=-600,
+            mate=-1,
+            best_move="e1g1",
+            wdl=(50, 100, 850),
+        ),
+        action_type="play_move",
+        played_outcome="active",
+        best_outcome="active",
+        forensics=evidence,
     )
 
-    practical = build_practical_equivalence_evidence(result, mover=board.turn)
+    practical = build_practical_equivalence_evidence(result, mover=chess.WHITE)
 
     assert practical["mate_deterioration_for_mover"] is True
     assert practical["practical_equivalent"] is False

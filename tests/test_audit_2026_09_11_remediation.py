@@ -71,7 +71,6 @@ def test_score_cp_to_mate_forced_win_dominance_unit():
     assert score.effective_loss == 0
 
 
-
 @pytest.mark.asyncio
 async def test_top_moves_terminal_transition_preserves_root_play_action():
     """P1: A legal root move causing an automatic draw must have root_candidate_action='play_move'."""
@@ -96,7 +95,9 @@ async def test_top_moves_terminal_transition_preserves_root_play_action():
     cand_75 = ra1_cands[0]
     assert cand_75.root_candidate_action == "play_move"
     assert cand_75.recommended_action == "play_move"
-    assert cand_75.best_action_obj is not None and cand_75.best_action_obj.get("type") == "play_move"
+    assert (
+        cand_75.best_action_obj is not None and cand_75.best_action_obj.get("type") == "play_move"
+    )
     assert cand_75.post_position is not None
     assert cand_75.post_position.get("status") == "seventyfive_moves"
     assert cand_75.post_position.get("recommended_action") == "game_over"
@@ -163,8 +164,14 @@ async def test_analyze_game_threefold_recommendation_matches_policy():
 
 
 @pytest.mark.asyncio
-async def test_proof_defenses_symmetric_clamping():
-    """P2: proof_defenses validates minimum >= 1 and clamps maximum to 8."""
+async def test_proof_defenses_strict_bounded_audit_phase_6():
+    """Audit Phase 6 (2026-09-14): proof_defenses is strictly bounded 1..8.
+
+    The previous asymmetric policy (lower rejects, upper silently clamps)
+    was a contract bug — callers sending ``proof_defenses=9`` would
+    receive results as if they had asked for 8, which is a silent
+    contract violation. Both sides now reject with INVALID_ARGUMENT.
+    """
     from mcp.server.mcpserver.exceptions import ToolError
 
     fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
@@ -172,9 +179,14 @@ async def test_proof_defenses_symmetric_clamping():
         await top_moves(fen, proof_mode="tactical", proof_defenses=0)
     assert "INVALID_ARGUMENT" in str(exc_info.value).upper()
 
-    res_high = await top_moves(fen, proof_mode="tactical", proof_defenses=9)
-    assert res_high.requested_proof_defenses == 9
-    assert res_high.clamped_proof_defenses == 8
+    with pytest.raises((ToolError, ValueError)) as exc_info:
+        await top_moves(fen, proof_mode="tactical", proof_defenses=9)
+    assert "INVALID_ARGUMENT" in str(exc_info.value).upper()
+    assert "1..8" in str(exc_info.value)
+
+    with pytest.raises((ToolError, ValueError)) as exc_info:
+        await top_moves(fen, proof_mode="tactical", proof_defenses=-5)
+    assert "INVALID_ARGUMENT" in str(exc_info.value).upper()
 
 
 @pytest.mark.asyncio
@@ -200,7 +212,11 @@ async def test_candidate_search_provenance_comparability():
     fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     res = await top_moves(fen, n=2, include_moves=["c4"])
     # Root MultiPV candidates
-    root_cands = [c for c in res.result if c.search_provenance and c.search_provenance.get("kind") == "multipv_root"]
+    root_cands = [
+        c
+        for c in res.result
+        if c.search_provenance and c.search_provenance.get("kind") == "multipv_root"
+    ]
     assert len(root_cands) >= 1
     for c in root_cands:
         assert c.search_provenance.get("score_comparability") == "same_root_multipv"
@@ -209,4 +225,7 @@ async def test_candidate_search_provenance_comparability():
     inc_cands = [c for c in res.result if (c.best_move or "").lower() == "c2c4"]
     assert len(inc_cands) >= 1
     for c in inc_cands:
-        assert c.search_provenance.get("score_comparability") in ("same_root_multipv", "independent_search")
+        assert c.search_provenance.get("score_comparability") in (
+            "same_root_multipv",
+            "independent_search",
+        )

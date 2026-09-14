@@ -65,17 +65,26 @@ def _opponent_mate_signature(mover: chess.Color) -> str:
     return "black_mates" if mover == chess.WHITE else "white_mates"
 
 
-def _mate_signature_from_eval(ev: MCPEval) -> Literal["white_mates", "black_mates", "no_mate"]:
-    if ev.status == "checkmate" or ev.mate == 0:
-        if ev.winner == "white":
-            return "white_mates"
-        if ev.winner == "black":
-            return "black_mates"
-        if ev.cp is not None and ev.cp != 0:
-            return "white_mates" if ev.cp > 0 else "black_mates"
-    if ev.mate is None:
-        return "no_mate"
-    return "white_mates" if ev.mate > 0 else "black_mates"
+def _mate_signature_from_eval(
+    ev: MCPEval, *, board: chess.Board | None = None
+) -> Literal["white_mates", "black_mates", "no_mate"]:
+    from mcp_server.contracts.mate_state import (
+        coerce_legacy_signature,
+        semantic_mate_state,
+    )
+
+    # Audit Phase 8 (2026-09-14): centralized helper. The previous raw-numeric
+    # fallback was color-asymmetric (Stockfish mate values are side-to-move
+    # perspective). The caller thread passes the actual board so the helper
+    # can resolve perspective correctly.
+    if board is None:
+        fen = ev.canonical_fen or ev.post_fen or ""
+        try:
+            board = chess.Board(fen)
+        except ValueError:
+            return "no_mate"
+    state = semantic_mate_state(board, ev)
+    return coerce_legacy_signature(state.value)
 
 
 def _selected_evidence(
@@ -93,9 +102,7 @@ def _selected_evidence(
     )
     if not isinstance(wdl_loss, (int, float)):
         wdl_loss = _wdl_loss_percentage_points(result, mover)
-    normalized_wdl_loss = (
-        round(float(wdl_loss), 3) if isinstance(wdl_loss, (int, float)) else None
-    )
+    normalized_wdl_loss = round(float(wdl_loss), 3) if isinstance(wdl_loss, (int, float)) else None
 
     effective_loss = (
         stability.get("verified_effective_loss")
@@ -111,12 +118,38 @@ def _selected_evidence(
     if not isinstance(move_class, str):
         move_class = _class_name(result.move_class)
 
-    mate_before = stability.get("verified_mate_before") if verified else stability.get("initial_mate_before")
-    mate_after = stability.get("verified_mate_after") if verified else stability.get("initial_mate_after")
+    # Audit Phase 8 (2026-09-14): derive mate signatures from the actual
+    # before/after boards (when present in the evidence). The caller threads
+    # the boards through ``apply_practical_equivalence`` below.
+    board_before = None
+    board_after = None
+    if evidence is not None and getattr(evidence, "position_before", None) is not None:
+        from mcp_server.parsers.board_builder import _build_board
+
+        try:
+            board_before = _build_board(evidence.position_before.canonical_fen, [], strict=False)
+        except (ValueError, KeyError):
+            board_before = None
+    if evidence is not None and getattr(evidence, "position_after_played", None) is not None:
+        from mcp_server.parsers.board_builder import _build_board
+
+        try:
+            board_after = _build_board(
+                evidence.position_after_played.canonical_fen, [], strict=False
+            )
+        except (ValueError, KeyError):
+            board_after = None
+
+    mate_before = (
+        stability.get("verified_mate_before") if verified else stability.get("initial_mate_before")
+    )
+    mate_after = (
+        stability.get("verified_mate_after") if verified else stability.get("initial_mate_after")
+    )
     if not isinstance(mate_before, str):
-        mate_before = _mate_signature_from_eval(result.eval_before)
+        mate_before = _mate_signature_from_eval(result.eval_before, board=board_before)
     if not isinstance(mate_after, str):
-        mate_after = _mate_signature_from_eval(result.eval_after)
+        mate_after = _mate_signature_from_eval(result.eval_after, board=board_after)
 
     return {
         "basis": "verified" if verified else "initial",
@@ -139,6 +172,11 @@ def build_practical_equivalence_evidence(
     equal. It means the available WDL/outcome/mate/tactical evidence does not
     justify spending coaching attention on the engine preference under this
     bounded policy.
+
+    Audit Phase 9 (2026-09-14): the rule-outcome guard now dominates the
+    ``is_best_engine_move`` shortcut. An engine-best board move cannot be
+    labelled practically equivalent when the policy-selected action was a
+    non-play rule action (e.g. an immediate threefold or 50-move draw claim).
     """
     evidence = result.forensics
     selected = _selected_evidence(result, mover)
@@ -159,12 +197,9 @@ def build_practical_equivalence_evidence(
     )
     tactical_punishment = bool(hard_tactical or forcing_large_loss)
 
-    mover_won_by_mate = (
-        result.eval_after.status == "checkmate"
-        and (
-            (mover == chess.WHITE and result.eval_after.winner == "white")
-            or (mover == chess.BLACK and result.eval_after.winner == "black")
-        )
+    mover_won_by_mate = result.eval_after.status == "checkmate" and (
+        (mover == chess.WHITE and result.eval_after.winner == "white")
+        or (mover == chess.BLACK and result.eval_after.winner == "black")
     )
     opponent_mate = _opponent_mate_signature(mover)
     mate_deterioration = (
@@ -178,10 +213,27 @@ def build_practical_equivalence_evidence(
     practical_equivalent: bool | None
     reason_codes: list[str] = []
 
+    # Audit Phase 9 (2026-09-14): invariant —
+    #   ``practical_equivalent is True`` ⇒ ``same_rule_outcome is True``
+    # is enforced by the order below. The rule-outcome guard runs *before*
+    # the engine-best shortcut so a best-action draw claim can never be
+    # shadowed by the engine preferring a board move.
     if result.action_type != "play_move":
         status = "indeterminate"
         practical_equivalent = None
         reason_codes.append("NON_MOVE_ACTION")
+    elif not same_rule_outcome:
+        status = "not_equivalent"
+        practical_equivalent = False
+        reason_codes.append("RULE_OUTCOME_CHANGED")
+    elif mate_deterioration:
+        status = "not_equivalent"
+        practical_equivalent = False
+        reason_codes.append("MATE_STATUS_DETERIORATED")
+    elif tactical_punishment:
+        status = "not_equivalent"
+        practical_equivalent = False
+        reason_codes.append("CONCRETE_FORCING_PUNISHMENT_EVIDENCE")
     elif result.is_best_engine_move or getattr(result, "is_engine_best", False):
         status = "equivalent"
         practical_equivalent = True
@@ -189,19 +241,6 @@ def build_practical_equivalence_evidence(
             reason_codes.append("ENGINE_BEST_WINNING_MOVE")
         else:
             reason_codes.append("ENGINE_BEST_MOVE")
-
-    elif mate_deterioration:
-        status = "not_equivalent"
-        practical_equivalent = False
-        reason_codes.append("MATE_STATUS_DETERIORATED")
-    elif not same_rule_outcome:
-        status = "not_equivalent"
-        practical_equivalent = False
-        reason_codes.append("RULE_OUTCOME_CHANGED")
-    elif tactical_punishment:
-        status = "not_equivalent"
-        practical_equivalent = False
-        reason_codes.append("CONCRETE_FORCING_PUNISHMENT_EVIDENCE")
     elif isinstance(wdl_loss, float):
         if wdl_loss <= _EQUIVALENT_WDL_LOSS_PP:
             status = "equivalent"
@@ -238,9 +277,8 @@ def build_practical_equivalence_evidence(
         coach_priority = "negligible"
     elif mate_deterioration or not same_rule_outcome or tactical_punishment:
         coach_priority = "high"
-    elif (
-        (isinstance(wdl_loss, float) and wdl_loss >= 15.0)
-        or (isinstance(effective_loss, int) and effective_loss >= 200)
+    elif (isinstance(wdl_loss, float) and wdl_loss >= 15.0) or (
+        isinstance(effective_loss, int) and effective_loss >= 200
     ):
         coach_priority = "high"
     elif practical_equivalent is False:

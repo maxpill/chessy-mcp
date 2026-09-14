@@ -53,8 +53,14 @@ async def test_p0_1_engine_best_move_never_blunder() -> None:
 
 
 @pytest.mark.asyncio
-async def test_p0_2_engine_best_move_is_practically_equivalent() -> None:
-    # Forensic classify_move on forced king move
+async def test_p0_2_engine_best_move_does_not_hide_mate_deterioration():
+    # Audit Phase 8/9 (2026-09-14): the position with Black to move is a
+    # forced mate FOR BLACK (Stockfish reports mate=+1 from Black's POV,
+    # meaning the side to move — Black — wins). The played move ``Ke7``
+    # deflects but flips the engine's mate assessment to White mates Black.
+    # Under the corrected mate semantics (Phase 8) + the rule-outcome guard
+    # (Phase 9), this must surface as ``MATE_STATUS_DETERIORATED`` rather
+    # than the old ``ENGINE_BEST_MOVE`` shortcut.
     fen = "rn1qkbnr/ppp2B1p/3p2p1/4N3/4P3/2N5/PPPP1PPP/R1BbK2R b KQkq - 0 6"
     res = await classify_move(fen=fen, move="Ke7", depth=4, detail="forensic")
     assert res.is_engine_best is True
@@ -63,9 +69,9 @@ async def test_p0_2_engine_best_move_is_practically_equivalent() -> None:
     if res.forensics:
         pe = res.forensics.stability.get("practical_equivalence")
         assert pe is not None
-        assert pe["status"] == "equivalent", f"Expected 'equivalent', got {pe['status']}"
-        assert pe["practical_equivalent"] is True
-
+        assert pe["status"] == "not_equivalent", f"Expected 'not_equivalent', got {pe['status']}"
+        assert pe["practical_equivalent"] is False
+        assert "MATE_STATUS_DETERIORATED" in pe["reason_codes"]
 
 
 @pytest.mark.asyncio
@@ -127,7 +133,10 @@ def test_p1_5_fivefold_repetition_metadata_coherent() -> None:
 async def test_p2_8_reject_non_positive_proof_defenses_in_tactical_mode() -> None:
     with pytest.raises(ToolError) as exc_info:
         await top_moves(fen="startpos", proof_mode="tactical", proof_defenses=0)
-    assert "INVALID_ARGUMENT" in str(exc_info.value).upper() or "INVALID_PROOF_DEFENSES" in str(exc_info.value).upper()
+    assert (
+        "INVALID_ARGUMENT" in str(exc_info.value).upper()
+        or "INVALID_PROOF_DEFENSES" in str(exc_info.value).upper()
+    )
 
 
 @pytest.mark.asyncio
