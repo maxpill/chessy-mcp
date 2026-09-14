@@ -19,6 +19,7 @@ from mcp.types import ToolAnnotations
 
 from mcp_server._mcp import mcp
 from mcp_server.analysis.game_analyzer import GameAnalyzer
+from mcp_server.contracts.errors import ChessMCPError
 from mcp_server.metrics import metrics
 from mcp_server.models.game_coaching import ForensicGameAnalysisResult
 from mcp_server.tools._common import (
@@ -156,6 +157,10 @@ async def analyze_game(  # pyright: ignore[reportGeneralTypeIssues]
     except ToolError:
         await metrics.record("analyze_game", 0.0, is_error=True)
         raise
+    except ChessMCPError as exc:
+        raise _tool_error(
+            code=exc.code, message=exc.message, tool="analyze_game", input=pgn[:100]
+        ) from exc
     except ValueError as exc:
         msg = str(exc)
         code = error_code_for(msg)
