@@ -735,24 +735,16 @@ async def test_explore_opening_input_schema_enums() -> None:
         schema = next(t for t in tools.tools if t.name == "explore_opening").input_schema
         db_prop = schema["properties"]["db"]
         db_enum = db_prop.get("enum")
-        if db_enum is None:
-            db_enum = next(
-                (item["enum"] for item in db_prop.get("anyOf", []) if "enum" in item),
-                None,
-            )
         assert db_enum == ["lichess", "masters", "player"]
         variant_prop = schema["properties"]["variant"]
         variant_enum = variant_prop.get("enum")
-        if variant_enum is None:
-            variant_enum = next(
-                (item["enum"] for item in variant_prop.get("anyOf", []) if "enum" in item),
-                None,
-            )
         assert variant_enum is not None
         assert "standard" in variant_enum
         assert "fromPosition" in variant_enum
-        mode_items = schema["properties"]["modes"]["anyOf"][0]
-        mode_enum = mode_items["items"]["enum"]
+        # speeds/modes are arrays — Pydantic places the items-level enum at
+        # the top of the property, not inside anyOf[0].items.
+        mode_items = schema["properties"]["modes"]
+        mode_enum = mode_items["items"].get("enum")
         assert mode_enum == ["casual", "rated"]
 
 

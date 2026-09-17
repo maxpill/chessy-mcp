@@ -29,6 +29,7 @@ __all__ = [
     "LICHESS_DB_LICHESS",
     "LICHESS_DB_MASTERS",
     "LICHESS_DB_PLAYER",
+    "LICHESS_EXPLORER_PLAYER_TIMEOUT_S",
     "LICHESS_EXPLORER_TIMEOUT_S",
     "LICHESS_VARIANTS",
     "LichessExplorerAuthError",
@@ -50,8 +51,16 @@ LICHESS_DBS: Final[frozenset[str]] = frozenset(
     {LICHESS_DB_LICHESS, LICHESS_DB_MASTERS, LICHESS_DB_PLAYER}
 )
 
-# Matches lila's OpeningConfig + OpeningExplorer.requestTimeout.
+# Matches lila's OpeningConfig + OpeningExplorer.requestTimeout for the
+# /lichess and /masters endpoints. The /player endpoint is consistently 2×
+# slower in production (Lichess aggregates per-user stats at request time);
+# we fall back to a longer timeout via the per-db override below.
 LICHESS_EXPLORER_TIMEOUT_S: Final[float] = 4.0
+LICHESS_EXPLORER_PLAYER_TIMEOUT_S: Final[float] = 8.0
+
+_TIMEOUT_PER_DB: Final[dict[str, float]] = {
+    LICHESS_DB_PLAYER: LICHESS_EXPLORER_PLAYER_TIMEOUT_S,
+}
 
 LichessVariant = str
 LICHESS_VARIANTS: Final[frozenset[str]] = frozenset(

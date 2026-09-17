@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 import chess
 from pydantic import Field
@@ -47,12 +47,8 @@ from mcp_server.lichess_explorer.client import (
 )
 from mcp_server.metrics import metrics
 from mcp_server.models import (
-    ExplorerColor,
-    ExplorerDb,
     ExplorerFilters,
-    ExplorerMode,
     ExplorerRequestFilters,
-    ExplorerSpeed,
     LichessExplorerResult,
     OpeningData,
 )
@@ -60,23 +56,6 @@ from mcp_server.parsers import build_normalized_position
 from mcp_server.tools._common import _tool_error
 
 log = logging.getLogger("chessy_mcp.explore_opening")
-
-
-# Module-level Literal so FastMCP's eval_str=True annotation resolver can find
-# the symbol when introspecting the tool's signature. Using Literal here gives
-# us a proper JSON-enum in the MCP tool schema for free.
-LichessVariantLiteral = Literal[
-    "standard",
-    "chess960",
-    "fromPosition",
-    "antichess",
-    "atomic",
-    "crazyhouse",
-    "horde",
-    "kingOfTheHill",
-    "racingKings",
-    "threeCheck",
-]
 
 
 _VALID_SPEEDS: frozenset[str] = frozenset(
@@ -255,31 +234,58 @@ async def explore_opening(
         ),
     ] = None,
     db: Annotated[
-        ExplorerDb,
+        str,
         Field(
             description=(
                 "Explorer dataset: 'lichess' (all rated online games), 'masters' "
                 "(OTB master games, supports year-based since/until), or 'player' "
                 "(one player's online games — requires the ``player`` argument)."
-            )
+            ),
+            json_schema_extra={"enum": ["lichess", "masters", "player"]},
         ),
     ] = "lichess",
     variant: Annotated[
-        LichessVariantLiteral,
+        str,
         Field(
             description=(
                 "Chess variant. One of: standard, chess960, fromPosition, antichess, "
                 "atomic, crazyhouse, horde, kingOfTheHill, racingKings, threeCheck."
-            )
+            ),
+            json_schema_extra={
+                "enum": [
+                    "standard",
+                    "chess960",
+                    "fromPosition",
+                    "antichess",
+                    "atomic",
+                    "crazyhouse",
+                    "horde",
+                    "kingOfTheHill",
+                    "racingKings",
+                    "threeCheck",
+                ]
+            },
         ),
     ] = "standard",
     speeds: Annotated[
-        list[ExplorerSpeed] | None,
+        list[str] | None,
         Field(
             description=(
                 "Speed filters for ``db='lichess'``: any of ultraBullet, bullet, "
                 "blitz, rapid, classical, correspondence. Ignored for ``db='masters'``."
-            )
+            ),
+            json_schema_extra={
+                "items": {
+                    "enum": [
+                        "ultraBullet",
+                        "bullet",
+                        "blitz",
+                        "rapid",
+                        "classical",
+                        "correspondence",
+                    ]
+                }
+            },
         ),
     ] = None,
     ratings: Annotated[
@@ -292,8 +298,11 @@ async def explore_opening(
         ),
     ] = None,
     modes: Annotated[
-        list[ExplorerMode] | None,
-        Field(description=("Game-mode filters for ``db='lichess'``: 'casual' and/or 'rated'.")),
+        list[str] | None,
+        Field(
+            description=("Game-mode filters for ``db='lichess'``: 'casual' and/or 'rated'."),
+            json_schema_extra={"items": {"enum": ["casual", "rated"]}},
+        ),
     ] = None,
     since: Annotated[
         str | None,
@@ -313,12 +322,13 @@ async def explore_opening(
         ),
     ] = None,
     color: Annotated[
-        ExplorerColor | None,
+        str | None,
         Field(
             description=(
                 "Required when ``db='player'``. Restricts to games where the "
                 "player had White ('white') or Black ('black')."
-            )
+            ),
+            json_schema_extra={"enum": ["white", "black"]},
         ),
     ] = None,
     top_games: Annotated[
@@ -406,11 +416,19 @@ async def explore_opening(
         )
 
         play_list = list(play or [])
+        # Reject empty/whitespace-only strings early — Lichess treats them as
+        # "no play", but a caller that explicitly sends [\"\"] almost certainly
+        # meant to send a UCI move and accidentally left the entry blank.
+        for idx, raw in enumerate(play_list):
+            if not raw or not raw.strip():
+                raise ValueError(
+                    f"INVALID_MOVE_SYNTAX: play[{idx}] is empty; pass UCI moves like 'e2e4'."
+                )
         # Dedupe BEFORE validation so the validator only pushes each unique
         # UCI once. Duplicates in ``play`` are a no-op (the position has
         # already advanced past the first occurrence) and would otherwise
         # spuriously trip INVALID_MOVE_SYNTAX.
-        play_unique_sorted = tuple(sorted({p.strip() for p in play_list if p.strip()}))
+        play_unique_sorted = tuple(sorted({p.strip() for p in play_list}))
         play_uci = tuple(_validate_play_uci(list(play_unique_sorted), root_board))
         walker = root_board.copy(stack=True)
         for uci in play_uci:
