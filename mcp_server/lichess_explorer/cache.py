@@ -98,21 +98,12 @@ class LichessExplorerCache:
         ``fetcher`` is awaited through ``SingleFlight`` so concurrent identical
         requests coalesce into one HTTP call.
         """
-        import os
-
-        print(
-            f"DEBUG GOF: cache_id={id(self)} l2_id={id(self._l2)} "
-            f"db={self._l2.db_path} file_size={os.path.getsize(self._l2.db_path)}"
-        )
         now = time.time()
         entry = await self._l1.get(key)
         if entry is not None and entry.is_alive(now):
             return entry.value, True
 
         raw = await self._l2.get(key)
-        print(
-            f"DEBUG GOF: L2 raw len={len(raw) if raw else 0} raw_repr={raw[:100] if raw else 'None'}"
-        )
         if raw is not None:
             try:
                 payload = json.loads(raw)
