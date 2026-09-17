@@ -159,6 +159,7 @@ class LichessExplorerClient:
                 "MISSING_TOKEN: LICHESS_EXPLORER_TOKEN is not configured."
             )
         url = f"{self._endpoint}/{db}"
+        timeout_s = _TIMEOUT_PER_DB.get(db, LICHESS_EXPLORER_TIMEOUT_S)
         headers = {
             "Authorization": f"Bearer {self._token}",
             "User-Agent": "chessy-mcp/0.1.0 (lichess explorer client)",
@@ -167,10 +168,15 @@ class LichessExplorerClient:
         for attempt in (1, 2):
             try:
                 client = await self._http()
-                resp = await client.get(url, params=params, headers=headers)
+                resp = await client.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=httpx.Timeout(timeout_s),
+                )
             except httpx.TimeoutException as exc:
                 raise LichessExplorerTimeout(
-                    f"Lichess explorer timed out after {LICHESS_EXPLORER_TIMEOUT_S}s"
+                    f"Lichess explorer timed out after {timeout_s}s"
                 ) from exc
             except httpx.HTTPError as exc:
                 raise LichessExplorerUnreachable(str(exc)) from exc

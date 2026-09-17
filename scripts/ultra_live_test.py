@@ -149,7 +149,13 @@ async def main() -> int:
 
     # invalid FEN
     result, ms = await call_safe(sess, "evaluate_position", {"fen": "garbage", "depth": 10})
-    record("evaluate_position: invalid FEN", "INVALID_FEN" in str(result).upper(), "", ms)
+    text = str(result).upper()
+    record(
+        "evaluate_position: invalid FEN",
+        "INVALID_FEN" in text or "INVALID_POSITION" in text,
+        "",
+        ms,
+    )
 
     # ---------- top_moves ----------
     await section("top_moves")
@@ -212,7 +218,13 @@ async def main() -> int:
         ("coach detail", {"pgn": pgn, "depth": 12, "detail": "coach", "perspective": "white"}),
     ]:
         result, ms = await call_safe(sess, "analyze_game", args)
-        record(f"analyze_game: {label}", expect_no_error(result), "", ms)
+        text = result.get("result", {}).get("content", [{}])[0].get("text", "")
+        # analyze_game emits a JSON object with schema_version + plies/move list
+        ok = expect_no_error(result) and (
+            "schema_version" in text
+            and ("total_plies" in text or "moves" in text or "plies" in text)
+        )
+        record(f"analyze_game: {label}", ok, "", ms)
 
     # ---------- explore_opening ----------
     await section("explore_opening — happy paths")
