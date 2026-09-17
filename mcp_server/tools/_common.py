@@ -188,7 +188,6 @@ def _minimal_mcpeval(mcp_eval: Any) -> Any:
     )
 
 
-
 compact_mcpeval = _compact_mcpeval
 minimal_mcpeval = _minimal_mcpeval
 _minimal_mcpeval = _minimal_mcpeval
@@ -303,6 +302,8 @@ _ERROR_CODE_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
     ("Could not parse PGN", "invalid_pgn"),
     ("Invalid PGN", "invalid_pgn"),
     ("MISSING_MOVE", "invalid_input"),
+    ("MISSING_PLAYER", "missing_player"),
+    ("MISSING_TOKEN", "missing_token"),
 )
 
 

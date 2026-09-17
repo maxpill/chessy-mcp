@@ -68,17 +68,31 @@ curl http://127.0.0.1:9551/health
 
 ## Tools
 
-Four Streamable-HTTP MCP tools at `/mcp`:
+Five Streamable-HTTP MCP tools at `/mcp`:
 
-| Tool                | What it does                                              |
-| ------------------- | --------------------------------------------------------- |
-| `evaluate_position` | Single-position Stockfish eval at a given depth           |
-| `top_moves`         | Top-N candidate moves ranked by Stockfish                 |
-| `classify_move`     | Grade a played move against the engine's best alternative |
-| `analyze_game`      | Full PGN analysis with accuracy, mistakes, turning points |
+| Tool                | What it does                                                               |
+| ------------------- | -------------------------------------------------------------------------- |
+| `evaluate_position` | Single-position Stockfish eval at a given depth                            |
+| `top_moves`         | Top-N candidate moves ranked by Stockfish                                  |
+| `classify_move`     | Grade a played move against the engine's best alternative                  |
+| `analyze_game`      | Full PGN analysis with accuracy, mistakes, turning points                  |
+| `explore_opening`   | Lichess Opening Explorer — W/D/L stats + ECO + sample games for a position |
 
-The 4-tool surface is intentional - the chessy app's coach runtime is the
+The 5-tool surface is intentional - the chessy app's coach runtime is the
 primary consumer, and this server is sized for that workload.
+
+### Lichess integration
+
+`explore_opening` wraps `https://explorer.lichess.ovh` and requires a Lichess
+OAuth bearer token in `LICHESS_EXPLORER_TOKEN`. Generate a PAT with the
+`explorer:read` scope at <https://lichess.org/settings/oauth/token> and put it
+in the stack `.env` next to `CHESS_MCP_AUTH_TOKEN`. Without the token the tool
+fails fast with `MISSING_TOKEN` rather than silently dropping queries.
+
+Responses are cached L1+L2 for 8 minutes (matches lila's `OpeningApi`) and
+concurrent identical calls coalesce via `SingleFlight` into a single HTTP
+roundtrip. The 4 s timeout mirrors the upstream `requestTimeout` setting in
+`lila.modules.opening.OpeningExplorer`.
 
 ### Coaching forensics
 

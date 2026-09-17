@@ -1,0 +1,78 @@
+{
+  "white": 1247830,
+  "draws": 412937,
+  "black": 1011567,
+  "moves": [
+    {
+      "uci": "e2e4",
+      "san": "e4",
+      "white": 928341,
+      "draws": 285412,
+      "black": 740123,
+      "averageRating": 1823
+    },
+    {
+      "uci": "d2d4",
+      "san": "d4",
+      "white": 612903,
+      "draws": 198114,
+      "black": 421098,
+      "averageRating": 1855
+    },
+    {
+      "uci": "c2c4",
+      "san": "c4",
+      "white": 188234,
+      "draws": 67012,
+      "black": 102345,
+      "averageRating": 1834
+    },
+    {
+      "uci": "g1f3",
+      "san": "Nf3",
+      "white": 156789,
+      "draws": 53001,
+      "black": 88002,
+      "averageRating": 1812
+    },
+    {
+      "uci": "b2b3",
+      "san": "b3",
+      "white": 23110,
+      "draws": 7102,
+      "black": 14002,
+      "averageRating": 1776
+    }
+  ],
+  "topGames": [
+    {
+      "id": "q3YlO5P",
+      "white": { "name": "DrNykterstein", "rating": 2750 },
+      "black": { "name": "PenguimCoder", "rating": 2701 },
+      "winner": "white",
+      "year": "2025",
+      "month": "2025-08",
+      "speed": "blitz",
+      "mode": "rated",
+      "uci": "e2e4"
+    }
+  ],
+  "recentGames": [
+    {
+      "id": "AbCdEfGh",
+      "white": { "name": "GM_Player1", "rating": 2510 },
+      "black": { "name": "FM_Player2", "rating": 2380 },
+      "year": "2026",
+      "month": "2026-09",
+      "speed": "rapid",
+      "mode": "rated",
+      "uci": "e2e4"
+    }
+  ],
+  "opening": null,
+  "history": [
+    { "white": 50000, "draws": 20000, "black": 45000 },
+    { "white": 55000, "draws": 21000, "black": 48000 },
+    { "white": 60000, "draws": 22000, "black": 50000 }
+  ]
+}

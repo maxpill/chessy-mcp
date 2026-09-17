@@ -21,7 +21,7 @@ async def _close_analyzer_at_test_end():
     await server_module.close_analyzer_pool()
 
 
-def test_mcp_has_4_tools():
+def test_mcp_has_5_tools():
     tools_list = asyncio.run(server_module.mcp.list_tools())
     names = {t.name for t in tools_list}
     assert names == {
@@ -29,6 +29,7 @@ def test_mcp_has_4_tools():
         "top_moves",
         "classify_move",
         "analyze_game",
+        "explore_opening",
     }
 
 

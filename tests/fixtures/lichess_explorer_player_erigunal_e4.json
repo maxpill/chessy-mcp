@@ -1,0 +1,51 @@
+{
+  "white": 4321,
+  "draws": 876,
+  "black": 3987,
+  "moves": [
+    {
+      "uci": "e2e4",
+      "san": "e4",
+      "white": 3201,
+      "draws": 502,
+      "black": 2811,
+      "averageRating": 2098
+    },
+    {
+      "uci": "d2d4",
+      "san": "d4",
+      "white": 987,
+      "draws": 312,
+      "black": 1023,
+      "averageRating": 2112
+    }
+  ],
+  "topGames": [
+    {
+      "id": "ZxCvBnMa",
+      "white": { "name": "erigunal", "rating": 2150 },
+      "black": { "name": "OpponentOne", "rating": 2201 },
+      "winner": "white",
+      "year": "2026",
+      "month": "2026-09",
+      "speed": "blitz",
+      "mode": "rated",
+      "uci": "e2e4"
+    }
+  ],
+  "recentGames": [
+    {
+      "id": "QwErTyUi",
+      "white": { "name": "erigunal", "rating": 2148 },
+      "black": { "name": "RecentOpp", "rating": 2132 },
+      "winner": "black",
+      "year": "2026",
+      "month": "2026-09",
+      "speed": "rapid",
+      "mode": "rated",
+      "uci": "e2e4"
+    }
+  ],
+  "opening": null,
+  "history": []
+}

@@ -1,0 +1,3 @@
+{"white": 100, "draws": 50, "black": 80, "moves": [{"uci":"e2e4","san":"e4","white":60,"draws":30,"black":40,"averageRating":1800}], "topGames": [], "recentGames": [], "opening": null, "history": []}
+{"white": 105, "draws": 52, "black": 82, "moves": [{"uci":"e2e4","san":"e4","white":62,"draws":31,"black":41,"averageRating":1810}], "topGames": [], "recentGames": [], "opening": null, "history": []}
+{"white": 110, "draws": 55, "black": 85, "moves": [{"uci":"e2e4","san":"e4","white":64,"draws":32,"black":42,"averageRating":1820}], "topGames": [], "recentGames": [], "opening": null, "history": []}

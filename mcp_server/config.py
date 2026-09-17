@@ -80,6 +80,17 @@ class MCPSettings(BaseSettings):
     # token. User-Agent and Origin strings are never treated as credentials.
     lock_chatgpt: bool = Field(default=False, validation_alias="CHESS_MCP_LOCK_CHATGPT")
 
+    # Lichess Opening Explorer — bearer token + endpoint. The token is a
+    # standard Lichess personal access token with ``explorer:read`` scope
+    # generated at https://lichess.org/settings/oauth/token. Missing token
+    # causes the ``explore_opening`` tool to raise ``MISSING_TOKEN`` rather
+    # than silently degrading.
+    lichess_explorer_token: str = Field(default="", validation_alias="LICHESS_EXPLORER_TOKEN")
+    lichess_explorer_endpoint: str = Field(
+        default="https://explorer.lichess.ovh",
+        validation_alias="LICHESS_EXPLORER_ENDPOINT",
+    )
+
 
 class BuildMetadata(BaseSettings):
     """Build-time metadata injected by CI or Docker."""

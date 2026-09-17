@@ -52,9 +52,13 @@ async def test_mcp_tools_list_schema_and_enums() -> None:
         tools_result = await session.list_tools()
         tools_by_name = {tool.name: tool for tool in tools_result.tools}
 
-        assert {"evaluate_position", "top_moves", "classify_move", "analyze_game"} <= set(
-            tools_by_name.keys()
-        )
+        assert {
+            "evaluate_position",
+            "top_moves",
+            "classify_move",
+            "analyze_game",
+            "explore_opening",
+        } <= set(tools_by_name.keys())
 
         # Check evaluate_position verbosity enum
         eval_schema = tools_by_name["evaluate_position"].input_schema

@@ -11,6 +11,20 @@ from __future__ import annotations
 from mcp_server.models.action import ActionBlock
 from mcp_server.models.action_policy import ActionPolicyMetadata
 from mcp_server.models.eval import EvalBlock
+from mcp_server.models.explorer import (
+    ExplorerColor,
+    ExplorerDb,
+    ExplorerFilters,
+    ExplorerMode,
+    ExplorerRequestFilters,
+    ExplorerSpeed,
+    LichessExplorerResult,
+    OpeningData,
+    OpeningGameRef,
+    OpeningHistoryPoint,
+    OpeningMoveStats,
+    OpeningPlayer,
+)
 from mcp_server.models.history import HistoryBlock
 from mcp_server.models.mcpeval import MCPEval
 from mcp_server.models.mcpeval_factory import attach_factory
@@ -42,11 +56,23 @@ __all__ = [
     "ActionBlock",
     "ActionPolicyMetadata",
     "EvalBlock",
+    "ExplorerColor",
+    "ExplorerDb",
+    "ExplorerFilters",
+    "ExplorerMode",
+    "ExplorerRequestFilters",
+    "ExplorerSpeed",
     "GameAnalysisResult",
     "HistoryBlock",
+    "LichessExplorerResult",
     "MCPEval",
     "MCPMoveAnalysis",
     "MoveClass",
+    "OpeningData",
+    "OpeningGameRef",
+    "OpeningHistoryPoint",
+    "OpeningMoveStats",
+    "OpeningPlayer",
     "PlayedMoveScore",
     "PlyAnalysisItem",
     "PolicyBlock",

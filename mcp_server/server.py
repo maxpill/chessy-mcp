@@ -150,6 +150,7 @@ from mcp_server.tools.evaluate_position import evaluate_position  # noqa: E402,F
 from mcp_server.tools.top_moves import top_moves  # noqa: E402,F401
 from mcp_server.tools.classify_move import classify_move  # noqa: E402,F401
 from mcp_server.tools.analyze_game import analyze_game  # noqa: E402,F401
+from mcp_server.tools.explore_opening import explore_opening  # noqa: E402,F401
 from mcp_server.tools.game_metrics import _compute_game_metrics  # noqa: E402,F401
 
 

@@ -1,0 +1,38 @@
+{
+  "white": 14521,
+  "draws": 6234,
+  "black": 12987,
+  "moves": [
+    {
+      "uci": "g1f3",
+      "san": "Nf3",
+      "white": 8421,
+      "draws": 3214,
+      "black": 6123,
+      "averageRating": 2453
+    },
+    {
+      "uci": "f1c4",
+      "san": "Bc4",
+      "white": 3210,
+      "draws": 1421,
+      "black": 2891,
+      "averageRating": 2412
+    },
+    {
+      "uci": "c2c3",
+      "san": "c3",
+      "white": 2102,
+      "draws": 901,
+      "black": 1871,
+      "averageRating": 2401
+    }
+  ],
+  "topGames": [],
+  "recentGames": [],
+  "opening": {
+    "eco": "C20",
+    "name": "King's Pawn Game"
+  },
+  "history": []
+}
