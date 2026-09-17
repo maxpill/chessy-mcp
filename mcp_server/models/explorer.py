@@ -47,6 +47,16 @@ class OpeningGameRef(BaseModel):
     mode: ExplorerMode | None = None
     uci: str | None = None
 
+    @field_validator("year", mode="before")
+    @classmethod
+    def _coerce_year(cls, value: object) -> object:
+        """Lichess returns ``year`` as int in some payload versions, string in
+        others; normalize to a string so the JSON schema is stable.
+        """
+        if value is None or isinstance(value, str):
+            return value
+        return str(value)
+
 
 class ExplorerOpeningMeta(BaseModel):
     eco: str
