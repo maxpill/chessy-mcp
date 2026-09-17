@@ -424,12 +424,21 @@ async def explore_opening(
                 raise ValueError(
                     f"INVALID_MOVE_SYNTAX: play[{idx}] is empty; pass UCI moves like 'e2e4'."
                 )
-        # Dedupe BEFORE validation so the validator only pushes each unique
-        # UCI once. Duplicates in ``play`` are a no-op (the position has
-        # already advanced past the first occurrence) and would otherwise
-        # spuriously trip INVALID_MOVE_SYNTAX.
-        play_unique_sorted = tuple(sorted({p.strip() for p in play_list}))
-        play_uci = tuple(_validate_play_uci(list(play_unique_sorted), root_board))
+        # Dedupe by FIRST occurrence so the validator walks the position in
+        # the caller's intent order (alphabetical sorting would re-order
+        # moves and silently make white's moves fail because they would be
+        # applied on black's turns). Duplicates collapse to a no-op.
+        seen: set[str] = set()
+        play_in_order: list[str] = []
+        for raw in play_list:
+            token = raw.strip()
+            if token not in seen:
+                seen.add(token)
+                play_in_order.append(token)
+        play_uci = tuple(_validate_play_uci(play_in_order, root_board))
+        # Stable cache key: canonical order = position after applying all
+        # moves, which is invariant to caller order.
+        play_key = tuple(sorted(play_uci))
         walker = root_board.copy(stack=True)
         for uci in play_uci:
             walker.push_uci(uci)
@@ -524,7 +533,7 @@ async def explore_opening(
             db=db,
             variant=variant,
             fen=canonical_fen,
-            play=play_uci,
+            play=play_key,
             speeds=frozenset(effective_speeds),
             ratings=frozenset(effective_ratings),
             modes=frozenset(effective_modes),

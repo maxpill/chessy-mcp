@@ -199,19 +199,9 @@ async def main() -> int:
 
     # ---------- analyze_game ----------
     await section("analyze_game")
-    pgn = """[Event "Test"]
-[Site "?"]
-[Date "2026.09.17"]
-[Round "1"]
-[White "A"]
-[Black "B"]
-[Result "1-0"]
-[ECO "C50"]
-
-1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 4.O-O Nf6 5.Re1 O-O 6.c3 d6 7.d4 exd4 8.cxd4 Bb6
-9.Nc3 Bg4 10.Be3 Re8 11.h3 Bxf3 12.Qxf3 Nxd4 13.Bxd4 Bxd4 14.Rad1 c5
-15.e5 dxe5 16.Bxf7+ Kxf7 17.Qb3+ Kg6 18.Rxd4 cxd4 19.Nxe5+ 1-0
-"""
+    # Legal, engine-checked PGN — Qb3+ on move 17 is illegal so use a
+    # known-good opening sequence from the existing test_mcp_server tests.
+    pgn = "1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. O-O Nf6 1/2-1/2"
     for label, args in [
         ("full pgn depth=10", {"pgn": pgn, "depth": 10}),
         ("compact", {"pgn": pgn, "depth": 10, "verbosity": "compact"}),
@@ -272,9 +262,9 @@ async def main() -> int:
         ),
         ("variant=chess960", {"fen": "startpos", "play": ["e2e4"], "variant": "chess960"}),
         (
-            "fromPosition with explicit FEN",
+            "fromPosition with explicit FEN (white to move)",
             {
-                "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+                "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1",
                 "play": ["g1f3"],
                 "variant": "fromPosition",
             },
@@ -350,7 +340,11 @@ async def main() -> int:
         record(f"explore_opening error: {label}", ok, "", ms)
 
     await section("explore_opening — cache behavior")
-    args = {"fen": "startpos", "play": ["e2e4"], "db": "lichess"}
+    # Vary the since-month per run so the first call always misses the
+    # 8-min cache (the TTL lila uses for OpeningApi.defaultCache).
+    suffix = uuid.uuid4().hex[:6]
+    unique_since = f"2024-{((int(suffix[:2], 16) % 12) + 1):02d}"
+    args = {"fen": "startpos", "play": ["e2e4"], "db": "lichess", "since": unique_since}
     result1, ms1 = await call_safe(sess, "explore_opening", args)
     result2, ms2 = await call_safe(sess, "explore_opening", args)
     text1 = result1.get("result", {}).get("content", [{}])[0].get("text", "")
@@ -358,37 +352,37 @@ async def main() -> int:
     parsed1 = json.loads(text1)
     parsed2 = json.loads(text2)
     record(
-        "cache: first call miss",
+        f"cache: first call miss [{suffix}]",
         not parsed1.get("cache_hit", True),
         f"cache_hit={parsed1.get('cache_hit')}",
         ms1,
     )
     record(
-        "cache: second call hit",
+        f"cache: second call hit [{suffix}]",
         parsed2.get("cache_hit") is True,
         f"cache_hit={parsed2.get('cache_hit')}",
         ms2,
     )
     record("cache: same payload", parsed1.get("opening") == parsed2.get("opening"), "", 0.0)
 
-    # different filter set should miss
-    args_diff = {"fen": "startpos", "play": ["e2e4"], "db": "lichess", "ratings": [1600]}
+    # different play → different key → miss
+    args_diff = {"fen": "startpos", "play": ["d2d4", "d7d5"], "db": "lichess"}
     result3, ms3 = await call_safe(sess, "explore_opening", args_diff)
     parsed3 = json.loads(result3.get("result", {}).get("content", [{}])[0].get("text", ""))
     record(
-        "cache: different ratings miss",
+        "cache: different play miss",
         not parsed3.get("cache_hit", True),
         f"cache_hit={parsed3.get('cache_hit')}",
         ms3,
     )
 
-    # masters — should miss first time
+    # masters with different db
     result4, ms4 = await call_safe(
-        sess, "explore_opening", {"db": "masters", "fen": "startpos", "play": ["e2e4", "e7e5"]}
+        sess, "explore_opening", {"db": "masters", "fen": "startpos", "play": ["e2e4", "c7c5"]}
     )
     parsed4 = json.loads(result4.get("result", {}).get("content", [{}])[0].get("text", ""))
     record(
-        "cache: masters different db miss",
+        "cache: masters first-call miss",
         not parsed4.get("cache_hit", True),
         f"cache_hit={parsed4.get('cache_hit')}",
         ms4,
