@@ -65,7 +65,7 @@ _VALID_RATINGS: frozenset[int] = frozenset({400, 1000, 1200, 1400, 1600, 1800, 2
 _VALID_MODES: frozenset[str] = frozenset({"casual", "rated"})
 _VALID_COLORS: frozenset[str] = frozenset({"white", "black"})
 
-_MONTH_RE = re.compile(r"^(?:19|20)\d{2}-(?:0[1-9]|1[0-2])$")
+_MONTH_RE = re.compile(r"^(?:19|20)\d{2}(?:-(?:0[1-9]|1[0-2]))?$")
 
 _DEFAULT_LICHESS_SPEEDS: tuple[str, ...] = (
     "bullet",
@@ -121,11 +121,17 @@ def reset_singletons_for_tests(
 
 
 def _validate_month(value: str | None, field_name: str) -> str | None:
+    """Accept either YYYY-MM (lichess/player) or YYYY (masters).
+
+    Lichess uses the year component for masters, so a year-only value is
+    accepted everywhere and we let ``_build_query_params`` decide whether
+    to forward it as a YYYY or YYYY-MM parameter based on the db.
+    """
     if value is None or value == "":
         return None
     if not _MONTH_RE.match(value):
         raise ValueError(
-            f"INVALID_ARGUMENT: {field_name} must be YYYY-MM (e.g. 2024-01), got {value!r}"
+            f"INVALID_ARGUMENT: {field_name} must be YYYY or YYYY-MM (e.g. '2024' or '2024-01'), got {value!r}"
         )
     return value
 

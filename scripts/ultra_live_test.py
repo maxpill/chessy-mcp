@@ -365,8 +365,21 @@ async def main() -> int:
     )
     record("cache: same payload", parsed1.get("opening") == parsed2.get("opening"), "", 0.0)
 
-    # different play → different key → miss
-    args_diff = {"fen": "startpos", "play": ["d2d4", "d7d5"], "db": "lichess"}
+    # different play → different key → miss. Use a fresh UUID in the play
+    # so the L1+L2 cache (8-min TTL) cannot have this key from any prior run.
+    suffix2 = uuid.uuid4().hex[:6]
+    args_diff = {
+        "fen": "startpos",
+        "play": ["d2d4", f"c7c5{suffix2[:2]}"],  # the second entry will fail validator
+        "db": "lichess",
+    }
+    # That was a typo — use a legal-but-unique play sequence instead.
+    args_diff = {
+        "fen": "startpos",
+        "play": ["d2d4", "d7d5"],
+        "db": "lichess",
+        "since": f"2023-{((int(suffix2[:2], 16) % 12) + 1):02d}",
+    }
     result3, ms3 = await call_safe(sess, "explore_opening", args_diff)
     parsed3 = json.loads(result3.get("result", {}).get("content", [{}])[0].get("text", ""))
     record(
@@ -376,9 +389,18 @@ async def main() -> int:
         ms3,
     )
 
-    # masters with different db
+    # masters with different db — use a unique year to bust the cache.
+    suffix3 = uuid.uuid4().hex[:6]
+    masters_year = 1990 + (int(suffix3[:4], 16) % 36)  # 1990..2025
     result4, ms4 = await call_safe(
-        sess, "explore_opening", {"db": "masters", "fen": "startpos", "play": ["e2e4", "c7c5"]}
+        sess,
+        "explore_opening",
+        {
+            "db": "masters",
+            "fen": "startpos",
+            "play": ["e2e4", "c7c5"],
+            "since": str(masters_year),
+        },
     )
     parsed4 = json.loads(result4.get("result", {}).get("content", [{}])[0].get("text", ""))
     record(
