@@ -104,6 +104,18 @@ def estimate_mcp_request_cost(body: bytes) -> float:
                 extra_searches = critical * 3 + 4
                 return base + (verification_depth * extra_searches) / 12.0
             return base
+        if tool_name == "ocr_to_pgn":
+            # Image bytes is base64-encoded; decoded size ~= len(b64) * 3/4.
+            image_b64 = str(args.get("image_b64", ""))
+            image_bytes = max(1.0, len(image_b64) * 3.0 / 4.0)
+            # Multi-pass consensus: 1 raw + 3 language-hinted + 1 verifier
+            # + optional 1 sanity = up to 6 M3 calls. Use 5 as the typical
+            # mid-budget estimate.
+            passes = 5.0
+            # Plus Stockfish per-ply verification if requested.
+            if bool(args.get("verify_with_stockfish", False)):
+                passes += 1.0
+            return 3.0 + passes + image_bytes / 1_000_000.0
     except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
         pass
     return 1.0

@@ -1,0 +1,28 @@
+{
+  "name": "IMG20260912130901.heic",
+  "format": "heic",
+  "size_bytes": 1530208,
+  "width": 1880,
+  "height": 4096,
+  "raw_ocr_text": "[Event \"Kopernik\"]\n[White \"Jan Maciąg\"]\n[Black \"Miksownik\"]\n[Round \"2\"]\n\n1. c3 c5 2. g3 Nc6 3. Nc3 g6 4. Bg2 Bg7 5. e4 Nf6 6. Ne2 O-O 7. O-O Re8 8. d3 d6 9. h3 e5 10. Bd2 Be6 11. Ndb6 Bxd5 12. cxd5 Nd4 13. Nxd4 cxd4 14. f4 Nh5 15. Qf3 Bh6 16. Rc1 Rc8 17. Kh2 Qf6 18. Qg4 Rxc1 19. Bxc1 Qd8 20. Qf3 Qc8 21. xc5 Bxc1 22. Qxf7+ Kh8 23. Rc1 Qd8 24. Bc7 Qxc7 25. Qxc7+ Rxe5 1-0",
+  "detected_language": "pl",
+  "detected_confidence": 0.99,
+  "canonical_pgn": "[Event \"Kopernik\"]\n[White \"Jan Maciąg\"]\n[Black \"Miksownik\"]\n[Round \"2\"]\n\n1. c3 c5 2. g3 Nc6 3. Nc3 g6 4. Bg2 Bg7 5. e4 Nf6 6. Ne2 O-O 7. O-O Re8 8. d3 d6 9. h3 e5 10. Bd2 Be6 11. Ndb6 Bxd5 12. cxd5 Nd4 13. Nxd4 cxd4 14. f4 Nh5 15. Qf3 Bh6 16. Rc1 Rc8 17. Kh2 Qf6 18. Qg4 Rxc1 19. Bxc1 Qd8 20. Qf3 Qc8 21. xc5 Bxc1 22. Qxf7+ Kh8 23. Rc1 Qd8 24. Bc7 Qxc7 25. Qxc7+ Rxe5 1-0",
+  "pgn_is_valid": true,
+  "final_move_number": 2,
+  "pgn_parse_rate": 0.06779661016949153,
+  "pass_count": 1,
+  "verifier_agreement": null,
+  "verifier_confidence": null,
+  "total_latency_ms": 126249.95112419128,
+  "normalization_changes": [],
+  "warnings": [],
+  "error": null,
+  "sample_moves": [
+    "c3",
+    "c5",
+    "g3",
+    "Nc6"
+  ],
+  "final_fen": "r1bqkbnr/pp1ppppp/2n5/2p5/8/2P3P1/PP1PPP1P/RNBQKBNR w KQkq - 1 3"
+}

@@ -1,0 +1,23 @@
+{
+  "name": "IMG20260921101140.heic",
+  "format": "heic",
+  "size_bytes": 4983384,
+  "width": 2704,
+  "height": 5888,
+  "raw_ocr_text": "",
+  "detected_language": "en",
+  "detected_confidence": 0.5,
+  "canonical_pgn": "",
+  "pgn_is_valid": true,
+  "final_move_number": 0,
+  "pgn_parse_rate": 0.0,
+  "pass_count": 1,
+  "verifier_agreement": null,
+  "verifier_confidence": null,
+  "total_latency_ms": 157730.21006584167,
+  "normalization_changes": [],
+  "warnings": [],
+  "error": null,
+  "sample_moves": [],
+  "final_fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+}

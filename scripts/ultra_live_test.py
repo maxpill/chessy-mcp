@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import statistics
 import sys
 import time
@@ -446,7 +445,7 @@ async def main() -> int:
     print()
     passed = sum(1 for r in results if r["passed"])
     failed = sum(1 for r in results if not r["passed"])
-    print(f"\n\033[1m=== SUMMARY ===\033[0m")
+    print("\n\033[1m=== SUMMARY ===\033[0m")
     print(f"Total: {len(results)}  Passed: {passed}  Failed: {failed}")
     durations = [r["duration_ms"] for r in results if r["duration_ms"] > 0]
     if durations:

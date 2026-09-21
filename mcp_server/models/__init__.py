@@ -28,6 +28,7 @@ from mcp_server.models.explorer import (
 from mcp_server.models.history import HistoryBlock
 from mcp_server.models.mcpeval import MCPEval
 from mcp_server.models.mcpeval_factory import attach_factory
+from mcp_server.models.ocr import OcrCandidate, OcrMoveEntry, OcrPgnResult
 from mcp_server.models.policy import PolicyBlock
 from core.engines.types import MoveClass
 from mcp_server.models.legacy import (
@@ -68,9 +69,11 @@ __all__ = [
     "MCPEval",
     "MCPMoveAnalysis",
     "MoveClass",
+    "OcrCandidate",
+    "OcrMoveEntry",
+    "OcrPgnResult",
     "OpeningData",
     "OpeningGameRef",
-    "OpeningHistoryPoint",
     "OpeningMoveStats",
     "OpeningPlayer",
     "PlayedMoveScore",

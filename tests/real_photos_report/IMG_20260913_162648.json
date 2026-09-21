@@ -1,0 +1,37 @@
+{
+  "name": "IMG_20260913_162648.jpg",
+  "format": "jpg",
+  "size_bytes": 1212979,
+  "width": 1824,
+  "height": 2800,
+  "raw_ocr_text": "[Event \"?\"]\n[Date \"2020.09.13\"]\n[Round \"6\"]\n[White \"Kaszuba Robert\"]\n[Black \"Pytlis Maksym\"]\n[Result \"1-0\"]\n\n1.e4 c6 2.Nf3 d5 3.exd5 cxd5 4.d4 Bg4 5.Be2 Be6 6.O-O Bd6 7.Be3 f5 8.Nc3 O-O 9.Nbd2 h6 10.h3 Bxf3 11.Bxf3 Re8 12.Rxe8+ Nc6 13.Rc1 Rc8 14.Qb3 b6 15.Be2 e5 16.Bxc5 Nxc5 17.Nf3 Nxf3 18.Bxf3 Ne4 19.Rcd1 Bc7 20.Qxd5 f6 21.Qd8+ Rxd8 22.Bd4 e5 23.Bc6 Re6 24.Rxe6 fxe6 25.Re4 e5 26.Bxc5 Bxc5 27.Rxc5 Rd2 28.Rb5 e5 29.Rxb6 Qc4 30.Qf1 Qd1 31.Rd6 Rb7 32.Rf8 Be4 33.O-O-O Qxc1+ 34.h5 Qxg4 35.Nxg4 f3 36.Ng3 Rf2 37.h4 Rb7 38.Nxf5 Bd7 1-0",
+  "detected_language": "pl",
+  "detected_confidence": 0.99,
+  "canonical_pgn": "[Event \"?\"]\n[Date \"2020.09.13\"]\n[Round \"6\"]\n[White \"Kaszuba Robert\"]\n[Black \"Pytlis Maksym\"]\n[Result \"1-0\"]\n\n1.e4 c6 2.Nf3 d5 3.exd5 cxd5 4.d4 Bg4 5.Be2 Be6 6.O-O Bd6 7.Be3 f5 8.Nc3 O-O 9.Nbd2 h6 10.h3 Bxf3 11.Bxf3 Re8 12.Rxe8+ Nc6 13.Rc1 Rc8 14.Qb3 B6 15.Be2 e5 16.Bxc5 Nxc5 17.Nf3 Nxf3 18.Bxf3 Ne4 19.Rcd1 Bc7 20.Qxd5 f6 21.Qd8+ Rxd8 22.Bd4 e5 23.Bc6 Re6 24.Rxe6 fxe6 25.Re4 e5 26.Bxc5 Bxc5 27.Rxc5 Rd2 28.Rb5 e5 29.Rxb6 Qc4 30.Qf1 Qd1 31.Rd6 Rb7 32.Rf8 Be4 33.O-O-O Qxc1+ 34.h5 Qxg4 35.Nxg4 f3 36.Ng3 Rf2 37.h4 Rb7 38.Nxf5 Bd7 1-0",
+  "pgn_is_valid": true,
+  "final_move_number": 5,
+  "pgn_parse_rate": 0.12222222222222222,
+  "pass_count": 1,
+  "verifier_agreement": null,
+  "verifier_confidence": null,
+  "total_latency_ms": 70751.08075141907,
+  "normalization_changes": [
+    "@250:uppercase_b→B"
+  ],
+  "warnings": [],
+  "error": null,
+  "sample_moves": [
+    "e4",
+    "c6",
+    "Nf3",
+    "d5",
+    "exd5",
+    "cxd5",
+    "d4",
+    "Bg4",
+    "Be2",
+    "Be6",
+    "O-O"
+  ],
+  "final_fen": "rn1qkbnr/pp2pppp/4b3/3p4/3P4/5N2/PPP1BPPP/RNBQ1RK1 b kq - 4 6"
+}

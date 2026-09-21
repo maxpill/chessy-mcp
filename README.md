@@ -68,18 +68,64 @@ curl http://127.0.0.1:9551/health
 
 ## Tools
 
-Five Streamable-HTTP MCP tools at `/mcp`:
+Six Streamable-HTTP MCP tools at `/mcp`:
 
-| Tool                | What it does                                                               |
-| ------------------- | -------------------------------------------------------------------------- |
-| `evaluate_position` | Single-position Stockfish eval at a given depth                            |
-| `top_moves`         | Top-N candidate moves ranked by Stockfish                                  |
-| `classify_move`     | Grade a played move against the engine's best alternative                  |
-| `analyze_game`      | Full PGN analysis with accuracy, mistakes, turning points                  |
-| `explore_opening`   | Lichess Opening Explorer — W/D/L stats + ECO + sample games for a position |
+| Tool                | What it does                                                                                                                             |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `evaluate_position` | Single-position Stockfish eval at a given depth                                                                                          |
+| `top_moves`         | Top-N candidate moves ranked by Stockfish                                                                                                |
+| `classify_move`     | Grade a played move against the engine's best alternative                                                                                |
+| `analyze_game`      | Full PGN analysis with accuracy, mistakes, turning points                                                                                |
+| `explore_opening`   | Lichess Opening Explorer — W/D/L stats + ECO + sample games for a position                                                               |
+| `ocr_to_pgn`        | OCR a printed/handwritten chess score-sheet image (HEIC/JPEG/PNG) and return a validated canonical PGN with Polish vs English autodetect |
 
-The 5-tool surface is intentional - the chessy app's coach runtime is the
+The 6-tool surface is intentional - the chessy app's coach runtime is the
 primary consumer, and this server is sized for that workload.
+
+### OCR score sheets
+
+`ocr_to_pgn` accepts a base64-encoded image of a chess score sheet (printed
+or handwritten) and returns a canonical English PGN. The pipeline:
+
+1. Sends the image to a separate `chess-ocr` sidecar (`core/chess_ocr/`)
+   which runs multi-pass M3 multimodal OCR (Pass 1 raw + 3 language-hinted
+   passes in parallel + a verifier pass + an optional sanity pass).
+2. Auto-detects Polish vs English notation by counting distinctive piece
+   letters (`H/W/G/S` for Polish, `:` capture marker, `0-0` castling form).
+3. Normalizes Polish tokens (`Ge5` → `Be5`, `S:d3` → `Nxd3`,
+   `e8H` → `e8=Q`) via the same `san_normalize` module the other parsers use.
+4. Replays every ply through `python-chess` to validate legality.
+5. Optionally cross-checks each ply with Stockfish at depth 10
+   (`verify_with_stockfish=True`).
+
+The M3 API key lives in the single-letter env var `n` and is read only by
+the sidecar (never the MCP container). 30-day LRU cache keyed by
+SHA-256(image bytes) + language hint dedupes repeat OCRs at zero cost.
+
+Set `n=<your-key>` in `.env` (gitignored) before `docker compose up`.
+See `SECURITY.md` for the secret-rotation policy.
+
+**Empirical quality** (40-photo Polish tournament corpus, see
+`tests/real_photos_report/report.md`):
+
+| Config                                      | Success rate     | Wall-clock (40 photos) |
+| ------------------------------------------- | ---------------- | ---------------------- |
+| Single-pass, 240 s timeout                  | 38/40 (95%)      | ~50 min                |
+| Single-pass, **360 s timeout** (production) | **40/40 (100%)** | ~52 min                |
+| Parallel-pair (2 concurrent), 360 s timeout | 38-40/40         | ~28 min                |
+
+**Throughput guidance**: production runs the sidecar at concurrency=1
+(the MCP server itself handles concurrent `ocr_to_pgn` calls via its own
+queue). For batch ingestion where wall-clock matters, the
+`scripts/test_ocr_real_photos.py --concurrency 1` harness is the
+template — at concurrency=2 we hit M3's per-minute API limit and ~20%
+of calls fail with connection-reset.
+
+**Real-world corpus tests** live in `tests/test_real_corpus.py` — 38
+parametrized cases harvested from the actual photo batch, covering
+language autodetect, `san_normalize` round-trip, and per-ply
+`python-chess` legality. Regenerate with `uv run python
+scripts/build_real_corpus.py` after every bulk OCR pass.
 
 ### Lichess integration
 

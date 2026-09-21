@@ -1,0 +1,39 @@
+{
+  "name": "IMG20260725185845.heic",
+  "format": "heic",
+  "size_bytes": 1257737,
+  "width": 1880,
+  "height": 4096,
+  "raw_ocr_text": "[Event \"Mast Michałowo\"]\n[Date \"2022.09.25\"]\n[Round \"9\"]\n\n1.d4? Bf1? 2.Nf3 Be6 3.c3 e3 4.Nbd2 N:g3 5.Bf2 c4 6.N:g3 Nf7 7.Nf6 Nf6 8.c6 h4 9.h4 B:h4 10.e6 N:c5 11.h4? Bxd5? 12.N:d4 e4 13.N:f6 d:e6 14.N:f7? O-O 15.N:f6 Bd7 16.B:h4 Re6 17.N:g5 b:c3 18.Bf2 Kg7 19.Kg7? 1-0",
+  "detected_language": "pl",
+  "detected_confidence": 0.9,
+  "canonical_pgn": "[Event \"Mast Michałowo\"]\n[Date \"2022.09.25\"]\n[Round \"9\"]\n\n1.d4? Bf1? 2.Nf3 Be6 3.c3 e3 4.Nbd2 Nxg3 5.Bf2 c4 6.Nxg3 Nf7 7.Nf6 Nf6 8.c6 h4 9.h4 Bxh4 10.e6 Nxc5 11.h4? Bxd5? 12.Nxd4 e4 13.Nxf6 dxe6 14.Nxf7? O-O 15.Nxf6 Bd7 16.Bxh4 Re6 17.Nxg5 Bxc3 18.Bf2 Kg7 19.Kg7? 1-0",
+  "pgn_is_valid": true,
+  "final_move_number": 0,
+  "pgn_parse_rate": 0.022727272727272728,
+  "pass_count": 1,
+  "verifier_agreement": null,
+  "verifier_confidence": null,
+  "total_latency_ms": 38330.32989501953,
+  "normalization_changes": [
+    "@94:capture_:→x",
+    "@110:capture_:→x",
+    "@142:capture_:→x",
+    "@153:capture_:→x",
+    "@174:capture_:→x",
+    "@185:capture_:→x",
+    "@190:pawn_capture_:→x",
+    "@198:capture_:→x",
+    "@211:capture_:→x",
+    "@223:capture_:→x",
+    "@235:capture_:→x",
+    "@240:pawn_capture_:→x",
+    "@240:uppercase_b→B"
+  ],
+  "warnings": [],
+  "error": null,
+  "sample_moves": [
+    "d4"
+  ],
+  "final_fen": "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1"
+}

@@ -1,0 +1,33 @@
+{
+  "name": "IMG20260919103724.heic",
+  "format": "heic",
+  "size_bytes": 2809317,
+  "width": 2704,
+  "height": 5888,
+  "raw_ocr_text": "[Event \"?\"]\n[Date \"2026.09.18\"]\n[Round \"1\"]\n[White \"Sebastian\"]\n[Black \"Maksymilian\"]\n\n1.d4 d5 2.c4 c6 3.Nc3 Nf6 4.Nf3 Bg5 5.Qb3 cxd5 6.Qxd5 Qxd5 7.cxd5 cxd5 8.e3 Nxd5 9.Bb5+ c6 10.O-O e6 11.Ne5 Bc5 12.dxc6 O-O 13.Bg5 f4 14.Qa4 Nf3 15.Bxd2 Nf3 16.c3 Rac8 17.Rd1 Rc2 18.Ba1 hxf4 19.b3 Rf8 20.Rd3 Rc1 21.d5 Rd1 22.c4 Rxa1 23.Nc6 Rxa1 24.Bc5 Rc1 25.Qb5 exd4 26.Qxd5 Rxh5 27.e6 Rxh6 28.Bc5 Ke7 29.Bd6 Kxe7 30.Bc5 Kxd5 31.d6 Kf5 32.Ne5 Kxd5 41.Rxa1 Rxa1 42.Rd8 Rd8 43.h6 d5 44.Kh2 Qxh4 45.f5 Rf6 46.Qxd5 d5 47.Rf5 f5 48.Rg7 Kh7 49.Rxd7 Rg6 50.f5 fxe6 *",
+  "detected_language": "pl",
+  "detected_confidence": 0.99,
+  "canonical_pgn": "[Event \"?\"]\n[Date \"2026.09.18\"]\n[Round \"1\"]\n[White \"Sebastian\"]\n[Black \"Maksymilian\"]\n\n1.d4 d5 2.c4 c6 3.Nc3 Nf6 4.Nf3 Bg5 5.Qb3 cxd5 6.Qxd5 Qxd5 7.cxd5 cxd5 8.e3 Nxd5 9.Bb5+ c6 10.O-O e6 11.Ne5 Bc5 12.dxc6 O-O 13.Bg5 f4 14.Qa4 Nf3 15.Bxd2 Nf3 16.c3 Rac8 17.Rd1 Rc2 18.Ba1 hxf4 19.B3 Rf8 20.Rd3 Rc1 21.d5 Rd1 22.c4 Rxa1 23.Nc6 Rxa1 24.Bc5 Rc1 25.Qb5 exd4 26.Qxd5 Rxh5 27.e6 Rxh6 28.Bc5 Ke7 29.Bd6 Kxe7 30.Bc5 Kxd5 31.d6 Kf5 32.Ne5 Kxd5 41.Rxa1 Rxa1 42.Rd8 Rd8 43.h6 d5 44.Kh2 Qxh4 45.f5 Rf6 46.Qxd5 d5 47.Rf5 f5 48.Rg7 Kh7 49.Rxd7 Rg6 50.f5 fxe6 *",
+  "pgn_is_valid": true,
+  "final_move_number": 3,
+  "pgn_parse_rate": 0.07446808510638298,
+  "pass_count": 1,
+  "verifier_agreement": null,
+  "verifier_confidence": null,
+  "total_latency_ms": 49224.416971206665,
+  "normalization_changes": [
+    "@281:uppercase_b→B"
+  ],
+  "warnings": [],
+  "error": null,
+  "sample_moves": [
+    "d4",
+    "d5",
+    "c4",
+    "c6",
+    "Nc3",
+    "Nf6",
+    "Nf3"
+  ],
+  "final_fen": "rnbqkb1r/pp2pppp/2p2n2/3p4/2PP4/2N2N2/PP2PPPP/R1BQKB1R b KQkq - 3 4"
+}

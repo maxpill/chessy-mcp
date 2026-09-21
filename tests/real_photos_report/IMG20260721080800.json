@@ -1,0 +1,26 @@
+{
+  "name": "IMG20260721080800.heic",
+  "format": "heic",
+  "size_bytes": 3114918,
+  "width": 2704,
+  "height": 5888,
+  "raw_ocr_text": "[Event \"IN MAHU\"]\n[Round \"?\"]\n[White \"VICTORIA TUA\"]\n[Black \"HELENA NAGAWSKA\"]\n[Date \"2026.07.20\"]\n[Section \"NAWCZAS2\"]\n[WhiteElo \"2127\"]\n[BlackElo \"2121\"]\n\n1.d4 d5 2.d3 c6 3.Nf3 Bg4 4.Nf3 Bxd4 5.exd5 cxd4 6.Bb5+ O-O 7.Bxd5 a6 8.O-O Qd7 9.Ne5 ? 10.Bxd4 c5 11.gxf6 c5 12.Qf3 ? 13.Kh1 f5 14.Qxh3 ? 15.Rf3 ? 16.Kg3 Rg8 17.Qxf4 ? 18.Kxf4 Qxf4 19.h3 Rg3+ 20.e5 ? 21.exd5 ? 22.Rxd5 ? 23.Bxd5 ? 1-0",
+  "detected_language": "pl",
+  "detected_confidence": 0.99,
+  "canonical_pgn": "[Event \"IN MAHU\"]\n[Round \"?\"]\n[White \"VICTORIA TUA\"]\n[Black \"HELENA NAGAWSKA\"]\n[Date \"2026.07.20\"]\n[Section \"NAWCZAS2\"]\n[WhiteElo \"2127\"]\n[BlackElo \"2121\"]\n\n1.d4 d5 2.d3 c6 3.Nf3 Bg4 4.Nf3 Bxd4 5.exd5 cxd4 6.Bb5+ O-O 7.Bxd5 a6 8.O-O Qd7 9.Ne5 ? 10.Bxd4 c5 11.gxf6 c5 12.Qf3 ? 13.Kh1 f5 14.Qxh3 ? 15.Rf3 ? 16.Kg3 Rg8 17.Qxf4 ? 18.Kxf4 Qxf4 19.h3 Rg3+ 20.e5 ? 21.exd5 ? 22.Rxd5 ? 23.Bxd5 ? 1-0",
+  "pgn_is_valid": true,
+  "final_move_number": 1,
+  "pgn_parse_rate": 0.03076923076923077,
+  "pass_count": 1,
+  "verifier_agreement": null,
+  "verifier_confidence": null,
+  "total_latency_ms": 71449.81575012207,
+  "normalization_changes": [],
+  "warnings": [],
+  "error": null,
+  "sample_moves": [
+    "d4",
+    "d5"
+  ],
+  "final_fen": "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2"
+}
