@@ -59,6 +59,32 @@ class OCRRequest(BaseModel):
             "If True, apply a bilateral filter (edge-preserving denoise) before sending to M3."
         ),
     )
+    # v2 additions
+    extract_headers: bool = Field(
+        default=True,
+        description=(
+            "If True, also run a structured header-extraction pass over the "
+            "score sheet (White / Black / Round / Date / Event / Site / Result). "
+            "Default ON — adds one M3 call but lets callers skip a separate "
+            "OCR pass for the metadata block."
+        ),
+    )
+    beam_per_cell: bool = Field(
+        default=True,
+        description=(
+            "If True, aggregate per-cell SAN candidates across all OCR passes "
+            "and emit ``cell_candidates`` in the response. The MCP ``ocr_to_pgn`` "
+            "tool uses this for the v2 legal-sequence beam search."
+        ),
+    )
+    metadata_hints: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            'Optional caller-supplied header hints (e.g. {"white": "X"}). '
+            "Used as a cross-check by the header-extraction prompt; final "
+            "merging is done in the MCP tool."
+        ),
+    )
 
 
 class OCRCandidateResponse(BaseModel):
@@ -70,6 +96,22 @@ class OCRCandidateResponse(BaseModel):
     score: float = 0.0
     latency_ms: float = 0.0
     rotation: str | None = None  # rotation label of the variant, e.g. "rot0"/"rot90"/"rot-90"
+
+
+class OcrCellCandidateResponse(BaseModel):
+    """One candidate SAN at one half-move position (v2 beam-search input)."""
+
+    ply: int
+    side: str  # "white" | "black"
+    san: str
+    score: float
+
+
+class OcrHeaderFieldResponse(BaseModel):
+    """One PGN header field extracted from the score sheet (v2)."""
+
+    value: str | None
+    confidence: float
 
 
 class OCRResponse(BaseModel):
@@ -86,6 +128,9 @@ class OCRResponse(BaseModel):
     pass_count: int
     total_latency_ms: float
     auto_rotation_applied: int = 0  # degrees CCW the auto-detector chose (0 = none)
+    # v2 additions — all optional with safe defaults so existing callers keep working.
+    cell_candidates: list[OcrCellCandidateResponse] = Field(default_factory=list)
+    headers: dict[str, OcrHeaderFieldResponse] = Field(default_factory=dict)
 
 
 _settings: OCRSettings | None = None
@@ -168,6 +213,9 @@ def create_app() -> FastAPI:
                 rotation_strategy="three" if req.verify_with_rotation else "auto",
                 contrast_strategy="clahe" if req.enhance_contrast else "off",
                 denoise_strategy="bilateral" if req.denoise else "off",
+                extract_headers=req.extract_headers,
+                beam_per_cell=req.beam_per_cell,
+                metadata_hints=req.metadata_hints,
             )
         except ValueError as exc:
             msg = str(exc)
@@ -205,6 +253,19 @@ def create_app() -> FastAPI:
             pass_count=result.pass_count,
             total_latency_ms=result.total_latency_ms,
             auto_rotation_applied=result.auto_rotation_applied,
+            cell_candidates=[
+                OcrCellCandidateResponse(
+                    ply=cc.ply,
+                    side=cc.side,
+                    san=cc.san,
+                    score=cc.score,
+                )
+                for cc in result.cell_candidates
+            ],
+            headers={
+                name: OcrHeaderFieldResponse(value=h.value, confidence=h.confidence)
+                for name, h in result.headers.items()
+            },
         )
 
     return app

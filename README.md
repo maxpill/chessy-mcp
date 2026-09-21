@@ -84,26 +84,73 @@ primary consumer, and this server is sized for that workload.
 
 ### OCR score sheets
 
-`ocr_to_pgn` accepts a base64-encoded image of a chess score sheet (printed
-or handwritten) and returns a canonical English PGN. The pipeline:
+`ocr_to_pgn` v2 accepts the image as one of three sources (discriminated
+union, exactly one form required):
 
-1. Sends the image to a separate `chess-ocr` sidecar (`core/chess_ocr/`)
-   which runs multi-pass M3 multimodal OCR (Pass 1 raw + 3 language-hinted
-   passes in parallel + a verifier pass + an optional sanity pass).
-2. Auto-detects Polish vs English notation by counting distinctive piece
-   letters (`H/W/G/S` for Polish, `:` capture marker, `0-0` castling form).
-3. Normalizes Polish tokens (`Ge5` → `Be5`, `S:d3` → `Nxd3`,
-   `e8H` → `e8=Q`) via the same `san_normalize` module the other parsers use.
-4. Replays every ply through `python-chess` to validate legality.
-5. Optionally cross-checks each ply with Stockfish at depth 10
-   (`verify_with_stockfish=True`).
+```json
+{"kind": "base64", "data": "<base64>"}
+{"kind": "url",    "url": "https://..."}
+{"kind": "file_uri", "path": "/abs/score.jpg"}
+```
+
+It returns a canonical English PGN plus the seven PGN header fields
+(White / Black / Round / Date / Event / Site / Result), per-ply
+uncertainties, and validation evidence — all in one tool call.
+
+Pipeline (auto-escalation, single call):
+
+1. **Image-source resolution.** Base64 is decoded inline; URLs are
+   fetched via `httpx` against the `CHESSY_MCP_URL_ALLOWLIST`
+   allowlist; `file_uri` paths must resolve under `CHESSY_MCP_FILE_ROOT`.
+   Magic-byte format check enforces HEIC/JPEG/PNG/WebP/GIF, 32 MB cap.
+2. **Adaptive preprocessing** (`mode="auto"`, default). CLAHE + auto-rotation
+   always; bilateral denoise is enabled only when image SNR
+   (grayscale stdev) is below threshold. `mode="explicit"` lets the
+   caller control each flag via the `preprocessing` object.
+3. **Multi-pass M3 OCR** via the `chess-ocr` sidecar (`core/chess_ocr/`):
+   Pass 1 raw + 3 language-biased passes in parallel + a verifier +
+   optional sanity sweep.
+4. **Structured header extraction** (`extract_headers=true`). A
+   deterministic M3 call returns the seven PGN header fields with
+   per-field confidence. Caller-supplied `metadata` hints override
+   detected values.
+5. **Per-cell candidate aggregation**. Each OCR pass contributes one
+   tokenised movetext; per (ply, side, san) we collect unique SANs and
+   sum the pass-level scores as a proxy for cross-pass agreement.
+6. **Legal-sequence beam search.** The MCP tool runs a beam-width-5
+   rerank over the per-cell candidates: each ply picks one legal SAN,
+   with a small downstream-continuity bonus and an opt-in Stockfish
+   tiebreak between visually similar candidates.
+7. **Final validation.** The selected path is replayed through
+   `python-chess`; legality, ply count, final FEN, and result-consistency
+   are surfaced in `OcrPgnResult.validation`.
+8. **Verbosity-gated response.** Default `verbosity="minimal"` returns
+   only `{status, canonical_pgn, confidence, validation, uncertainties,
+metadata}`. Use `"compact"` for detected-language / warnings, or
+   `"full"` for every OCR candidate + per-move evidence.
+
+Polish notation (`Ge5`, `S:d3`, `e8H`, `0-0`, `:`) gets normalised to
+canonical English SAN before reaching `python-chess`.
 
 The M3 API key lives in the single-letter env var `n` and is read only by
-the sidecar (never the MCP container). 30-day LRU cache keyed by
-SHA-256(image bytes) + language hint dedupes repeat OCRs at zero cost.
+the sidecar (never the MCP container). The MCP server has its own LRU
+cache keyed by SHA-256(image bytes) + language hint, deduping repeat OCRs.
 
 Set `n=<your-key>` in `.env` (gitignored) before `docker compose up`.
 See `SECURITY.md` for the secret-rotation policy.
+
+**Resolve modes** (`resolve_ambiguities`):
+
+    - `"strict"`       raises on any ambiguous ply.
+    - `"auto"`         (default) returns `status="needs_review"` plus
+                        a populated `uncertainties` array when the beam
+                        could not resolve silently.
+    - `"best_effort"`  always returns the best-scoring legal sequence.
+
+**Engine plausibility** (`engine_plausibility="tiebreak_only"`, default).
+Stockfish is consulted as a **weak tiebreaker** between visually similar
+candidates whose OCR scores are within 0.15 of each other — never as a
+correctness gate. A `-8.4` cp blunder is a legitimate human move.
 
 **Empirical quality** (40-photo Polish tournament corpus, see
 `tests/real_photos_report/report.md`):

@@ -80,6 +80,27 @@ Output a JSON object with:
 Output ONLY the JSON, no other text."""
 
 
+HEADER_EXTRACTOR_PROMPT = """You are a chess score-sheet OCR specialist. Extract ONLY the PGN header fields from the photograph.
+
+For each of the seven standard PGN header fields below, return what is visibly written on the sheet:
+
+    - "white":    full name of the player with white pieces (preserve Polish diacritics)
+    - "black":    full name of the player with black pieces (preserve Polish diacritics)
+    - "round":    round number (string of digits, e.g. "2", "Round 2")
+    - "date":     date in YYYY.MM.DD form (e.g. "2026.09.05"). If only partial date is visible, return what you can read.
+    - "event":    tournament / event name (preserve diacritics)
+    - "site":     venue / city (preserve diacritics)
+    - "result":   "1-0", "0-1", "1/2-1/2", or "*"
+
+STRICT RULES:
+1. Return a JSON object only — no prose, no markdown fences, no backticks.
+2. For every field, return: {"value": <string-or-null>, "confidence": <float 0..1>}.
+3. If a field is missing or illegible: {"value": null, "confidence": 0.0}.
+4. Preserve original diacritics (Łódź, Stępniewska, Hetman, etc.) — never transliterate.
+5. Result box on the sheet is often a small printed square; pick the visible mark (white box, black box, dash, "½", "1-0", etc.). Be conservative with confidence.
+6. Output ONLY the JSON, no other text."""
+
+
 class MinimaxEngine:
     """M3 multimodal OCR engine.
 
@@ -283,6 +304,84 @@ class MinimaxEngine:
         verdict["raw_verifier_text"] = raw_text
         return verdict
 
+    async def extract_headers(
+        self,
+        image_bytes: bytes,
+        hint_metadata: dict[str, str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Ask M3 to extract the seven PGN header fields from the score sheet.
+
+        Returns a dict keyed by the seven PGN tag names ("white", "black",
+        "round", "date", "event", "site", "result"). Each value is
+        ``{"value": str | None, "confidence": float}``. Confidence is
+        M3's self-reported score in [0, 1]; missing fields get
+        ``{"value": None, "confidence": 0.0}``.
+
+        ``hint_metadata`` is currently informational only — the engine
+        surfaces it as part of the user message so M3 can cross-check
+        illegible fields against caller-supplied hints. It does NOT
+        mutate the response; that merging is the MCP tool's job.
+        """
+        settings = self._settings
+        if not settings.api_key:
+            raise ValueError("MISSING_API_KEY: env var `n` must be set for M3 OCR.")
+
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        data_url = f"data:image/png;base64,{b64}"
+
+        hint_text = ""
+        if hint_metadata:
+            clean = {k: v for k, v in hint_metadata.items() if v}
+            if clean:
+                hint_text = (
+                    "Caller-supplied hints (use as cross-check, do NOT just copy):\n"
+                    + "\n".join(f"- {k}: {v}" for k, v in clean.items())
+                )
+
+        body = {
+            "model": settings.model,
+            "messages": [
+                {"role": "system", "content": HEADER_EXTRACTOR_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {
+                            "type": "text",
+                            "text": (
+                                "Extract the PGN header fields from this chess score sheet. "
+                                + hint_text
+                            ),
+                        },
+                    ],
+                },
+            ],
+            "temperature": 0.0,
+            "max_tokens": 800,
+            "response_format": {"type": "json_object"},
+        }
+
+        url = settings.api_base.rstrip("/") + "/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {settings.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        client = await self._http()
+        try:
+            resp = await client.post(url, headers=headers, json=body)
+        except httpx.HTTPError as exc:
+            raise ValueError(f"OCR_UNREACHABLE: {exc}") from exc
+
+        if resp.status_code != 200:
+            raise ValueError(
+                f"OCR_HEADER_API_ERROR: M3 returned {resp.status_code}: {resp.text[:300]}"
+            )
+
+        data = resp.json()
+        raw_text = _extract_message_text(data)
+        return _parse_header_extraction(raw_text)
+
 
 def _extract_message_text(response: dict[str, Any]) -> str:
     """Extract the message content from an OpenAI-compatible chat completion response."""
@@ -300,3 +399,39 @@ def _extract_message_text(response: dict[str, Any]) -> str:
                 parts.append(part.get("text", ""))
         return "".join(parts).strip()
     return ""
+
+
+_HEADER_FIELDS: tuple[str, ...] = ("white", "black", "round", "date", "event", "site", "result")
+
+
+def _parse_header_extraction(raw_text: str) -> dict[str, dict[str, Any]]:
+    """Normalise the raw header-extraction JSON into the canonical 7-key shape.
+
+    Defensive against M3 hallucinations: any field that is not a string
+    value or that has a confidence outside [0, 1] is coerced to
+    ``{"value": None, "confidence": 0.0}``.
+    """
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return {f: {"value": None, "confidence": 0.0} for f in _HEADER_FIELDS}
+
+    if not isinstance(parsed, dict):
+        return {f: {"value": None, "confidence": 0.0} for f in _HEADER_FIELDS}
+
+    result: dict[str, dict[str, Any]] = {}
+    for field in _HEADER_FIELDS:
+        entry = parsed.get(field)
+        if not isinstance(entry, dict):
+            result[field] = {"value": None, "confidence": 0.0}
+            continue
+        raw_value = entry.get("value")
+        raw_conf = entry.get("confidence")
+        value = raw_value if isinstance(raw_value, str) and raw_value else None
+        try:
+            confidence = float(raw_conf) if raw_conf is not None else 0.0
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        result[field] = {"value": value, "confidence": confidence}
+    return result

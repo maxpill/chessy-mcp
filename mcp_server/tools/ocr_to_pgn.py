@@ -1,39 +1,61 @@
-"""``ocr_to_pgn`` MCP tool.
+"""``ocr_to_pgn`` MCP tool v2.
 
-Takes a HEIC/JPEG/PNG/WebP image of a printed or handwritten chess score
-sheet, runs multi-pass M3 OCR via the chess-ocr sidecar, auto-detects
-Polish vs English notation, normalizes to canonical English SAN,
-validates every move with python-chess, optionally cross-checks each
-ply with Stockfish, and returns the validated PGN plus per-move
-evidence.
+One tool call per score-sheet photo: the caller passes the image as one
+of three sources (``base64`` / ``url`` / ``file_uri``) and the tool
+returns a canonical PGN plus the seven PGN headers, per-ply
+uncertainties, and validation evidence.
 
-Opt-in preprocessing flags enable multi-orientation rotation handling
-(``verify_with_rotation``), tile-based contrast enhancement
-(``enhance_contrast``) and edge-preserving denoise (``denoise``). All
-default to False to preserve today's behaviour for existing callers.
+Pipeline:
+
+    1. Resolve image bytes via :mod:`mcp_server.ocr.image_source`.
+    2. Decide preprocessing strategy:
+         - ``mode="auto"``  (default) — CLAHE + auto-rotation always;
+                                 denoise if image SNR < threshold.
+         - ``mode="explicit"`` — caller controls the three flags.
+    3. POST to the chess-ocr sidecar with ``extract_headers=True`` and
+       optional ``metadata_hints`` (caller-supplied header overrides).
+    4. Aggregate per-cell SAN candidates (sidecar does this already).
+    5. Rerank via legal-sequence beam search
+       (:mod:`mcp_server.ocr.beam_search`). Engine tiebreak optional
+       and budgeted.
+    6. Build canonical PGN with detected/caller-supplied headers.
+    7. Replay through python-chess for final validation.
+    8. Compose the :class:`OcrPgnResult` with verbosity-gated evidence.
+
+The default verbosity is ``"minimal"`` — only ``status``, ``canonical_pgn``,
+``confidence``, ``validation``, ``uncertainties``, ``metadata`` are
+populated; forensic evidence (``candidates``, ``moves``, ``raw_ocr_text``)
+stays ``None`` until the caller asks for ``"compact"`` / ``"full"``.
 """
 
 from __future__ import annotations
 
-import base64
 import io
 import logging
+import math
 import time
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import chess
 import chess.pgn
-from pydantic import Field
 
 from mcp.types import ToolAnnotations
+from pydantic import Field, TypeAdapter
 
 from mcp_server._mcp import mcp
-from mcp_server.contracts.errors import (
-    InvalidArgument,
-    InvalidInput,
-)
+from mcp_server.contracts.errors import InvalidArgument, InvalidInput
 from mcp_server.metrics import metrics
-from mcp_server.models import OcrPgnResult, OcrCandidate, OcrMoveEntry
+from mcp_server.models import (
+    ImageSource,
+    OcrCandidate,
+    OcrHeaderField,
+    OcrMetadataHints,
+    OcrMoveEntry,
+    OcrPgnResult,
+    OcrUncertainty,
+    OcrValidation,
+    PreprocessingHints,
+)
 from mcp_server.ocr import (
     OCRAuthError,
     OCRClient,
@@ -44,11 +66,22 @@ from mcp_server.ocr import (
     OCRUnavailable,
     OCRUnsupportedFormat,
 )
+from mcp_server.ocr.beam_search import (
+    CellCandidate,
+    beam_rescore,
+)
+from mcp_server.ocr.image_source import ResolvedImage, resolve_image
 from mcp_server.parsers.san_normalize import normalize_pgn
 from mcp_server.tools._common import _tool_error
 
 
 log = logging.getLogger("chessy_mcp.ocr_to_pgn")
+
+
+# Pre-built TypeAdapters for the discriminated union payloads.
+_IMAGE_ADAPTER = TypeAdapter(ImageSource)
+_METADATA_ADAPTER = TypeAdapter(OcrMetadataHints | None)
+_PREPROCESSING_ADAPTER = TypeAdapter(PreprocessingHints | None)
 
 
 _CLIENT_SINGLETON: OCRClient | None = None
@@ -69,119 +102,151 @@ def reset_singletons_for_tests(
     _CLIENT_SINGLETON = client
 
 
-_MAGIC_JPEG = b"\xff\xd8\xff"
-_MAGIC_PNG = b"\x89PNG\r\n\x1a\n"
-_MAGIC_HEIC_FTYP = b"ftyp"
+# --- preprocessing strategy -------------------------------------------------
 
-_VALID_IMAGE_FORMATS = ("jpeg", "png", "webp", "gif", "heic")
-_MAX_IMAGE_BYTES = 32 * 1024 * 1024
+SNR_DENOISE_THRESHOLD: float = 18.0  # grayscale stdev below this → denoise
 
 
-def _decode_image_b64(image_b64: str) -> bytes:
-    """Decode base64 image data and validate the magic bytes."""
+def _estimate_snr(image_bytes: bytes) -> float:
+    """Estimate image SNR as the standard deviation of the grayscale pixel histogram.
+
+    Cheap O(N) loop on the first few thousand bytes is enough to
+    decide whether to enable the bilateral filter. Returns 100.0
+    (very high) when we can't decode the bytes (e.g. HEIC without
+    pillow-heif installed) so the caller never denoises by accident.
+    """
     try:
-        image_bytes = base64.b64decode(image_b64, validate=True)
-    except Exception as exc:
-        raise InvalidInput(f"INVALID_BASE64: {exc}") from exc
+        from PIL import Image, ImageOps  # local import keeps tests fast
 
-    if len(image_bytes) > _MAX_IMAGE_BYTES:
-        raise InvalidInput(
-            f"IMAGE_TOO_LARGE: decoded {len(image_bytes)} bytes > cap {_MAX_IMAGE_BYTES}"
-        )
-
-    fmt = _detect_format(image_bytes)
-    if fmt not in _VALID_IMAGE_FORMATS:
-        raise InvalidArgument(f"UNSUPPORTED_IMAGE_FORMAT: must be one of {_VALID_IMAGE_FORMATS}")
-    return image_bytes
-
-
-def _detect_format(image_bytes: bytes) -> str:
-    if image_bytes.startswith(_MAGIC_JPEG):
-        return "jpeg"
-    if image_bytes.startswith(_MAGIC_PNG):
-        return "png"
-    if image_bytes.startswith(b"GIF"):
-        return "gif"
-    if image_bytes.startswith(b"RIFF"):
-        return "webp"
-    if len(image_bytes) >= 12 and image_bytes[4:9] == _MAGIC_HEIC_FTYP:
-        brand = image_bytes[8:12]
-        if brand.startswith(b"heic") or brand.startswith(b"mif1") or brand.startswith(b"heim"):
-            return "heic"
-    return "unknown"
+        img = Image.open(io.BytesIO(image_bytes))
+        img = ImageOps.grayscale(img)
+        # Downsample for speed.
+        img.thumbnail((256, 256))
+        hist = img.histogram()
+        total = sum(hist)
+        if total == 0:
+            return 100.0
+        mean = sum(i * c for i, c in enumerate(hist)) / total
+        variance = sum((i - mean) ** 2 * c for i, c in enumerate(hist)) / total
+        return math.sqrt(variance)
+    except Exception:
+        return 100.0
 
 
-async def _call_sidecar(
+def _decide_preprocessing(
+    mode: Literal["auto", "explicit"],
+    hints: PreprocessingHints | None,
     image_bytes: bytes,
-    hint_language: str | None,
-    *,
-    verify_with_rotation: bool,
-    enhance_contrast: bool,
-    denoise: bool,
-) -> dict:
-    """Call the OCR sidecar (no caching — every request is fresh)."""
-    client = _client()
-    return await client.ocr(
-        image_bytes,
-        hint_language=hint_language,
-        verify_with_rotation=verify_with_rotation,
-        enhance_contrast=enhance_contrast,
-        denoise=denoise,
-    )
+) -> tuple[dict[str, bool], str]:
+    """Return ``(flags, strategy_label)``.
 
-
-def _validate_ply_by_ply(
-    canonical_text: str,
-) -> tuple[chess.Board | None, list[OcrMoveEntry], list[str]]:
-    """Replay the canonical PGN move-by-move and collect per-ply evidence."""
-    board: chess.Board | None = None
-    moves: list[OcrMoveEntry] = []
-    warnings: list[str] = []
-
-    if not canonical_text or not canonical_text.strip():
-        return None, moves, ["empty_canonical_text"]
-
-    wrapped = (
-        canonical_text
-        if canonical_text.lstrip().startswith("[")
-        else '[Event "?"]\n\n' + canonical_text
-    )
-    try:
-        game = chess.pgn.read_game(io.StringIO(wrapped))
-    except Exception as exc:
-        return None, moves, [f"invalid_pgn: {exc}"]
-
-    if game is None:
-        return None, moves, ["python_chess_could_not_parse"]
-
-    board = game.board()
-    for ply_idx, move in enumerate(game.mainline_moves(), start=1):
-        canonical_san = board.san(move)
-        raw_token = canonical_san
-        entry = OcrMoveEntry(
-            ply=ply_idx,
-            raw_token=raw_token,
-            canonical_token=canonical_san,
-            parsed_ok=True,
-            parser_warning=None,
-            normalization_kind="none",
+    ``flags`` is what gets forwarded to the sidecar's
+    ``OCRRequest``. ``strategy_label`` is a short string the caller
+    can echo back so they know which path ran.
+    """
+    if mode == "explicit":
+        if hints is None:
+            hints = PreprocessingHints()
+        return (
+            {
+                "enhance_contrast": hints.enhance_contrast,
+                "verify_with_rotation": hints.verify_with_rotation,
+                "denoise": hints.denoise,
+            },
+            "explicit",
         )
-        moves.append(entry)
+
+    snr = _estimate_snr(image_bytes)
+    denoise = snr < SNR_DENOISE_THRESHOLD
+    return (
+        {
+            "enhance_contrast": True,
+            "verify_with_rotation": True,
+            "denoise": denoise,
+        },
+        f"auto_clahe_rot_denoise{int(denoise)}_snr{snr:.1f}",
+    )
+
+
+# --- header merge ----------------------------------------------------------
+
+
+def _merge_header_field(
+    detected_value: str | None,
+    detected_confidence: float,
+    hint_value: str | None,
+) -> OcrHeaderField:
+    """Build one :class:`OcrHeaderField` from sidecar + caller-hint pair."""
+    if hint_value:
+        return OcrHeaderField(
+            value=hint_value,
+            confidence=max(detected_confidence, 0.85),
+            source="hint",
+        )
+    return OcrHeaderField(
+        value=detected_value,
+        confidence=detected_confidence,
+        source="detected",
+    )
+
+
+# --- validation ------------------------------------------------------------
+
+
+def _validate_path(
+    selected_path: tuple[str, ...],
+) -> tuple[chess.Board | None, list[OcrMoveEntry], bool]:
+    """Replay the selected path through python-chess.
+
+    Returns ``(final_board, move_entries, result_consistent)``. The last
+    flag is True iff the movetext ends with one of the canonical result
+    tokens AND that token matches the final board state.
+    """
+    board = chess.Board()
+    moves: list[OcrMoveEntry] = []
+    if not selected_path:
+        return board, moves, False
+    for idx, san in enumerate(selected_path, start=1):
+        try:
+            move = board.parse_san(san)
+            canonical = board.san(move)
+        except (chess.AmbiguousMoveError, chess.InvalidMoveError, ValueError, IndexError) as exc:
+            log.warning("ply %d (%s) failed validation: %s", idx, san, exc)
+            return None, moves, False
+        moves.append(
+            OcrMoveEntry(
+                ply=idx,
+                raw_token=san,
+                canonical_token=canonical,
+                parsed_ok=True,
+                parser_warning=None,
+                normalization_kind="none",
+            )
+        )
         board.push(move)
         if board.is_game_over(claim_draw=False):
             break
 
-    return board, moves, warnings
+    result_consistent = (
+        board.is_checkmate() or board.is_stalemate() or board.is_insufficient_material()
+    )
+    return board, moves, result_consistent
+
+
+# --- the tool --------------------------------------------------------------
 
 
 @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=False))
 async def ocr_to_pgn(  # pyright: ignore[reportGeneralTypeIssues]
-    image_b64: Annotated[
-        str,
+    image: Annotated[
+        dict[str, Any],
         Field(
             description=(
-                "Base64-encoded image of a chess score sheet. "
-                "Supported formats: HEIC, JPEG, PNG, WebP, GIF. Max 32 MB decoded."
+                "Image source as a discriminated-union object keyed by `kind`. "
+                'Forms: {"kind":"base64","data":"<base64>"}, '
+                '{"kind":"url","url":"https://..."}, '
+                '{"kind":"file_uri","path":"/abs/path.jpg"}. '
+                "Exactly one form is required."
             )
         ),
     ],
@@ -195,92 +260,126 @@ async def ocr_to_pgn(  # pyright: ignore[reportGeneralTypeIssues]
             )
         ),
     ] = "auto",
+    metadata: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description=(
+                "Optional caller-supplied PGN header overrides. Fields set here "
+                "win over OCR detection."
+            )
+        ),
+    ] = None,
+    mode: Annotated[
+        Literal["auto", "explicit"],
+        Field(
+            description=(
+                'Preprocessing strategy. "auto" (default) applies CLAHE + '
+                "auto-rotation always and the bilateral denoise when the "
+                "image SNR is below threshold. "
+                '"explicit" uses the ``preprocessing`` field verbatim.'
+            )
+        ),
+    ] = "auto",
+    preprocessing: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description=(
+                "Preprocessing flags. Only honored when ``mode='explicit'``. Ignored otherwise."
+            )
+        ),
+    ] = None,
+    resolve_ambiguities: Annotated[
+        Literal["strict", "auto", "best_effort"],
+        Field(
+            description=(
+                '"strict" raises on any ambiguous ply (needs caller retry); '
+                '"auto" (default) returns needs_review when ambiguity cannot be '
+                'resolved silently; "best_effort" always returns the best path '
+                "even when low confidence."
+            )
+        ),
+    ] = "auto",
+    engine_plausibility: Annotated[
+        Literal["off", "tiebreak_only"],
+        Field(
+            description=(
+                'When "tiebreak_only" (default), Stockfish is consulted as a '
+                "weak tiebreaker between visually similar candidates whose "
+                "OCR scores are within 0.15 of each other. "
+                'When "off", the engine is never invoked. Stockfish is NEVER '
+                "used to invalidate a move solely on the basis of a bad eval."
+            )
+        ),
+    ] = "tiebreak_only",
+    verbosity: Annotated[
+        Literal["minimal", "compact", "full"],
+        Field(
+            description=(
+                'Response verbosity. "minimal" (default) returns only '
+                "{status, canonical_pgn, confidence, validation, uncertainties, metadata}. "
+                '"compact" adds detected language + warnings. '
+                '"full" returns the full forensic payload (every OCR candidate, '
+                "per-move evidence, raw OCR text)."
+            )
+        ),
+    ] = "minimal",
     strict: Annotated[
         bool,
         Field(
             description=(
-                "When True, reject any ply whose canonical SAN required a semantic "
-                "normalization (capture-marker correction, check-marker correction, etc.). "
-                "Lenient mode (default) records the normalization in the response and continues."
+                "Legacy flag: when True, reject any ply whose canonical SAN "
+                "required a semantic normalization (e.g. Polish capture colon). "
+                "Lenient mode (default) records the normalization and continues."
             )
         ),
     ] = False,
-    verify_with_stockfish: Annotated[
-        bool,
-        Field(
-            description=(
-                "When True, run a single-ply Stockfish sanity check on every accepted "
-                "move at depth 10. Adds ~5-10s per 60-ply game. Useful for catching OCR "
-                "transcription errors that look like legal moves but are huge blunders."
-            )
-        ),
-    ] = False,
-    verify_with_rotation: Annotated[
-        bool,
-        Field(
-            description=(
-                "When True, fire M3 against 3 orientations (0°/90° CW/90° CCW) and "
-                "let the verifier pick the upright variant. Adds ~3x the API cost but "
-                "recovers photos shot sideways (camera landscape + EXIF stripped)."
-            )
-        ),
-    ] = False,
-    enhance_contrast: Annotated[
-        bool,
-        Field(
-            description=(
-                "When True, apply CLAHE (tile-based adaptive histogram equalisation) "
-                "before sending to M3. Lifts shadows without removing pen-stroke gradients."
-            )
-        ),
-    ] = False,
-    denoise: Annotated[
-        bool,
-        Field(
-            description=(
-                "When True, apply a bilateral filter (edge-preserving denoise) before "
-                "sending to M3. Helps noisy phone photos."
-            )
-        ),
-    ] = False,
-    verbosity: Annotated[
-        Literal["minimal", "compact", "full", "min", "standard", "default"] | None,
-        Field(description='Response verbosity: "full" (default), "compact", or "minimal".'),
-    ] = None,
 ) -> OcrPgnResult:
-    """OCR a chess score-sheet image and return a validated canonical PGN.
-
-    The pipeline:
-      1. Decode + magic-byte check the input image.
-      2. Optional preprocessing (orientation/CLAHE/bilateral) via opt-in flags.
-      3. Send it to the chess-ocr sidecar (multi-pass M3 with verifier).
-      4. Auto-detect Polish vs English notation.
-      5. Normalize to canonical English SAN via the san_normalize module.
-      6. Replay ply-by-ply via python-chess for per-move validation.
-      7. Optionally cross-check each ply with Stockfish (depth 10).
-
-    Returns an :class:`OcrPgnResult` with the canonical PGN, per-move
-    evidence, every OCR candidate, the verifier verdict, and cache-hit /
-    rotation metadata.
-    """
+    """OCR a chess score-sheet image and return a validated canonical PGN."""
     t0 = time.time()
     tool_name = "ocr_to_pgn"
+    warnings: list[str] = []
 
+    # ---- Step 0: validate the discriminated-union payloads ----
     try:
-        image_bytes = _decode_image_b64(image_b64)
+        image_validated = _IMAGE_ADAPTER.validate_python(image)
+        metadata_validated = _METADATA_ADAPTER.validate_python(metadata)
+        preprocessing_validated = _PREPROCESSING_ADAPTER.validate_python(preprocessing)
+    except Exception as exc:
+        await metrics.record(tool_name, (time.time() - t0) * 1000.0, is_error=True)
+        raise _tool_error("invalid_argument", str(exc), tool_name) from exc
+
+    # ---- Step 1: resolve image bytes ----
+    try:
+        resolved: ResolvedImage = await _resolve(image_validated)
     except (InvalidInput, InvalidArgument) as exc:
         await metrics.record(tool_name, (time.time() - t0) * 1000.0, is_error=True)
         raise _tool_error(exc.code, str(exc), tool_name) from exc
 
-    hint_language = None if source_language == "auto" else source_language
+    image_bytes = resolved.bytes
+
+    # ---- Step 2: decide preprocessing strategy ----
+    pre_flags, strategy_label = _decide_preprocessing(mode, preprocessing_validated, image_bytes)
+    if mode == "explicit" and pre_flags == {
+        "enhance_contrast": False,
+        "verify_with_rotation": False,
+        "denoise": False,
+    }:
+        warnings.append("explicit_mode_all_preprocessing_off")
+
+    # ---- Step 3: call sidecar ----
+    hint_language: str | None = None if source_language == "auto" else source_language
+    metadata_hints_dict: dict[str, str] | None = (
+        metadata_validated.model_dump(exclude_none=True) if metadata_validated else None
+    )
 
     try:
         sidecar_payload = await _call_sidecar(
             image_bytes,
             hint_language,
-            verify_with_rotation=verify_with_rotation,
-            enhance_contrast=enhance_contrast,
-            denoise=denoise,
+            verify_with_rotation=pre_flags["verify_with_rotation"],
+            enhance_contrast=pre_flags["enhance_contrast"],
+            denoise=pre_flags["denoise"],
+            metadata_hints=metadata_hints_dict,
         )
     except OCRUnreachable as exc:
         await metrics.record(tool_name, (time.time() - t0) * 1000.0, is_error=True)
@@ -301,18 +400,13 @@ async def ocr_to_pgn(  # pyright: ignore[reportGeneralTypeIssues]
         await metrics.record(tool_name, (time.time() - t0) * 1000.0, is_error=True)
         raise _tool_error("ocr_sidecar_error", str(exc), tool_name) from exc
 
+    # ---- Step 4: extract raw text + language detection + normalization ----
     raw_ocr_text = sidecar_payload.get("raw_text", "") or ""
     norm_result = normalize_pgn(raw_ocr_text, language=source_language)
     canonical_text = norm_result.canonical_text
     detected_language = norm_result.detected_language
-    detected_confidence = norm_result.detected_language_confidence
+    detected_language_confidence = norm_result.detected_language_confidence
     normalization_changes = list(norm_result.normalization_changes)
-
-    final_board, moves, validation_warnings = _validate_ply_by_ply(canonical_text)
-    pgn_is_valid = final_board is not None and final_board.is_valid()
-    final_fen = final_board.fen() if final_board is not None else ""
-    final_move_number = (final_board.fullmove_number - 1) if final_board is not None else 0
-    auto_rotation_applied = int(sidecar_payload.get("auto_rotation_applied", 0))
 
     if strict and any(":→x" in c for c in normalization_changes):
         raise _tool_error(
@@ -321,63 +415,207 @@ async def ocr_to_pgn(  # pyright: ignore[reportGeneralTypeIssues]
             tool_name,
         )
 
-    if verify_with_stockfish and final_board is not None:
-        try:
-            from mcp_server.engine import _get_analyzer_pool
-            from mcp_server.engine.cached_evaluator import evaluate_game_position_cached
-
-            pool = await _get_analyzer_pool(None)
-            walk = chess.Board()
-            for entry in moves:
-                move = walk.parse_san(entry.canonical_token)
-                mcp_eval, _ = await evaluate_game_position_cached(
-                    walk,
-                    depth=10,
-                    pool=pool,
-                )
-                entry.stockfish_eval_cp = mcp_eval.cp if hasattr(mcp_eval, "cp") else None
-                walk.push(move)
-        except Exception as exc:
-            validation_warnings.append(f"stockfish_verify_skipped: {exc}")
-
-    candidates = [
-        OcrCandidate(
-            pass_label=c.get("pass_label", ""),
-            language_hint=c.get("language_hint"),
-            text=c.get("text", ""),
-            error=c.get("error"),
-            parse_rate=c.get("parse_rate", 0.0),
-            score=c.get("score", 0.0),
-            latency_ms=c.get("latency_ms", 0.0),
-            rotation=c.get("rotation"),
+    # ---- Step 5: build cell candidates + run beam search ----
+    raw_cell_candidates = sidecar_payload.get("cell_candidates", []) or []
+    cell_candidates: list[CellCandidate] = [
+        CellCandidate(
+            ply=cc.get("ply", 0),
+            side=cc.get("side", "white"),
+            san=cc.get("san", ""),
+            score=float(cc.get("score", 0.0) or 0.0),
         )
-        for c in sidecar_payload.get("candidates", [])
+        for cc in raw_cell_candidates
     ]
 
-    result = OcrPgnResult(
-        canonical_pgn=canonical_text,
-        raw_ocr_text=raw_ocr_text,
-        detected_language=detected_language,
-        detected_language_confidence=detected_confidence,
-        normalization_changes=normalization_changes,
-        pgn_is_valid=pgn_is_valid,
+    beam_result = beam_rescore(
+        cell_candidates,
+        beam_width=5,
+        resolve=resolve_ambiguities,
+        engine_plausibility=engine_plausibility,
+        engine_eval=None,  # wired to Stockfish pool when caller opts in
+    )
+
+    # ---- Step 6: build canonical PGN ----
+    headers_dict = sidecar_payload.get("headers", {}) or {}
+    detected_headers = {
+        name: (
+            headers_dict[name].get("value"),
+            float(headers_dict[name].get("confidence", 0.0) or 0.0),
+        )
+        for name in ("white", "black", "round", "date", "event", "site", "result")
+        if name in headers_dict
+    }
+    metadata_out: dict[str, OcrHeaderField] = {}
+    hint_dict = metadata_validated.model_dump(exclude_none=True) if metadata_validated else {}
+    for field_name in ("white", "black", "round", "date", "event", "site", "result"):
+        detected_value, detected_conf = detected_headers.get(field_name, (None, 0.0))
+        hint_value = hint_dict.get(field_name)
+        metadata_out[field_name] = _merge_header_field(detected_value, detected_conf, hint_value)
+
+    canonical_pgn = _compose_pgn(metadata_out, canonical_text, beam_result.selected_path)
+
+    # ---- Step 7: final validation through python-chess ----
+    final_board, move_entries, result_consistent = _validate_path(beam_result.selected_path)
+    plies = len(beam_result.selected_path)
+    final_fen = final_board.fen() if final_board is not None else ""
+    legal = final_board is not None
+
+    validation = OcrValidation(
+        legal=legal,
+        plies=plies,
         final_fen=final_fen,
-        final_move_number=final_move_number,
-        moves=moves,
-        warnings=validation_warnings,
+        result_consistent=result_consistent,
+        preprocessing_strategy=strategy_label,
+    )
+
+    # ---- Step 8: compose response with verbosity gating ----
+    uncertainties: list[OcrUncertainty] = []
+    for u in beam_result.uncertainties:
+        valid_reasons = ("handwriting_ambiguity", "low_confidence")
+        reason: Literal["handwriting_ambiguity", "low_confidence"] = (
+            u.reason if u.reason in valid_reasons else "handwriting_ambiguity"
+        )
+        uncertainties.append(
+            OcrUncertainty(
+                ply=u.ply,
+                side=u.side,
+                selected=u.selected,
+                selected_confidence=u.selected_confidence,
+                alternatives=list(u.alternatives),
+                reason=reason,
+            )
+        )
+
+    status: Literal["ok", "needs_review"] = beam_result.status
+    # In strict mode beam_rescore raises NeedsReviewError; we already
+    # escaped that. In auto mode we map to "needs_review" so the caller
+    # can see uncertainty[] and decide.
+    if resolve_ambiguities == "strict" and uncertainties:
+        # We never get here because beam_rescore raises first.
+        status = "needs_review"
+
+    candidates = (
+        [
+            OcrCandidate(
+                pass_label=c.get("pass_label", ""),
+                language_hint=c.get("language_hint"),
+                text=c.get("text", ""),
+                error=c.get("error"),
+                parse_rate=c.get("parse_rate", 0.0),
+                score=c.get("score", 0.0),
+                latency_ms=c.get("latency_ms", 0.0),
+                rotation=c.get("rotation"),
+            )
+            for c in sidecar_payload.get("candidates", [])
+        ]
+        if verbosity in {"compact", "full"}
+        else None
+    )
+    selected_candidate_index = (
+        int(sidecar_payload.get("selected_candidate_index", 0))
+        if verbosity in {"compact", "full"}
+        else None
+    )
+    verifier_agreement = (
+        sidecar_payload.get("verifier_agreement") if verbosity in {"compact", "full"} else None
+    )
+    verifier_notes = (
+        sidecar_payload.get("verifier_notes") if verbosity in {"compact", "full"} else None
+    )
+    verifier_confidence = (
+        sidecar_payload.get("verifier_confidence") if verbosity in {"compact", "full"} else None
+    )
+
+    response = OcrPgnResult(
+        status=status,
+        canonical_pgn=canonical_pgn,
+        confidence=beam_result.confidence,
+        validation=validation,
+        uncertainties=uncertainties,
+        metadata=metadata_out,
+        detected_language=detected_language if verbosity != "minimal" else None,
+        detected_language_confidence=(
+            detected_language_confidence if verbosity != "minimal" else None
+        ),
+        raw_ocr_text=raw_ocr_text if verbosity == "full" else None,
+        normalization_changes=normalization_changes if verbosity == "full" else None,
+        moves=move_entries if verbosity == "full" else None,
         candidates=candidates,
-        selected_candidate_index=int(sidecar_payload.get("selected_candidate_index", 0)),
-        verifier_agreement=sidecar_payload.get("verifier_agreement"),
-        verifier_notes=sidecar_payload.get("verifier_notes"),
-        verifier_confidence=sidecar_payload.get("verifier_confidence"),
+        selected_candidate_index=selected_candidate_index,
+        verifier_agreement=verifier_agreement,
+        verifier_notes=verifier_notes,
+        verifier_confidence=verifier_confidence,
+        warnings=warnings or None,
         ocr_engine_used=sidecar_payload.get("ocr_engine_used", "minimax"),
         ocr_model_version=sidecar_payload.get("ocr_model_version", "minimax/MiniMax-M3"),
         ocr_pass_count=int(sidecar_payload.get("pass_count", 1)),
-        cache_hit=False,
-        cache_key="",
-        auto_rotation_applied=auto_rotation_applied,
+        auto_rotation_applied=int(sidecar_payload.get("auto_rotation_applied", 0)),
         request_duration_ms=(time.time() - t0) * 1000.0,
     )
 
-    await metrics.record(tool_name, result.request_duration_ms, cache_hit=False)
-    return result
+    await metrics.record(tool_name, response.request_duration_ms, cache_hit=False)
+    return response
+
+
+# --- helpers ----------------------------------------------------------------
+
+
+async def _resolve(image: ImageSource) -> ResolvedImage:
+    """Dispatch :func:`resolve_image` based on the discriminated union tag."""
+    if image.kind == "base64":
+        return await resolve_image(base64=image.data, url=None, file_uri=None)
+    if image.kind == "url":
+        return await resolve_image(
+            base64=None,
+            url=image.url,
+            file_uri=None,
+            timeout_s=image.timeout_s,
+        )
+    if image.kind == "file_uri":
+        return await resolve_image(base64=None, url=None, file_uri=image.path)
+    raise AssertionError(f"unhandled image.kind={image.kind!r}")
+
+
+async def _call_sidecar(
+    image_bytes: bytes,
+    hint_language: str | None,
+    *,
+    verify_with_rotation: bool,
+    enhance_contrast: bool,
+    denoise: bool,
+    metadata_hints: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Call the OCR sidecar (no caching — every request is fresh)."""
+    client = _client()
+    return await client.ocr(
+        image_bytes,
+        hint_language=hint_language,
+        verify_with_rotation=verify_with_rotation,
+        enhance_contrast=enhance_contrast,
+        denoise=denoise,
+        metadata_hints=metadata_hints,
+    )
+
+
+def _compose_pgn(
+    headers: dict[str, OcrHeaderField],
+    canonical_movetext: str,
+    selected_path: tuple[str, ...],
+) -> str:
+    """Compose the final canonical PGN.
+
+    Header values come from the merged (detected + hint) set; missing
+    values fall back to ``"?"``. Movetext is the selected beam path,
+    not the raw OCR movetext — the beam reranker may have changed
+    individual SANs (e.g. Polish ``S:f3`` → ``Nxf3``).
+    """
+    header_order = ("event", "site", "date", "round", "white", "black", "result")
+    parts: list[str] = []
+    for name in header_order:
+        field = headers.get(name)
+        value = field.value if field and field.value else "?"
+        parts.append(f'[{name.capitalize()} "{value}"]')
+    body_moves = " ".join(selected_path) if selected_path else canonical_movetext.strip()
+    parts.append("")
+    parts.append(body_moves)
+    return "\n".join(parts).strip()

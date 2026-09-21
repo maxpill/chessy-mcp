@@ -105,17 +105,33 @@ def estimate_mcp_request_cost(body: bytes) -> float:
                 return base + (verification_depth * extra_searches) / 12.0
             return base
         if tool_name == "ocr_to_pgn":
-            # Image bytes is base64-encoded; decoded size ~= len(b64) * 3/4.
-            image_b64 = str(args.get("image_b64", ""))
-            image_bytes = max(1.0, len(image_b64) * 3.0 / 4.0)
-            # Multi-pass consensus: 1 raw + 3 language-hinted + 1 verifier
-            # + optional 1 sanity = up to 6 M3 calls. Use 5 as the typical
-            # mid-budget estimate.
-            passes = 5.0
-            # Plus Stockfish per-ply verification if requested.
-            if bool(args.get("verify_with_stockfish", False)):
+            # v2 image source may be base64, url, or file_uri. Resolve the
+            # size from whichever is present.
+            image_arg = args.get("image")
+            image_bytes = 1.0
+            if isinstance(image_arg, dict):
+                kind = image_arg.get("kind")
+                if kind == "base64":
+                    image_bytes = max(1.0, len(str(image_arg.get("data", ""))) * 3.0 / 4.0)
+                elif kind == "url":
+                    image_bytes = max(1.0, len(str(image_arg.get("url", ""))) * 256.0)
+                elif kind == "file_uri":
+                    image_bytes = max(1.0, len(str(image_arg.get("path", ""))) * 256.0)
+            else:
+                # Backward-compat for any caller still passing image_b64.
+                legacy = str(args.get("image_b64", ""))
+                image_bytes = max(1.0, len(legacy) * 3.0 / 4.0)
+
+            # v2 default preprocessing runs CLAHE + auto-rotation always
+            # (~2x M3 calls); header extraction adds 1; verifier + sanity
+            # add another 2. Use 6 as the typical mid-budget estimate.
+            passes = 6.0
+            # Beam search rerank is local (python-chess) — small constant.
+            beam_width = max(1, min(int(args.get("beam_width", 5) or 5), 8))
+            # Engine plausibility tiebreak may invoke Stockfish.
+            if str(args.get("engine_plausibility", "tiebreak_only")) == "tiebreak_only":
                 passes += 1.0
-            return 3.0 + passes + image_bytes / 1_000_000.0
+            return 5.0 + passes + beam_width * 0.2 + image_bytes / 1_000_000.0
     except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
         pass
     return 1.0

@@ -101,12 +101,17 @@ class OCRClient:
         verify_with_rotation: bool = False,
         enhance_contrast: bool = False,
         denoise: bool = False,
+        metadata_hints: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Send an image to the OCR sidecar and return the parsed response body.
 
         ``verify_with_rotation``, ``enhance_contrast``, ``denoise`` are
         opt-in preprocessing flags forwarded to the sidecar. They only
         take effect when the sidecar's ``OCRRequest`` accepts them.
+
+        ``metadata_hints`` (v2) are optional caller-supplied PGN header
+        overrides (e.g. ``{"white": "X"}``) used as a cross-check by
+        the sidecar's header-extraction prompt.
         """
         body = {
             "image_b64": base64.b64encode(image_bytes).decode("ascii"),
@@ -115,6 +120,8 @@ class OCRClient:
             "enhance_contrast": enhance_contrast,
             "denoise": denoise,
         }
+        if metadata_hints:
+            body["metadata_hints"] = metadata_hints
         url = self._url + "/ocr"
         client = await self._http()
         try:
