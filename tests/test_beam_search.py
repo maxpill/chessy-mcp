@@ -266,3 +266,62 @@ def test_candidates_from_pairs_assigns_side() -> None:
     out = candidates_from_pairs([(1, "e4", 0.5), (2, "e5", 0.5), (3, "Nf3", 0.5)])
     assert [c.side for c in out] == ["white", "black", "white"]
     assert [c.ply for c in out] == [1, 2, 3]
+
+
+def test_beam_rescore_downstream_elimination_c4_vs_e4() -> None:
+    # Simulates the user's real scoresheet case:
+    # Ply 1 has c4 (0.73) and e4 (0.21). Both are legal opening moves.
+    # Game sequence continues:
+    # 1. c4 e5 2. e3 d5 3. b3 Nf6 4. Bb2 Nc6 5. cxd5
+    # When 5.cxd5 is played at ply 9, the 1.e4 branch cannot capture cxd5 and dies.
+    cands = _cands(
+        [
+            (1, "c4", 0.73),
+            (1, "e4", 0.21),
+            (2, "e5", 0.95),
+            (3, "e3", 0.90),
+            (4, "d5", 0.95),
+            (5, "b3", 0.90),
+            (6, "Nf6", 0.95),
+            (7, "Bb2", 0.90),
+            (8, "Nc6", 0.95),
+            (9, "cxd5", 0.92),
+        ]
+    )
+
+    result = beam_rescore(cands, beam_width=15, resolve="auto")
+
+    assert result.status == "ok"
+    assert result.unique_legal_path is True
+    assert result.selected_path[0] == "c4"
+    assert "cxd5" in result.selected_path
+
+    # Check uncertainty evidence at ply 1
+    u1 = next((u for u in result.uncertainties if u.ply == 1), None)
+    assert u1 is not None
+    assert u1.selected == "c4"
+    assert any(alt[0] == "e4" for alt in u1.alternatives)
+    assert u1.sequence_confidence is not None and u1.sequence_confidence >= 0.99
+    assert "impossible" in u1.reason
+
+
+def test_beam_rescore_expand_visual_auto_generates_c4_e4() -> None:
+    # Given only c4, expand_visual generates e4 alternative and validates correctly
+    cands = _cands(
+        [
+            (1, "c4", 0.8),
+            (2, "e5", 0.9),
+            (3, "e3", 0.9),
+            (4, "d5", 0.9),
+            (5, "b3", 0.9),
+            (6, "Nf6", 0.9),
+            (7, "Bb2", 0.9),
+            (8, "Nc6", 0.9),
+            (9, "cxd5", 0.9),
+        ]
+    )
+
+    result = beam_rescore(cands, beam_width=15, expand_visual=True)
+    assert result.status == "ok"
+    assert result.selected_path[0] == "c4"
+

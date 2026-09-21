@@ -29,6 +29,7 @@ from mcp_server.models.history import HistoryBlock
 from mcp_server.models.mcpeval import MCPEval
 from mcp_server.models.mcpeval_factory import attach_factory
 from mcp_server.models.ocr import (
+    ImageAttachment,
     ImageBase64,
     ImageFileUri,
     ImageSource,
@@ -78,6 +79,7 @@ __all__ = [
     "ExplorerSpeed",
     "GameAnalysisResult",
     "HistoryBlock",
+    "ImageAttachment",
     "ImageBase64",
     "ImageFileUri",
     "ImageSource",

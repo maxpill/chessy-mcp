@@ -131,6 +131,7 @@ class OCRResponse(BaseModel):
     # v2 additions — all optional with safe defaults so existing callers keep working.
     cell_candidates: list[OcrCellCandidateResponse] = Field(default_factory=list)
     headers: dict[str, OcrHeaderFieldResponse] = Field(default_factory=dict)
+    cell_crops: dict[str, str] = Field(default_factory=dict)
 
 
 _settings: OCRSettings | None = None
@@ -266,6 +267,7 @@ def create_app() -> FastAPI:
                 name: OcrHeaderFieldResponse(value=h.value, confidence=h.confidence)
                 for name, h in result.headers.items()
             },
+            cell_crops={str(k): v for k, v in result.cell_crops.items()},
         )
 
     return app

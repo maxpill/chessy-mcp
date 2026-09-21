@@ -142,21 +142,63 @@ async def _fetch_url(url: str, *, timeout_s: float | None) -> bytes:
     return resp.content
 
 
+def _clean_base64_data(raw_b64: str) -> str:
+    cleaned = raw_b64.strip()
+    if ";base64," in cleaned:
+        cleaned = cleaned.split(";base64,", 1)[1].strip()
+    elif cleaned.startswith("data:"):
+        cleaned = cleaned.split(",", 1)[1].strip()
+    cleaned = "".join(cleaned.split())
+    missing_padding = len(cleaned) % 4
+    if missing_padding:
+        cleaned += "=" * (4 - missing_padding)
+    return cleaned
+
+
 def _read_file(path_str: str) -> bytes:
-    root = _file_root()
     try:
         candidate = Path(path_str).resolve(strict=True)
     except FileNotFoundError as exc:
         raise InvalidInput(f"FILE_NOT_FOUND: {path_str!r}") from exc
     except RuntimeError as exc:
         raise InvalidInput(f"FILE_PATH_INVALID: {path_str!r} ({exc})") from exc
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise InvalidArgument(
-            f"FILE_OUTSIDE_SANDBOX: {candidate} is not under CHESSY_MCP_FILE_ROOT ({root})"
-        ) from exc
+
+    raw_root = os.environ.get("CHESSY_MCP_FILE_ROOT", "").strip()
+    if raw_root and raw_root != "*":
+        root = Path(raw_root).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise InvalidArgument(
+                f"FILE_OUTSIDE_SANDBOX: {candidate} is not under CHESSY_MCP_FILE_ROOT ({root})"
+            ) from exc
     return candidate.read_bytes()
+
+
+def _resolve_attachment(file_id: str) -> bytes:
+    clean_id = os.path.basename(file_id.strip())
+    search_dirs: list[Path] = []
+    custom_dir = os.environ.get("CHESSY_ATTACHMENT_DIR", "").strip()
+    if custom_dir:
+        search_dirs.append(Path(custom_dir).resolve())
+    search_dirs.append(Path("/tmp/chessy_attachments"))
+    search_dirs.append(Path("/tmp"))
+    search_dirs.append(Path("."))
+
+    for d in search_dirs:
+        if d.is_dir():
+            cand = d / clean_id
+            if cand.is_file():
+                return cand.read_bytes()
+
+    direct = Path(file_id)
+    if direct.is_file():
+        return direct.read_bytes()
+
+    raise InvalidInput(
+        f"ATTACHMENT_NOT_FOUND: file_id {file_id!r} could not be found. "
+        "Supply image as base64 data or valid local file path."
+    )
 
 
 async def resolve_image(
@@ -164,23 +206,27 @@ async def resolve_image(
     base64: str | None,
     url: str | None,
     file_uri: str | None,
+    attachment_id: str | None = None,
     timeout_s: float | None = None,
 ) -> ResolvedImage:
     """Resolve the first non-None source into :class:`ResolvedImage`.
 
-    Exactly one of the three keyword arguments must be supplied. The check
-    is enforced before dispatch so the caller cannot accidentally provide
-    zero or two sources.
+    Exactly one of the four keyword arguments must be supplied.
     """
-    provided = sum(v is not None for v in (base64, url, file_uri))
+    provided = sum(v is not None for v in (base64, url, file_uri, attachment_id))
     if provided == 0:
-        raise InvalidArgument("IMAGE_SOURCE_MISSING: one of base64/url/file_uri is required")
+        raise InvalidArgument(
+            "IMAGE_SOURCE_MISSING: one of base64/url/file_uri/attachment is required"
+        )
     if provided > 1:
-        raise InvalidArgument("IMAGE_SOURCE_AMBIGUOUS: provide exactly one of base64/url/file_uri")
+        raise InvalidArgument(
+            "IMAGE_SOURCE_AMBIGUOUS: provide exactly one of base64/url/file_uri/attachment"
+        )
 
     if base64 is not None:
+        cleaned = _clean_base64_data(base64)
         try:
-            data = _base64_mod.b64decode(base64, validate=True)
+            data = _base64_mod.b64decode(cleaned, validate=True)
         except Exception as exc:
             raise InvalidInput(f"INVALID_BASE64: {exc}") from exc
         fmt = _check_size_and_format(data)
@@ -196,6 +242,11 @@ async def resolve_image(
         data = await asyncio.to_thread(_read_file, file_uri)
         fmt = _check_size_and_format(data)
         return ResolvedImage(bytes=data, format=fmt, source_label=f"file_uri:{file_uri}")
+
+    if attachment_id is not None:
+        data = await asyncio.to_thread(_resolve_attachment, attachment_id)
+        fmt = _check_size_and_format(data)
+        return ResolvedImage(bytes=data, format=fmt, source_label=f"attachment:{attachment_id}")
 
     raise AssertionError("unreachable")  # pragma: no cover
 

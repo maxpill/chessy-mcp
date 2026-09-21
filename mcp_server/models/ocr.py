@@ -40,6 +40,10 @@ class ImageBase64(BaseModel):
 
     kind: Literal["base64"] = "base64"
     data: str = Field(..., description="Base64-encoded image bytes")
+    mime_type: str | None = Field(
+        default=None,
+        description="Optional image mime type, e.g. 'image/jpeg', 'image/png'",
+    )
 
 
 class ImageUrl(BaseModel):
@@ -60,8 +64,15 @@ class ImageFileUri(BaseModel):
     path: str = Field(..., description="Absolute path; must resolve under CHESSY_MCP_FILE_ROOT")
 
 
+class ImageAttachment(BaseModel):
+    """Image file reference by attachment ID / file ID."""
+
+    kind: Literal["attachment"] = "attachment"
+    file_id: str = Field(..., description="File ID or attachment identifier")
+
+
 ImageSource = Annotated[
-    ImageBase64 | ImageUrl | ImageFileUri,
+    ImageBase64 | ImageUrl | ImageFileUri | ImageAttachment,
     Field(discriminator="kind"),
 ]
 
@@ -111,14 +122,18 @@ class OcrUncertainty(BaseModel):
     side: Literal["white", "black"]
     selected: str
     selected_confidence: float = Field(..., ge=0.0, le=1.0)
+    sequence_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     alternatives: list[tuple[str, float]] = Field(default_factory=list)
-    reason: Literal["handwriting_ambiguity", "low_confidence"] = "handwriting_ambiguity"
+    reason: str = "handwriting_ambiguity"
+    crop_base64: str | None = None
 
 
 class OcrValidation(BaseModel):
     """Game-level validation result."""
 
     legal: bool
+    all_moves_legal: bool = True
+    unique_legal_path: bool = True
     plies: int = 0
     final_fen: str = ""
     result_consistent: bool = False
@@ -199,6 +214,7 @@ class OcrPgnResult(BaseModel):
 
 
 __all__ = [
+    "ImageAttachment",
     "ImageBase64",
     "ImageFileUri",
     "ImageSource",

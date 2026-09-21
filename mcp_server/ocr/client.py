@@ -20,7 +20,7 @@ log = logging.getLogger("chessy_mcp.ocr.client")
 
 
 OCR_SIDECAR_DEFAULT_URL = "http://chess-ocr:9552"
-OCR_SIDECAR_TIMEOUT_S = 60.0
+OCR_SIDECAR_TIMEOUT_S = 180.0
 
 
 class OCRError(Exception):

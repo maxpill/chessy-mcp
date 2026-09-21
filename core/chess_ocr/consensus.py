@@ -104,6 +104,7 @@ class ConsensusResult:
     # v2 additions
     cell_candidates: list[CellCandidate] = field(default_factory=list)
     headers: dict[str, HeaderField] = field(default_factory=dict)
+    cell_crops: dict[int, str] = field(default_factory=dict)
 
 
 # python-chess legality checker used to score candidates.
@@ -483,6 +484,21 @@ class ConsensusOrchestrator:
                     name: HeaderField(value=None, confidence=0.0) for name in empty_headers()
                 }
 
+        # Extract cell crops from primary variant for problem forensics
+        cell_crops: dict[int, str] = {}
+        try:
+            from PIL import Image
+            from core.chess_ocr.scoresheet import (
+                detect_scoresheet_layout,
+                extract_all_cell_crops,
+            )
+
+            pil_img = Image.open(io.BytesIO(primary_bytes))
+            layout = detect_scoresheet_layout(pil_img)
+            cell_crops = extract_all_cell_crops(pil_img, layout, max_ply=60)
+        except Exception as exc:
+            log.debug("could not extract cell crops: %s", exc)
+
         return ConsensusResult(
             raw_text=raw_text,
             canonical_text=canonical_text,
@@ -499,6 +515,7 @@ class ConsensusOrchestrator:
             auto_rotation_applied=detected_rotation,
             cell_candidates=cell_candidates,
             headers=headers,
+            cell_crops=cell_crops,
         )
 
 

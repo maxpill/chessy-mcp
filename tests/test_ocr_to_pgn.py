@@ -283,6 +283,41 @@ async def test_ocr_to_pgn_file_uri_source_reads_file(
     assert sidecar_route.call_count == 1
 
 
+@pytest.mark.asyncio
+async def test_ocr_to_pgn_attachment_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHESSY_ATTACHMENT_DIR", str(tmp_path))
+    att_file = tmp_path / "sheet_001.jpg"
+    att_file.write_bytes(_fake_jpeg_bytes())
+
+    router = _install_mock_sidecar()
+    with router:
+        sidecar_route = router.post("http://ocr.test:9552/ocr").respond(
+            200, json=_sidecar_response("1.e4 e5 2.Nf3 Nc6 1-0", language="en")
+        )
+        result = await ocr_to_pgn(image={"kind": "attachment", "file_id": "sheet_001.jpg"})
+
+    assert result.status == "ok"
+    assert sidecar_route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ocr_to_pgn_base64_with_mime_type_and_prefix() -> None:
+    router = _install_mock_sidecar()
+    data_uri = "data:image/jpeg;base64," + base64.b64encode(_fake_jpeg_bytes()).decode("ascii")
+    with router:
+        sidecar_route = router.post("http://ocr.test:9552/ocr").respond(
+            200, json=_sidecar_response("1.e4 e5 2.Nf3 Nc6 1-0", language="en")
+        )
+        result = await ocr_to_pgn(
+            image={"kind": "base64", "data": data_uri, "mime_type": "image/jpeg"}
+        )
+
+    assert result.status == "ok"
+    assert sidecar_route.call_count == 1
+
+
 # --- input validation -------------------------------------------------------
 
 
@@ -358,6 +393,51 @@ async def test_ocr_to_pgn_best_effort_returns_low_confidence_path() -> None:
     assert any(
         u.reason in {"handwriting_ambiguity", "low_confidence"} for u in result.uncertainties
     )
+
+
+@pytest.mark.asyncio
+async def test_ocr_to_pgn_downstream_elimination_and_crop_evidence() -> None:
+    router = _install_mock_sidecar()
+
+    cell_candidates = [
+        {"ply": 1, "side": "white", "san": "c4", "score": 0.73},
+        {"ply": 1, "side": "white", "san": "e4", "score": 0.21},
+        {"ply": 2, "side": "black", "san": "e5", "score": 0.95},
+        {"ply": 3, "side": "white", "san": "e3", "score": 0.90},
+        {"ply": 4, "side": "black", "san": "d5", "score": 0.95},
+        {"ply": 5, "side": "white", "san": "b3", "score": 0.90},
+        {"ply": 6, "side": "black", "san": "Nf6", "score": 0.95},
+        {"ply": 7, "side": "white", "san": "Bb2", "score": 0.90},
+        {"ply": 8, "side": "black", "san": "Nc6", "score": 0.95},
+        {"ply": 9, "side": "white", "san": "cxd5", "score": 0.92},
+    ]
+
+    fake_crop_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    cell_crops = {"1": fake_crop_b64}
+
+    sidecar_data = _sidecar_response(
+        "1.c4 e5 2.e3 d5 3.b3 Nf6 4.Bb2 Nc6 5.cxd5 1-0",
+        language="pl",
+        cell_candidates=cell_candidates,
+    )
+    sidecar_data["cell_crops"] = cell_crops
+
+    with router:
+        router.post("http://ocr.test:9552/ocr").respond(200, json=sidecar_data)
+        result = await ocr_to_pgn(image=_image_base64(), verbosity="full")
+
+    assert result.status == "ok"
+    assert result.validation.all_moves_legal is True
+    assert result.validation.unique_legal_path is True
+    assert "c4" in result.canonical_pgn
+    assert "cxd5" in result.canonical_pgn
+
+    u1 = next((u for u in result.uncertainties if u.ply == 1), None)
+    assert u1 is not None
+    assert u1.selected == "c4"
+    assert any(alt[0] == "e4" for alt in u1.alternatives)
+    assert u1.sequence_confidence is not None and u1.sequence_confidence >= 0.99
+    assert u1.crop_base64 == fake_crop_b64
 
 
 # --- metadata hints ---------------------------------------------------------

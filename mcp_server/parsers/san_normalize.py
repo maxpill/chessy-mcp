@@ -56,8 +56,12 @@ SUPPORTED_LANGUAGES: Final[frozenset[str]] = frozenset({"en", "pl"})
 # Castling canonical patterns. Both digit-zero and letter-O variants
 # (and lowercase) are recognized. Full-match so we never misfire on a
 # token that happens to contain "0-0" mid-string.
-_CASTLE_QUEENSIDE_RE: Final[re.Pattern[str]] = re.compile(r"^(?:O-O-O|o-o-o|0-0-0)[+#?!]*$")
-_CASTLE_KINGSIDE_RE: Final[re.Pattern[str]] = re.compile(r"^(?:O-O|o-o|0-0)[+#?!]*$")
+_CASTLE_QUEENSIDE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:O-O-O|o-o-o|0-0-0|OOO|ooo|000)[+#?!]*$"
+)
+_CASTLE_KINGSIDE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:O-O|o-o|0-0|OO|oo|00)[+#?!]*$"
+)
 
 # Pawn-capture prefix: Polish writes "e:d5" instead of "exd5".
 _PAWN_CAPTURE_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^([a-h])(:)([a-h][1-8])")
@@ -218,20 +222,47 @@ def normalize_token(
             changes.append("castling_kingside")
         return canonical, tuple(changes)
 
-    # 2. Pawn-capture prefix: "e:d5" (Polish) → "exd5"
+    # 2. Hyphenated notation: "G-b5" → "Gb5", "e-d5" → "exd5", "e2-e4" → "e4"
+    if "-" in out and not out.startswith(("O-O", "0-0")):
+        if re.match(r"^[a-h]-[a-h][1-8]", out):
+            out = re.sub(r"^([a-h])-([a-h][1-8])", r"\1x\2", out)
+            changes.append("hyphen_capture_→x")
+        elif re.match(r"^[a-h][1-8]-[a-h][1-8]", out):
+            out = re.sub(r"^[a-h][1-8]-([a-h][1-8])", r"\1", out)
+            changes.append("hyphen_coord_→san")
+        elif re.match(r"^[A-Za-z]-", out):
+            out = out[0] + out[2:]
+            changes.append("hyphen_piece_removed")
+
+    # 3. Check marker written as 't' or 'T': "Bb5t" → "Bb5+"
+    if len(out) >= 3 and out[-1] in ("t", "T") and out[-2] in "12345678QRNBPqrbnKk":
+        out = out[:-1] + "+"
+        changes.append("check_t→+")
+
+    # 4. Trailing mate marker written as 'x' following rank digit: "Qh7x" → "Qh7#"
+    if len(out) >= 3 and out.endswith("x") and out[-2].isdigit():
+        out = out[:-1] + "#"
+        changes.append("mate_x→#")
+
+    # 5. Implicit 2-letter pawn capture: "ed" → "exd"
+    if len(out) == 2 and out[0] in "abcdefgh" and out[1] in "abcdefgh" and out[0] != out[1]:
+        out = f"{out[0]}x{out[1]}"
+        changes.append(f"pawn_implicit_capture_{out}")
+
+    # 6. Pawn-capture prefix: "e:d5" (Polish) → "exd5"
     m = _PAWN_CAPTURE_PREFIX_RE.match(out)
     if m:
         out = f"{m.group(1)}x{m.group(3)}{out[m.end() :]}"
         changes.append("pawn_capture_:→x")
 
-    # 3. Capture marker normalization: ":" anywhere → "x"
+    # 7. Capture marker normalization: ":" anywhere → "x"
     if ":" in out:
         new_out = out.replace(":", "x")
         if new_out != out:
             changes.append("capture_:→x")
             out = new_out
 
-    # 4. Promotion forms: "e8H" / "e8=H" / "e8/H" / "f8(H)" → "e8=Q"
+    # 8. Promotion forms: "e8H" / "e8=H" / "e8/H" / "f8(H)" → "e8=Q"
     promote_re = re.compile(r"^(.*?[a-h][18])\s*[\(=]?\s*([HSGWK])\s*\)?\s*([+#?!]*)$")
     m = promote_re.match(out)
     if m:
@@ -243,7 +274,7 @@ def normalize_token(
             changes.append(f"promotion_{promote_letter}→{en_letter}")
             return f"{prefix}={en_letter}{suffix}", tuple(changes)
 
-    # 5. Piece-letter rewrite at start of token
+    # 9. Piece-letter rewrite at start of token
     if out and out[0] in _PL_PIECE_LETTER_CLASS:
         original_first = out[0]
         en_letter = _pl_piece_to_english(out[0])
@@ -251,19 +282,90 @@ def normalize_token(
             out = en_letter + out[1:]
             changes.append(f"piece_{original_first}→{en_letter}")
 
-    # 6. Trailing "X" mate marker (Polish convention) → "#"
+    # 10. Trailing "X" mate marker (Polish convention) → "#"
     if out.endswith("X") and not out.endswith("xX"):
         out = out[:-1] + "#"
         changes.append("mate_X→#")
 
-    # 7. Lowercase English piece letter at start of token (e.g. "nf3" from OCR)
-    # This catches the case where OCR returned English letters as lowercase
-    # and the language detector mistook them for a foreign piece letter.
-    if out and out[0].islower() and out[0] in "kqrbn":
+    # 11. Lowercase English piece letter at start of token (e.g. "nf3" from OCR)
+    # Never uppercase a pawn move like "b3", "b4" (file [a-h] + rank [1-8]).
+    if (
+        out
+        and out[0].islower()
+        and out[0] in "kqrbn"
+        and not re.match(r"^[a-h][1-8][+#?!]*$", out)
+    ):
         out = out[0].upper() + out[1:]
         changes.append(f"uppercase_{out[0].lower()}→{out[0]}")
 
     return out, tuple(changes)
+
+
+_CHAR_CONFUSIONS: Final[dict[str, list[str]]] = {
+    "c": ["e"],
+    "e": ["c"],
+    "4": ["1", "5"],
+    "1": ["4"],
+    "5": ["4", "s"],
+    "G": ["B", "C", "6"],
+    "B": ["G", "8"],
+    "S": ["N", "5", "8"],
+    "W": ["V", "R"],
+    "H": ["K", "N"],
+    "K": ["R", "H"],
+    "b": ["d"],
+    "d": ["b"],
+    "a": ["d"],
+}
+
+
+def expand_visual_hypotheses(
+    raw_token: str,
+    base_confidence: float = 0.8,
+) -> list[tuple[str, float]]:
+    """Generate top visual candidates for a handwritten chess move token.
+
+    Returns a list of (candidate_token, confidence) sorted descending by confidence.
+    Produces the primary normalized SAN plus common visual misreadings
+    (e.g. 'c4' → 'e4', 'Gb5' → 'Bb5' or 'Cb5', 'G:b5' → 'Bxb5').
+    """
+    token = raw_token.strip()
+    if not token:
+        return []
+
+    token = re.sub(r"^(\d+[\.\:]+|\.+)", "", token).strip()
+    if not token:
+        return []
+
+    candidates: dict[str, float] = {}
+    norm_primary, _ = normalize_token(token, language="pl")
+    candidates[norm_primary] = round(base_confidence, 3)
+
+    first = token[0]
+    if first in _CHAR_CONFUSIONS:
+        for alt_first in _CHAR_CONFUSIONS[first]:
+            alt_tok = alt_first + token[1:]
+            alt_norm, _ = normalize_token(alt_tok, language="pl")
+            if alt_norm not in candidates:
+                candidates[alt_norm] = round(base_confidence * 0.45, 3)
+
+    if len(token) >= 2 and token[-1] in _CHAR_CONFUSIONS:
+        last = token[-1]
+        for alt_last in _CHAR_CONFUSIONS[last]:
+            alt_tok = token[:-1] + alt_last
+            alt_norm, _ = normalize_token(alt_tok, language="pl")
+            if alt_norm not in candidates:
+                candidates[alt_norm] = round(base_confidence * 0.35, 3)
+
+    if len(token) == 2 and first in _CHAR_CONFUSIONS and token[-1] in _CHAR_CONFUSIONS:
+        for alt_first in _CHAR_CONFUSIONS[first]:
+            for alt_last in _CHAR_CONFUSIONS[token[-1]]:
+                alt_tok = alt_first + alt_last
+                alt_norm, _ = normalize_token(alt_tok, language="pl")
+                if alt_norm not in candidates:
+                    candidates[alt_norm] = round(base_confidence * 0.15, 3)
+
+    return sorted(candidates.items(), key=lambda kv: kv[1], reverse=True)
 
 
 def _find_protected_regions(text: str) -> list[tuple[int, int]]:
@@ -391,6 +493,7 @@ __all__ = [
     "SUPPORTED_LANGUAGES",
     "NormalizationResult",
     "detect_language",
+    "expand_visual_hypotheses",
     "normalize_pgn",
     "normalize_token",
 ]

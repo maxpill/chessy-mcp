@@ -160,3 +160,34 @@ async def test_resolve_image_rejects_two_sources() -> None:
     encoded = base64.b64encode(_fake_jpeg_bytes()).decode("ascii")
     with pytest.raises(InvalidArgument, match="IMAGE_SOURCE_AMBIGUOUS"):
         await resolve_image(base64=encoded, url="http://example.com/x.jpg", file_uri=None)
+
+
+# --- data URI and attachment sources ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_image_base64_with_data_uri_prefix() -> None:
+    data = _fake_jpeg_bytes()
+    encoded = "data:image/jpeg;base64,\n" + base64.b64encode(data).decode("ascii") + "\n"
+    result = await resolve_image(base64=encoded, url=None, file_uri=None)
+    assert result.bytes == data
+    assert result.format == "jpeg"
+
+
+@pytest.mark.asyncio
+async def test_resolve_image_attachment_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHESSY_ATTACHMENT_DIR", str(tmp_path))
+    att_file = tmp_path / "file_12345.jpg"
+    att_file.write_bytes(_fake_jpeg_bytes())
+
+    result = await resolve_image(base64=None, url=None, file_uri=None, attachment_id="file_12345.jpg")
+    assert result.bytes == _fake_jpeg_bytes()
+    assert result.format == "jpeg"
+    assert "attachment:" in result.source_label
+
+
+@pytest.mark.asyncio
+async def test_resolve_image_attachment_not_found() -> None:
+    with pytest.raises(InvalidInput, match="ATTACHMENT_NOT_FOUND"):
+        await resolve_image(base64=None, url=None, file_uri=None, attachment_id="nonexistent_id_9999")
+

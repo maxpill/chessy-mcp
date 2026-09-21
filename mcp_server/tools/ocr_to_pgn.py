@@ -429,10 +429,11 @@ async def ocr_to_pgn(  # pyright: ignore[reportGeneralTypeIssues]
 
     beam_result = beam_rescore(
         cell_candidates,
-        beam_width=5,
+        beam_width=15,
         resolve=resolve_ambiguities,
         engine_plausibility=engine_plausibility,
         engine_eval=None,  # wired to Stockfish pool when caller opts in
+        expand_visual=True,
     )
 
     # ---- Step 6: build canonical PGN ----
@@ -462,6 +463,8 @@ async def ocr_to_pgn(  # pyright: ignore[reportGeneralTypeIssues]
 
     validation = OcrValidation(
         legal=legal,
+        all_moves_legal=beam_result.all_moves_legal and legal,
+        unique_legal_path=beam_result.unique_legal_path,
         plies=plies,
         final_fen=final_fen,
         result_consistent=result_consistent,
@@ -470,28 +473,24 @@ async def ocr_to_pgn(  # pyright: ignore[reportGeneralTypeIssues]
 
     # ---- Step 8: compose response with verbosity gating ----
     uncertainties: list[OcrUncertainty] = []
+    cell_crops = sidecar_payload.get("cell_crops", {}) or {}
     for u in beam_result.uncertainties:
-        valid_reasons = ("handwriting_ambiguity", "low_confidence")
-        reason: Literal["handwriting_ambiguity", "low_confidence"] = (
-            u.reason if u.reason in valid_reasons else "handwriting_ambiguity"
-        )
+        crop_b64 = cell_crops.get(str(u.ply)) or cell_crops.get(u.ply)
         uncertainties.append(
             OcrUncertainty(
                 ply=u.ply,
                 side=u.side,
                 selected=u.selected,
                 selected_confidence=u.selected_confidence,
+                sequence_confidence=u.sequence_confidence,
                 alternatives=list(u.alternatives),
-                reason=reason,
+                reason=u.reason,
+                crop_base64=crop_b64 if (verbosity == "full" or beam_result.status == "needs_review") else None,
             )
         )
 
     status: Literal["ok", "needs_review"] = beam_result.status
-    # In strict mode beam_rescore raises NeedsReviewError; we already
-    # escaped that. In auto mode we map to "needs_review" so the caller
-    # can see uncertainty[] and decide.
-    if resolve_ambiguities == "strict" and uncertainties:
-        # We never get here because beam_rescore raises first.
+    if resolve_ambiguities == "strict" and beam_result.status == "needs_review":
         status = "needs_review"
 
     candidates = (
@@ -563,16 +562,23 @@ async def ocr_to_pgn(  # pyright: ignore[reportGeneralTypeIssues]
 async def _resolve(image: ImageSource) -> ResolvedImage:
     """Dispatch :func:`resolve_image` based on the discriminated union tag."""
     if image.kind == "base64":
-        return await resolve_image(base64=image.data, url=None, file_uri=None)
+        return await resolve_image(base64=image.data, url=None, file_uri=None, attachment_id=None)
     if image.kind == "url":
         return await resolve_image(
             base64=None,
             url=image.url,
             file_uri=None,
+            attachment_id=None,
             timeout_s=image.timeout_s,
         )
     if image.kind == "file_uri":
-        return await resolve_image(base64=None, url=None, file_uri=image.path)
+        return await resolve_image(
+            base64=None, url=None, file_uri=image.path, attachment_id=None
+        )
+    if image.kind == "attachment":
+        return await resolve_image(
+            base64=None, url=None, file_uri=None, attachment_id=image.file_id
+        )
     raise AssertionError(f"unhandled image.kind={image.kind!r}")
 
 

@@ -413,3 +413,42 @@ def test_polish_real_world_tokens_from_user_photos() -> None:
     for polish, english in real_tokens:
         canonical, _ = normalize_token(polish, "pl")
         assert canonical == english, f"{polish!r} → {canonical!r}, expected {english!r}"
+
+
+def test_polish_hyphen_and_check_and_castling_variants() -> None:
+    variants = [
+        ("G-b5", "Bb5"),
+        ("e-d5", "exd5"),
+        ("e2-e4", "e4"),
+        ("Bb5t", "Bb5+"),
+        ("cxd5t", "cxd5+"),
+        ("00", "O-O"),
+        ("000", "O-O-O"),
+        ("OO", "O-O"),
+        ("OOO", "O-O-O"),
+        ("Hh7x", "Qh7#"),
+        ("ed", "exd"),
+    ]
+    for raw, expected in variants:
+        canonical, _ = normalize_token(raw, "pl")
+        assert canonical == expected, f"{raw!r} → {canonical!r}, expected {expected!r}"
+
+
+def test_expand_visual_hypotheses_c4_e4() -> None:
+    from mcp_server.parsers.san_normalize import expand_visual_hypotheses
+
+    hypotheses = expand_visual_hypotheses("c4", base_confidence=0.73)
+    tokens = [tok for tok, conf in hypotheses]
+    assert "c4" in tokens
+    assert "e4" in tokens
+    assert hypotheses[0][0] == "c4"
+    assert hypotheses[0][1] == 0.73
+
+
+def test_expand_visual_hypotheses_polish_piece() -> None:
+    from mcp_server.parsers.san_normalize import expand_visual_hypotheses
+
+    hypotheses = expand_visual_hypotheses("G:b5", base_confidence=0.85)
+    tokens = [tok for tok, conf in hypotheses]
+    assert "Bxb5" in tokens
+

@@ -69,14 +69,16 @@ class CellCandidate:
 
 @dataclass(frozen=True)
 class Uncertainty:
-    """One ambiguous half-move that the reranker could not confidently resolve."""
+    """One ambiguous half-move flagged by the legal-sequence beam reranker."""
 
     ply: int
     side: Literal["white", "black"]
     selected: str
     selected_confidence: float
+    sequence_confidence: float | None = None
     alternatives: tuple[tuple[str, float], ...] = ()
     reason: str = "handwriting_ambiguity"
+    crop_base64: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,8 @@ class BeamResult:
     uncertainties: tuple[Uncertainty, ...]
     confidence: float
     status: Literal["ok", "needs_review"]
+    unique_legal_path: bool = True
+    all_moves_legal: bool = True
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -161,16 +165,74 @@ def _try_legal(board: chess.Board, san: str) -> chess.Move | None:
         return None
 
 
+def _find_elimination_reason(
+    ply_idx: int,
+    alt_san: str,
+    best_path: tuple[str, ...],
+) -> tuple[str, float]:
+    """Determine at which downstream ply an alternative candidate becomes illegal.
+
+    Returns (reason_str, sequence_confidence).
+    """
+    board = chess.Board()
+    for i in range(ply_idx):
+        mv = _try_legal(board, best_path[i])
+        if mv is None:
+            return "alternative path illegal prefix", 0.99
+        board.push(mv)
+
+    alt_mv = _try_legal(board, alt_san)
+    if alt_mv is None:
+        return "immediately illegal at this ply", 1.0
+    board.push(alt_mv)
+
+    for j in range(ply_idx + 1, len(best_path)):
+        downstream_san = best_path[j]
+        downstream_mv = _try_legal(board, downstream_san)
+        if downstream_mv is None:
+            move_num = (j // 2) + 1
+            dot = "." if (j % 2 == 0) else "..."
+            return f"alternative makes later {move_num}{dot}{downstream_san} impossible", 0.999
+        board.push(downstream_mv)
+
+    return "alternative has lower overall score", 0.85
+
+
 def _aggregate_plies(
     cell_candidates: Sequence[CellCandidate],
+    *,
+    expand_visual: bool = False,
 ) -> dict[int, list[CellCandidate]]:
-    """Group candidates by ply; dedupe (ply, san) tuples."""
+    """Group candidates by ply; normalize SAN and optionally expand confusions."""
+    from mcp_server.parsers.san_normalize import expand_visual_hypotheses, normalize_token
+
     grouped: dict[int, list[CellCandidate]] = {}
     for cand in cell_candidates:
         existing = grouped.setdefault(cand.ply, [])
-        if any(e.san == cand.san for e in existing):
-            continue
-        existing.append(cand)
+        norm_san, _ = normalize_token(cand.san, language="pl")
+        clean_cand = CellCandidate(
+            ply=cand.ply,
+            side=cand.side,
+            san=norm_san,
+            score=cand.score,
+        )
+        if not any(e.san == clean_cand.san for e in existing):
+            existing.append(clean_cand)
+
+    if expand_visual:
+        for cands in list(grouped.values()):
+            if len(cands) == 1:
+                cand = cands[0]
+                for alt_san, _ in expand_visual_hypotheses(cand.san, cand.score):
+                    if not any(e.san == alt_san for e in cands):
+                        cands.append(
+                            CellCandidate(
+                                ply=cand.ply,
+                                side=cand.side,
+                                san=alt_san,
+                                score=round(cand.score * 0.25, 3),
+                            )
+                        )
     return grouped
 
 
@@ -181,10 +243,11 @@ def _max_engine_evals(num_cells: int) -> int:
 def beam_rescore(
     cell_candidates: Sequence[CellCandidate],
     *,
-    beam_width: int = 5,
+    beam_width: int = 15,
     resolve: ResolveMode = "auto",
     engine_plausibility: EnginePlausibility = "off",
     engine_eval: EngineEvalFn | None = None,
+    expand_visual: bool = False,
 ) -> BeamResult:
     """Rerank the per-cell candidates and return a single best legal path."""
     if beam_width < 1:
@@ -195,10 +258,12 @@ def beam_rescore(
             uncertainties=(),
             confidence=0.0,
             status="ok",
+            unique_legal_path=True,
+            all_moves_legal=True,
             notes=("empty_candidates",),
         )
 
-    grouped = _aggregate_plies(cell_candidates)
+    grouped = _aggregate_plies(cell_candidates, expand_visual=expand_visual)
     plies = sorted(grouped.keys())
     if not plies:
         return BeamResult(
@@ -206,6 +271,8 @@ def beam_rescore(
             uncertainties=(),
             confidence=0.0,
             status="ok",
+            unique_legal_path=True,
+            all_moves_legal=True,
             notes=("empty_grouped",),
         )
 
@@ -271,26 +338,34 @@ def beam_rescore(
     second_score = beam[1][2] if len(beam) > 1 else best_score - 1.0
 
     uncertainties: list[Uncertainty] = []
+    has_ambiguous_surviving_path = False
+
     for idx, ply in enumerate(plies):
         side = _side_at(ply)
+        selected_san = best_path[idx] if idx < len(best_path) else ""
+        if not selected_san:
+            continue
+
         per_san: dict[str, list[float]] = {}
         for _board, path, score, _parent, _last_san in beam:
             if idx >= len(path):
                 continue
             san = path[idx]
             per_san.setdefault(san, []).append(score)
-        if not per_san:
-            continue
-        selected_san = best_path[idx] if idx < len(best_path) else ""
-        if not selected_san:
-            continue
+
         top_score = max(per_san.get(selected_san, [best_score - 1.0]))
-        runner_up = max(
-            (s for san, scores in per_san.items() if san != selected_san for s in scores),
-            default=top_score - 1.0,
-        )
-        delta = top_score - runner_up
-        if delta < AMBIGUITY_DELTA:
+        competitive_sans = {
+            san for san, scores in per_san.items() if max(scores) >= top_score - AMBIGUITY_DELTA
+        }
+
+        # Case 1: Multiple candidates survived competitively in the beam
+        if len(competitive_sans) > 1:
+            runner_up = max(
+                (s for san, scores in per_san.items() if san != selected_san for s in scores),
+                default=top_score - 1.0,
+            )
+            delta = top_score - runner_up
+            has_ambiguous_surviving_path = True
             alternatives = sorted(
                 ((san, max(scores)) for san, scores in per_san.items() if san != selected_san),
                 key=lambda x: x[1],
@@ -308,31 +383,53 @@ def beam_rescore(
                     side=side,
                     selected=selected_san,
                     selected_confidence=round(selected_conf, 3),
+                    sequence_confidence=0.5,
                     alternatives=tuple((san, round(score, 3)) for san, score in alternatives),
                     reason=reason,
                 )
             )
+        # Case 2: Only 1 SAN survived competitively; report eliminated alternatives
+        else:
+            initial_cands = grouped[ply]
+            for alt in initial_cands:
+                if alt.san != selected_san and alt.score >= 0.2:
+                    reason, seq_conf = _find_elimination_reason(idx, alt.san, best_path)
+                    uncertainties.append(
+                        Uncertainty(
+                            ply=ply,
+                            side=side,
+                            selected=selected_san,
+                            selected_confidence=round(max(0.5, 1.0 - alt.score), 3),
+                            sequence_confidence=round(seq_conf, 3),
+                            alternatives=((alt.san, round(alt.score, 3)),),
+                            reason=reason,
+                        )
+                    )
 
     confidence = max(0.0, min(1.0, (best_score - second_score) / max(1.0, abs(best_score))))
     confidence = round(confidence, 3)
 
+    unique_legal_path = not has_ambiguous_surviving_path
+
     status: Literal["ok", "needs_review"]
-    if resolve == "strict" and uncertainties:
-        raise NeedsReviewError(uncertainties)
+    if resolve == "strict" and has_ambiguous_surviving_path:
+        ambig_uncertainties = [
+            u for u in uncertainties if u.sequence_confidence is None or u.sequence_confidence < 0.9
+        ]
+        raise NeedsReviewError(ambig_uncertainties or uncertainties)
+
     if resolve == "best_effort":
-        status = "ok" if not uncertainties else "needs_review"
-        if uncertainties and all(
-            u.selected_confidence < LOW_CONFIDENCE_THRESHOLD for u in uncertainties
-        ):
-            notes.append("best_effort_low_confidence_path")
+        status = "ok"
     else:
-        status = "ok" if not uncertainties else "needs_review"
+        status = "needs_review" if has_ambiguous_surviving_path else "ok"
 
     return BeamResult(
         selected_path=best_path,
         uncertainties=tuple(uncertainties),
         confidence=confidence,
         status=status,
+        unique_legal_path=unique_legal_path,
+        all_moves_legal=True,
         notes=tuple(notes),
     )
 
