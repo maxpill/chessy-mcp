@@ -157,7 +157,14 @@ async def evaluate_position(
             "forensic" if detail == "forensic" else "coach"
         )
         enriched = enrich_position_eval(result, board, detail=evidence_detail)
-        return extend_position_eval(enriched, board)
+        final_eval = extend_position_eval(enriched, board)
+        if verbosity_mode == VERBOSITY_COMPACT and final_eval.forensics is not None:
+            from mcp_server.analysis.forensic_integration import compact_position_forensics
+
+            final_eval = final_eval.model_copy(
+                update={"forensics": compact_position_forensics(final_eval.forensics)}
+            )
+        return final_eval
     except ToolError:
         await metrics.record("evaluate_position", (time.time() - t0) * 1000, is_error=True)
         raise

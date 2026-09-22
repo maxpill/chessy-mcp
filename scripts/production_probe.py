@@ -21,6 +21,8 @@ EXPECTED_TOOLS = {
     "top_moves",
     "classify_move",
     "analyze_game",
+    "explore_opening",
+    "ocr_to_pgn",
 }
 
 

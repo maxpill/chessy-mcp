@@ -50,7 +50,7 @@ class GameSegment(BaseModel):
     transition_confirmed_ply: int | None = None
     stability: Literal["high", "medium", "low"] = "high"
     raw_state_change_count: int = 0
-    inference_boundary: str = (
+    inference_boundary: str | None = (
         "Segment states use a small persistence filter so one-ply threshold noise does not "
         "automatically become a new game phase. Large/decisive state jumps remain immediate."
     )
@@ -124,7 +124,7 @@ class CriticalMoment(BaseModel):
     causal_trace: dict[str, Any] | None = None
     evidence_signatures: list[str] = Field(default_factory=list)
     failure_evidence_categories: list[FailureEvidenceCategory] = Field(default_factory=list)
-    inference_boundary: str = (
+    inference_boundary: str | None = (
         "Signatures describe engine/board evidence. Terms such as ONLY_MOVE_MISSED_CANDIDATE "
         "or PAWN_MOVE_FORCING_PUNISHMENT are coaching evidence, not proof of the player's "
         "actual calculation process. Opponent forcing-threat deltas compare the real post-move "
@@ -265,7 +265,7 @@ class GameTerminationAssessment(BaseModel):
     defensive_resources_exist: bool | None = None
     # F-006 fix: explicit applicability flag for boolean consumers.
     resources_applicable: bool = False
-    inference_boundary: str = (
+    inference_boundary: str | None = (
         "Only an explicit resignation-style Termination header is treated as confirmed "
         "resignation. A decisive result on a non-terminal board is merely a candidate. "
         "objectively_forced refers to forced mate/rules termination, never to a cp threshold. "
@@ -284,7 +284,7 @@ class FailureCorpusBucket(BaseModel):
     self_report_overlap_count: int = 0
     self_reported_plies: list[int] = Field(default_factory=list)
     supporting_signatures: list[str] = Field(default_factory=list)
-    inference_boundary: str = (
+    inference_boundary: str | None = (
         "The category summarizes repeated board/engine evidence. It is not a diagnosis of the "
         "player's thought process. self_report_overlap_count only records that the same critical "
         "ply also contained a player comment."
@@ -298,7 +298,7 @@ class GameFailureCorpusSummary(BaseModel):
     categorized_critical_moments: int = 0
     buckets: list[FailureCorpusBucket] = Field(default_factory=list)
     uncategorized_major_error_plies: list[int] = Field(default_factory=list)
-    inference_boundary: str = (
+    inference_boundary: str | None = (
         "This is a stateless per-game evidence summary. Cross-game consumers may aggregate the "
         "stable categories, but should not infer a durable cognitive weakness from one game."
     )
@@ -321,7 +321,7 @@ class GameCoachingEvidence(BaseModel):
     scan_depth: int
     verification_depth: int | None = None
     adaptive_escalation_depth: int | None = None
-    inference_boundary: str = (
+    inference_boundary: str | None = (
         "Events and signatures are board/engine evidence. Labels for the player's "
         "thought process must be inferred by the coaching layer, ideally with self-report."
     )

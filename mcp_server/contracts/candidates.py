@@ -177,8 +177,8 @@ def canonicalize_candidates(
 
     if len(candidates) > cap:
         raise IllegalMove(
-            f"Too many unique canonical candidates: supports at most {cap} unique "
-            f"moves (got {len(candidates)}).",
+            f"Too many unique canonical candidates: at most {cap} candidates are allowed "
+            f"(supports at most {cap} unique moves, got {len(candidates)}).",
             unique_count=len(candidates),
             cap=cap,
         )

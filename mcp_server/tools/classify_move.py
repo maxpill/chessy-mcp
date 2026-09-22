@@ -51,6 +51,7 @@ from mcp_server.parsers import build_normalized_position
 from mcp_server.metrics import metrics
 from mcp_server.models import MCPEval, MCPMoveAnalysis
 from mcp_server.models.forensics import ForensicMoveAnalysis
+from mcp_server.contracts.errors import IllegalMove
 from mcp_server.tcp_analyzer import TCPAnalyzerPool
 from mcp_server.tools._common import (
     _compact_mcpeval,
@@ -173,27 +174,15 @@ async def classify_move(
     try:
         if detail not in {"standard", "coach", "forensic"}:
             raise ValueError(f"INVALID_DETAIL: {detail}")
-        # Audit Phase 4 (2026-09-14): the cap is enforced on *unique
-        # canonical* moves, not on raw input strings. The actual dedupe + cap
-        # lives in ``canonicalize_candidates`` (mcp_server.contracts.candidates),
-        # which is invoked from ``enrich_move_analysis``. We still reject
-        # pathological raw input lists cheaply up front.
         if compare_moves is not None and len(compare_moves) > 32:
-            from mcp_server.contracts.errors import IllegalMove
-
             raise IllegalMove(
                 "compare_moves accepts at most 32 raw strings (uniqueness is "
                 "checked after canonicalization; the wire cap on unique moves "
                 "is 8).",
                 raw_count=len(compare_moves),
             )
-        effective_detail: DetailMode = "coach" if compare_moves and detail == "standard" else detail
+        effective_detail: DetailMode = "forensic" if compare_moves and detail == "standard" else detail
 
-        # Audit Phase 12 (2026-09-14): call build_normalized_position first so
-        # partial-FEN caller provenance (raw input, defaulted fields, canonical
-        # state) is preserved into validate_classify_input and onward to the
-        # response. validate_classify_input still owns the move parsing and
-        # claim_draw / play_move branching.
         normalized = build_normalized_position(fen, moves, strict=strict)
         outcome = validate_classify_input(
             fen=fen,
@@ -203,6 +192,18 @@ async def classify_move(
             strict=strict,
             normalized=normalized,
         )
+
+        if compare_moves is not None:
+            from mcp_server.contracts.candidates import canonicalize_candidates
+
+            try:
+                canonicalize_candidates(outcome.board, compare_moves, strict=strict, cap=8)
+            except IllegalMove as exc:
+                if "at most 8" in str(exc) or "unique candidates" in str(exc):
+                    raise ValueError(
+                        f"INVALID_PARAMETER_COUNT: at most 8 candidates are allowed ({exc})"
+                    ) from exc
+                raise
 
         if action_type not in {"play_move", "claim_draw", "claim_draw_with_intended_move"}:
             raise ValueError(f"INVALID_ACTION_TYPE: {action_type}")
@@ -358,9 +359,9 @@ async def classify_move(
     except ToolError:
         await metrics.record("classify_move", 0.0, is_error=True)
         raise
-    except ValueError as exc:
+    except (ValueError, IllegalMove) as exc:
         msg = str(exc)
-        code = error_code_for(msg)
+        code = "illegal_move" if isinstance(exc, IllegalMove) else error_code_for(msg)
         raise _tool_error(code=code, message=msg, tool="classify_move", input=move) from exc
     except Exception as exc:
         await metrics.record("classify_move", 0.0, is_error=True)
@@ -431,9 +432,23 @@ async def _finish_result(
             history_complete=outcome.history_complete,
             evaluate_position=_evaluate_game_position_cached,
         )
-    return apply_practical_equivalence(
+    res = apply_practical_equivalence(
         reply_enriched,
         mover=outcome.board.turn,
+    )
+    from mcp_server.analysis.forensic_integration import compact_move_forensics
+
+    forensics = (
+        compact_move_forensics(res.forensics) if res.forensics is not None else None
+    )
+    eval_before = _compact_mcpeval(res.eval_before) if res.eval_before else None
+    eval_after = _compact_mcpeval(res.eval_after) if res.eval_after else None
+    return res.model_copy(
+        update={
+            "forensics": forensics,
+            "eval_before": eval_before,
+            "eval_after": eval_after,
+        }
     )
 
 

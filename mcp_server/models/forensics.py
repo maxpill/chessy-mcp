@@ -129,7 +129,7 @@ class TacticalHangingEvidence(BaseModel):
     local_exchange_line_uci: list[str] = Field(default_factory=list)
     local_exchange_line_san: list[str] = Field(default_factory=list)
     local_exchange_tree_complete: bool | None = None
-    proof_scope: str = (
+    proof_scope: str | None = (
         "Immediate recapture legality only. This is a tactical-hanging candidate, "
         "not a full exchange-sequence or SEE proof."
     )
@@ -162,7 +162,7 @@ class MechanismCandidateEvidence(BaseModel):
     actor: str | None = None
     targets: list[str] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
-    proof_scope: str
+    proof_scope: str | None = None
     # F-010 fix (2026-09-09): presentation priority bucket. Computed from
     # the candidate's category + whether it is supported by engine PV /
     # concrete material consequence. Used to rank presentation_mechanisms
@@ -337,7 +337,7 @@ class CandidateContinuationEndpointEvidence(BaseModel):
     endpoint_tactical_snapshot: TacticalSnapshot | None = None
     root_to_endpoint_delta: PositionDelta | None = None
     irreversible_events: list[dict[str, Any]] = Field(default_factory=list)
-    proof_scope: str
+    proof_scope: str | None = None
 
 
 class CandidateContinuationEndpointDifference(BaseModel):
@@ -366,7 +366,7 @@ class CandidateContinuationEndpointDifference(BaseModel):
     king_ring_attack_delta_difference_black: int = 0
     reference_irreversible_events: list[str] = Field(default_factory=list)
     candidate_irreversible_events: list[str] = Field(default_factory=list)
-    proof_scope: str = (
+    proof_scope: str | None = (
         "Compares evidence-bounded principal-variation endpoints. Unequal continuation "
         "lengths or termination reasons are not a controlled causal experiment."
     )
@@ -447,7 +447,7 @@ class CandidatePositionDifference(BaseModel):
     king_ring_attack_delta_difference_white: int = 0
     king_ring_attack_delta_difference_black: int = 0
     continuation_endpoint_difference: CandidateContinuationEndpointDifference | None = None
-    proof_scope: str = (
+    proof_scope: str | None = (
         "Resulting-position comparison only. Feature differences are deterministic; "
         "they do not by themselves prove which feature caused the engine-evaluation gap."
     )
@@ -495,7 +495,7 @@ class TacticalProofEvidence(BaseModel):
     legal_defense_count: int
     analyzed_defense_count: int
     defenses: list[DefenseEvidence] = Field(default_factory=list)
-    inference_boundary: str = (
+    inference_boundary: str | None = (
         "A sampled proof covers only the returned engine-ranked defenses. "
         "Only proof_status=exhaustive means every legal immediate reply was evaluated."
     )
@@ -510,7 +510,7 @@ class PositionForensicEvidence(BaseModel):
     position_after_best: PositionFingerprint | None = None
     tactical_after_best: TacticalSnapshot | None = None
     best_move_delta: PositionDelta | None = None
-    inference_boundary: str = (
+    inference_boundary: str | None = (
         "Static board evidence is deterministic. Tactical-hanging, motif and "
         "overloaded-defender fields have explicit bounded proof scopes and are not "
         "human-process claims."
@@ -530,6 +530,7 @@ class TopMovesForensicEvidence(BaseModel):
     candidate_comparisons: list[CandidateEvidence] = Field(default_factory=list)
     candidate_differences: list[CandidatePositionDifference] = Field(default_factory=list)
     proof: TacticalProofEvidence | None = None
+    inference_boundary: str | None = None
 
 
 class ForensicTopMovesResult(TopMovesResult):
@@ -558,7 +559,7 @@ class ForensicEvidence(BaseModel):
     candidate_comparisons: list[CandidateEvidence] = Field(default_factory=list)
     candidate_differences: list[CandidatePositionDifference] = Field(default_factory=list)
     stability: dict[str, Any] = Field(default_factory=dict)
-    inference_boundary: str = (
+    inference_boundary: str | None = (
         "Evidence signatures describe board/engine facts. Human thought-process labels "
         "must be inferred by the coaching layer, ideally with the player's self-report."
     )

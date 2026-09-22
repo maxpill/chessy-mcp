@@ -10,6 +10,7 @@ already returned strongest replies.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 import chess
 
@@ -27,10 +28,13 @@ from mcp_server.analysis.tactical_snapshot_extensions import extend_tactical_sna
 from mcp_server.models.forensics import (
     CandidateEvidence,
     CandidatePositionDifference,
+    ForensicEvidence,
     ForensicMoveAnalysis,
     ForensicTopMovesResult,
     PositionDelta,
+    PositionForensicEvidence,
     TacticalSnapshot,
+    TopMovesForensicEvidence,
 )
 
 MATE_VALUE = 100_000
@@ -495,3 +499,184 @@ def upgrade_top_moves_forensics(
         }
     )
     return result.model_copy(update={"forensics": upgraded})
+
+
+def compact_position_delta(delta: PositionDelta | None) -> PositionDelta | None:
+    if delta is None:
+        return None
+    return delta.model_copy(
+        update={
+            "piece_safety_changes": [],
+            "piece_mobility_changes": [],
+            "strategic_square_control_changes": [],
+        }
+    )
+
+
+def compact_candidate_evidence(candidate: CandidateEvidence) -> CandidateEvidence:
+    """Compact candidate evidence by stripping bulky continuation endpoint snapshots and duplicate mechanism lists."""
+    updates: dict[str, Any] = {}
+    if candidate.continuation_endpoint is not None:
+        updates["continuation_endpoint"] = candidate.continuation_endpoint.model_copy(
+            update={
+                "endpoint_tactical_snapshot": None,
+                "root_to_endpoint_delta": None,
+                "proof_scope": None,
+            }
+        )
+    updates["tactical_snapshot_after"] = (
+        compact_snapshot(candidate.tactical_snapshot_after) or candidate.tactical_snapshot_after
+    )
+    if candidate.tactical_after_reply is not None:
+        updates["tactical_after_reply"] = compact_snapshot(candidate.tactical_after_reply)
+    if candidate.position_delta is not None:
+        updates["position_delta"] = compact_position_delta(candidate.position_delta)
+    if candidate.reply_delta is not None:
+        updates["reply_delta"] = compact_position_delta(candidate.reply_delta)
+    return candidate.model_copy(update=updates)
+
+
+def compact_snapshot(snapshot: TacticalSnapshot | None) -> TacticalSnapshot | None:
+    if snapshot is None:
+        return None
+    updates: dict[str, Any] = {"threat_probe_scope": None}
+    if snapshot.presentation_mechanisms:
+        updates["mechanism_candidates"] = []
+        updates["presentation_mechanisms"] = [
+            m.model_copy(update={"proof_scope": None})
+            for m in snapshot.presentation_mechanisms
+        ]
+    elif snapshot.mechanism_candidates:
+        updates["mechanism_candidates"] = [
+            m.model_copy(update={"proof_scope": None})
+            for m in snapshot.mechanism_candidates
+        ]
+    return snapshot.model_copy(update=updates)
+
+
+def compact_move_forensics(evidence: ForensicEvidence) -> ForensicEvidence:
+    """Compact ForensicEvidence for compact/minimal verbosity."""
+    from mcp_server.analysis.causal_trace import compact_causal_trace
+
+    compact_candidates = [
+        compact_candidate_evidence(c) for c in evidence.candidate_comparisons
+    ]
+    tactical_before = compact_snapshot(evidence.tactical_before) or evidence.tactical_before
+    tactical_after = compact_snapshot(evidence.tactical_after_played) or evidence.tactical_after_played
+    tactical_reply = compact_snapshot(evidence.tactical_after_reply)
+
+    pos_delta = compact_position_delta(evidence.position_delta) or evidence.position_delta
+    reply_delta = compact_position_delta(evidence.reply_delta)
+
+    compact_mechanisms: list[dict[str, Any]] = []
+    for m in evidence.mechanism_evidence:
+        mech = m.get("mechanism")
+        if mech == "causal_position_delta_trace":
+            compact_m = compact_causal_trace(m)
+            if compact_m:
+                compact_mechanisms.append(compact_m)
+        elif mech == "adaptive_forcing_resolution":
+            item = dict(m)
+            item["proof_scope"] = None
+            item["moves"] = []
+            compact_mechanisms.append(item)
+        elif mech == "reply_failure_profile":
+            item = dict(m)
+            item["inference_boundary"] = None
+            item["materialization_proof_scope"] = None
+            traj = item.get("material_trajectory_for_mover")
+            if isinstance(traj, list):
+                item["material_trajectory_for_mover"] = [
+                    {
+                        "ply": s.get("ply"),
+                        "uci": s.get("uci"),
+                        "san": s.get("san"),
+                        "material_change_cp": s.get("material_change_for_mover_this_ply_cp", 0),
+                        "cumulative_cp": s.get("cumulative_material_change_for_mover_cp", 0),
+                    }
+                    for s in traj
+                    if isinstance(s, dict)
+                ]
+            compact_mechanisms.append(item)
+        elif mech == "strongest_reply_forcing_followup_if_pass":
+            item = dict(m)
+            item["proof_scope"] = None
+            compact_mechanisms.append(item)
+        else:
+            item = dict(m)
+            if "inference_boundary" in item:
+                item["inference_boundary"] = None
+            if "proof_scope" in item:
+                item["proof_scope"] = None
+            compact_mechanisms.append(item)
+
+    stability = dict(evidence.stability)
+    if "practical_equivalence_basis" in stability:
+        stability["practical_equivalence_basis"] = None
+    if "proof_scope" in stability:
+        stability["proof_scope"] = None
+    if "practical_equivalence" in stability and isinstance(stability["practical_equivalence"], dict):
+        pe = dict(stability["practical_equivalence"])
+        if "proof_scope" in pe:
+            pe["proof_scope"] = None
+        stability["practical_equivalence"] = pe
+
+    return evidence.model_copy(
+        update={
+            "tactical_before": tactical_before,
+            "tactical_after_played": tactical_after,
+            "tactical_after_reply": tactical_reply,
+            "position_delta": pos_delta,
+            "reply_delta": reply_delta,
+            "candidate_comparisons": compact_candidates,
+            "candidate_differences": [
+                d.model_copy(update={"proof_scope": None})
+                for d in evidence.candidate_differences
+            ],
+            "mechanism_evidence": compact_mechanisms,
+            "stability": stability,
+            "inference_boundary": None,
+        }
+    )
+
+
+def compact_top_moves_forensics(
+    evidence: TopMovesForensicEvidence,
+) -> TopMovesForensicEvidence:
+    """Compact TopMovesForensicEvidence for compact/minimal verbosity."""
+    compact_candidates = [
+        compact_candidate_evidence(c) for c in evidence.candidate_comparisons
+    ]
+    tactical_root = compact_snapshot(evidence.tactical_snapshot) or evidence.tactical_snapshot
+    proof = evidence.proof
+    if proof is not None:
+        proof = proof.model_copy(update={"inference_boundary": None, "proof_scope": None})
+
+    return evidence.model_copy(
+        update={
+            "tactical_snapshot": tactical_root,
+            "candidate_comparisons": compact_candidates,
+            "candidate_differences": [
+                d.model_copy(update={"proof_scope": None})
+                for d in evidence.candidate_differences
+            ],
+            "proof": proof,
+        }
+    )
+
+
+def compact_position_forensics(
+    evidence: PositionForensicEvidence,
+) -> PositionForensicEvidence:
+    """Compact PositionForensicEvidence for evaluate_position in compact verbosity."""
+    tactical_root = compact_snapshot(evidence.tactical_snapshot) or evidence.tactical_snapshot
+    tactical_after_best = compact_snapshot(evidence.tactical_after_best)
+    best_delta = compact_position_delta(evidence.best_move_delta)
+    return evidence.model_copy(
+        update={
+            "tactical_snapshot": tactical_root,
+            "tactical_after_best": tactical_after_best,
+            "best_move_delta": best_delta,
+            "inference_boundary": None,
+        }
+    )

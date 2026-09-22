@@ -117,6 +117,8 @@ def _compact_coaching_evidence(
     *,
     is_minimal: bool,
 ) -> GameCoachingEvidence:
+    from mcp_server.analysis.causal_trace import compact_causal_trace
+
     compact_moments = []
     for m in coaching.critical_moments:
         updates: dict[str, Any] = {
@@ -129,13 +131,38 @@ def _compact_coaching_evidence(
             "mate_in_one_moves_before": [],
             "opponent_mate_in_one_threats_if_pass_before": [],
             "opponent_mate_in_one_moves_after_played": [],
+            "inference_boundary": None,
         }
         if is_minimal:
             updates["causal_trace"] = None
+        else:
+            updates["causal_trace"] = compact_causal_trace(m.causal_trace)
         compact_moments.append(m.model_copy(update=updates))
+
+    compact_segments = [
+        s.model_copy(update={"inference_boundary": None})
+        for s in coaching.game_segments
+    ]
+    term = (
+        coaching.termination.model_copy(update={"inference_boundary": None})
+        if coaching.termination
+        else None
+    )
+    corpus = coaching.failure_corpus
+    if corpus and not is_minimal:
+        buckets = [
+            b.model_copy(update={"inference_boundary": None})
+            for b in corpus.buckets
+        ]
+        corpus = corpus.model_copy(
+            update={"buckets": buckets, "inference_boundary": None}
+        )
 
     coaching_updates: dict[str, Any] = {
         "critical_moments": compact_moments,
+        "game_segments": compact_segments,
+        "termination": term,
+        "failure_corpus": corpus,
     }
     if is_minimal:
         coaching_updates["advantage_events"] = []

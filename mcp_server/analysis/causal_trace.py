@@ -357,6 +357,86 @@ def build_causal_position_trace(
     }
 
 
+def compact_causal_trace(trace: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Strip low-signal square/mobility/safety tables from causal trace steps."""
+    if not trace or not isinstance(trace, dict):
+        return trace
+    steps = trace.get("steps")
+    if not isinstance(steps, list):
+        return trace
+
+    compact_steps: list[dict[str, Any]] = []
+    for s in steps:
+        if not isinstance(s, dict):
+            compact_steps.append(s)
+            continue
+        raw_delta = s.get("delta") or {}
+        compact_delta: dict[str, Any] = {
+            "material_delta_white_cp": raw_delta.get("material_delta_white_cp", 0),
+            "material_delta_black_cp": raw_delta.get("material_delta_black_cp", 0),
+        }
+        for list_key in (
+            "removed_pieces",
+            "added_pieces",
+            "newly_en_prise_pieces",
+            "resolved_en_prise_pieces",
+            "newly_pinned_pieces",
+            "removed_pins",
+            "opened_files",
+            "closed_files",
+        ):
+            val = raw_delta.get(list_key)
+            if val:
+                compact_delta[list_key] = val
+        if raw_delta.get("check_state_changed"):
+            compact_delta["check_state_changed"] = True
+        if raw_delta.get("king_ring_attack_delta_white"):
+            compact_delta["king_ring_attack_delta_white"] = raw_delta["king_ring_attack_delta_white"]
+        if raw_delta.get("king_ring_attack_delta_black"):
+            compact_delta["king_ring_attack_delta_black"] = raw_delta["king_ring_attack_delta_black"]
+
+        compact_step = {
+            "ply": s.get("ply"),
+            "side": s.get("side"),
+            "uci": s.get("uci"),
+            "san": s.get("san"),
+            "is_check": s.get("is_check"),
+            "is_capture": s.get("is_capture"),
+            "is_promotion": s.get("is_promotion"),
+            "captured_piece": s.get("captured_piece"),
+            "position_after_fen": s.get("position_after_fen"),
+            "position_after_hash": s.get("position_after_hash"),
+            "delta": compact_delta,
+            "causal_flags": s.get("causal_flags", []),
+        }
+        compact_steps.append(compact_step)
+
+    res = dict(trace)
+    res["steps"] = compact_steps
+    res["proof_scope"] = None
+
+    if "opponent_forcing_threat_delta" in res and isinstance(res["opponent_forcing_threat_delta"], dict):
+        oftd = dict(res["opponent_forcing_threat_delta"])
+        oftd["proof_scope"] = None
+        oftd["opponent_forcing_threat_candidates_if_pass_before"] = []
+        oftd["opponent_forcing_moves_after_played"] = []
+        oftd["unresolved_exact_opponent_forcing_threat_candidates"] = []
+        oftd["newly_enabled_opponent_forcing_moves_after_played"] = []
+        oftd["resolved_opponent_forcing_threat_candidates"] = []
+        oftd["strengthened_opponent_forcing_moves"] = []
+        oftd["weakened_opponent_forcing_moves"] = []
+        oftd["forcing_move_semantic_transitions"] = []
+        res["opponent_forcing_threat_delta"] = oftd
+
+    if "adaptive_forcing_resolution" in res and isinstance(res["adaptive_forcing_resolution"], dict):
+        afr = dict(res["adaptive_forcing_resolution"])
+        afr["proof_scope"] = None
+        afr["moves"] = []
+        res["adaptive_forcing_resolution"] = afr
+
+    return res
+
+
 def apply_causal_position_trace(
     result: ForensicMoveAnalysis,
     board_before: chess.Board,

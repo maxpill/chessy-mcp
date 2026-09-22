@@ -256,6 +256,10 @@ async def top_moves(
                 _compact_mcpeval(c) if not getattr(c, "is_compact", False) else c
                 for c in result.result
             ]
+            if result.forensics is not None:
+                from mcp_server.analysis.forensic_integration import compact_top_moves_forensics
+
+                top_updates["forensics"] = compact_top_moves_forensics(result.forensics)
         elif verbosity_mode == "minimal":
             top_updates["result"] = [
                 _minimal_mcpeval(c) if not getattr(c, "is_minimal", False) else c
