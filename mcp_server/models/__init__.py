@@ -28,21 +28,6 @@ from mcp_server.models.explorer import (
 from mcp_server.models.history import HistoryBlock
 from mcp_server.models.mcpeval import MCPEval
 from mcp_server.models.mcpeval_factory import attach_factory
-from mcp_server.models.ocr import (
-    ImageAttachment,
-    ImageBase64,
-    ImageFileUri,
-    ImageSource,
-    ImageUrl,
-    OcrCandidate,
-    OcrHeaderField,
-    OcrMetadataHints,
-    OcrMoveEntry,
-    OcrPgnResult,
-    OcrUncertainty,
-    OcrValidation,
-    PreprocessingHints,
-)
 from mcp_server.models.policy import PolicyBlock
 from core.engines.types import MoveClass
 from mcp_server.models.legacy import (
@@ -79,22 +64,10 @@ __all__ = [
     "ExplorerSpeed",
     "GameAnalysisResult",
     "HistoryBlock",
-    "ImageAttachment",
-    "ImageBase64",
-    "ImageFileUri",
-    "ImageSource",
-    "ImageUrl",
     "LichessExplorerResult",
     "MCPEval",
     "MCPMoveAnalysis",
     "MoveClass",
-    "OcrCandidate",
-    "OcrHeaderField",
-    "OcrMetadataHints",
-    "OcrMoveEntry",
-    "OcrPgnResult",
-    "OcrUncertainty",
-    "OcrValidation",
     "OpeningData",
     "OpeningGameRef",
     "OpeningHistoryPoint",
@@ -103,7 +76,6 @@ __all__ = [
     "PlayedMoveScore",
     "PlyAnalysisItem",
     "PolicyBlock",
-    "PreprocessingHints",
     "TopMovesResult",
     "score_played_move",
 ]

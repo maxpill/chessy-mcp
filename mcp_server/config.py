@@ -80,12 +80,6 @@ class MCPSettings(BaseSettings):
     # token. User-Agent and Origin strings are never treated as credentials.
     lock_chatgpt: bool = Field(default=False, validation_alias="CHESS_MCP_LOCK_CHATGPT")
 
-    # OCR sidecar. Default URL is the docker-compose service name on the
-    # internal bridge; override only when running sidecar outside compose.
-    ocr_sidecar_url: str = Field(
-        default="http://chess-ocr:9552", validation_alias="OCR_SIDECAR_URL"
-    )
-
     # Lichess Opening Explorer — bearer token + endpoint. The token is a
     # standard Lichess personal access token with ``explorer:read`` scope
     # generated at https://lichess.org/settings/oauth/token. Missing token

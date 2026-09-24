@@ -15,16 +15,6 @@ dependencies = [
     "uvloop>=0.21",
 ]
 
-[project.optional-dependencies]
-# OCR sidecar dependencies — pulled in only by the chess-ocr sidecar image.
-ocr = [
-    "fastapi>=0.115",
-    "pillow>=11.0",
-    "pillow-heif>=0.21",
-    "numpy>=1.26",
-    "scipy>=1.11",
-]
-
 [dependency-groups]
 dev = [
     "pytest>=8.3",

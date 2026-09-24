@@ -68,111 +68,18 @@ curl http://127.0.0.1:9551/health
 
 ## Tools
 
-Six Streamable-HTTP MCP tools at `/mcp`:
+Five Streamable-HTTP MCP tools at `/mcp`:
 
-| Tool                | What it does                                                                                                                             |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `evaluate_position` | Single-position Stockfish eval at a given depth                                                                                          |
-| `top_moves`         | Top-N candidate moves ranked by Stockfish                                                                                                |
-| `classify_move`     | Grade a played move against the engine's best alternative                                                                                |
-| `analyze_game`      | Full PGN analysis with accuracy, mistakes, turning points                                                                                |
-| `explore_opening`   | Lichess Opening Explorer — W/D/L stats + ECO + sample games for a position                                                               |
-| `ocr_to_pgn`        | OCR a printed/handwritten chess score-sheet image (HEIC/JPEG/PNG) and return a validated canonical PGN with Polish vs English autodetect |
+| Tool                | What it does                                                                                              |
+| ------------------- | --------------------------------------------------------------------------------------------------------- |
+| `evaluate_position` | Single-position Stockfish eval at a given depth                                                           |
+| `top_moves`         | Top-N candidate moves ranked by Stockfish                                                                 |
+| `classify_move`     | Grade a played move against the engine's best alternative                                                 |
+| `analyze_game`      | Full PGN analysis with accuracy, mistakes, turning points                                                 |
+| `explore_opening`   | Lichess Opening Explorer — W/D/L stats + ECO + sample games for a position                                |
 
-The 6-tool surface is intentional - the chessy app's coach runtime is the
+The 5-tool surface is intentional - the chessy app's coach runtime is the
 primary consumer, and this server is sized for that workload.
-
-### OCR score sheets
-
-`ocr_to_pgn` v2 accepts the image as one of three sources (discriminated
-union, exactly one form required):
-
-```json
-{"kind": "base64", "data": "<base64>"}
-{"kind": "url",    "url": "https://..."}
-{"kind": "file_uri", "path": "/abs/score.jpg"}
-```
-
-It returns a canonical English PGN plus the seven PGN header fields
-(White / Black / Round / Date / Event / Site / Result), per-ply
-uncertainties, and validation evidence — all in one tool call.
-
-Pipeline (auto-escalation, single call):
-
-1. **Image-source resolution.** Base64 is decoded inline; URLs are
-   fetched via `httpx` against the `CHESSY_MCP_URL_ALLOWLIST`
-   allowlist; `file_uri` paths must resolve under `CHESSY_MCP_FILE_ROOT`.
-   Magic-byte format check enforces HEIC/JPEG/PNG/WebP/GIF, 32 MB cap.
-2. **Adaptive preprocessing** (`mode="auto"`, default). CLAHE + auto-rotation
-   always; bilateral denoise is enabled only when image SNR
-   (grayscale stdev) is below threshold. `mode="explicit"` lets the
-   caller control each flag via the `preprocessing` object.
-3. **Multi-pass M3 OCR** via the `chess-ocr` sidecar (`core/chess_ocr/`):
-   Pass 1 raw + 3 language-biased passes in parallel + a verifier +
-   optional sanity sweep.
-4. **Structured header extraction** (`extract_headers=true`). A
-   deterministic M3 call returns the seven PGN header fields with
-   per-field confidence. Caller-supplied `metadata` hints override
-   detected values.
-5. **Per-cell candidate aggregation**. Each OCR pass contributes one
-   tokenised movetext; per (ply, side, san) we collect unique SANs and
-   sum the pass-level scores as a proxy for cross-pass agreement.
-6. **Legal-sequence beam search.** The MCP tool runs a beam-width-5
-   rerank over the per-cell candidates: each ply picks one legal SAN,
-   with a small downstream-continuity bonus and an opt-in Stockfish
-   tiebreak between visually similar candidates.
-7. **Final validation.** The selected path is replayed through
-   `python-chess`; legality, ply count, final FEN, and result-consistency
-   are surfaced in `OcrPgnResult.validation`.
-8. **Verbosity-gated response.** Default `verbosity="minimal"` returns
-   only `{status, canonical_pgn, confidence, validation, uncertainties,
-metadata}`. Use `"compact"` for detected-language / warnings, or
-   `"full"` for every OCR candidate + per-move evidence.
-
-Polish notation (`Ge5`, `S:d3`, `e8H`, `0-0`, `:`) gets normalised to
-canonical English SAN before reaching `python-chess`.
-
-The M3 API key lives in the single-letter env var `n` and is read only by
-the sidecar (never the MCP container). The MCP server has its own LRU
-cache keyed by SHA-256(image bytes) + language hint, deduping repeat OCRs.
-
-Set `n=<your-key>` in `.env` (gitignored) before `docker compose up`.
-See `SECURITY.md` for the secret-rotation policy.
-
-**Resolve modes** (`resolve_ambiguities`):
-
-    - `"strict"`       raises on any ambiguous ply.
-    - `"auto"`         (default) returns `status="needs_review"` plus
-                        a populated `uncertainties` array when the beam
-                        could not resolve silently.
-    - `"best_effort"`  always returns the best-scoring legal sequence.
-
-**Engine plausibility** (`engine_plausibility="tiebreak_only"`, default).
-Stockfish is consulted as a **weak tiebreaker** between visually similar
-candidates whose OCR scores are within 0.15 of each other — never as a
-correctness gate. A `-8.4` cp blunder is a legitimate human move.
-
-**Empirical quality** (40-photo Polish tournament corpus, see
-`tests/real_photos_report/report.md`):
-
-| Config                                      | Success rate     | Wall-clock (40 photos) |
-| ------------------------------------------- | ---------------- | ---------------------- |
-| Single-pass, 240 s timeout                  | 38/40 (95%)      | ~50 min                |
-| Single-pass, **360 s timeout** (production) | **40/40 (100%)** | ~52 min                |
-| Parallel-pair (2 concurrent), 360 s timeout | 38-40/40         | ~28 min                |
-
-**Throughput guidance**: production runs the sidecar at concurrency=1
-(the MCP server itself handles concurrent `ocr_to_pgn` calls via its own
-queue). For batch ingestion where wall-clock matters, the
-`scripts/test_ocr_real_photos.py --concurrency 1` harness is the
-template — at concurrency=2 we hit M3's per-minute API limit and ~20%
-of calls fail with connection-reset.
-
-**Real-world corpus tests** live in `tests/test_real_corpus.py` — 38
-parametrized cases harvested from the actual photo batch, covering
-language autodetect, `san_normalize` round-trip, and per-ply
-`python-chess` legality. Regenerate with `uv run python
-scripts/build_real_corpus.py` after every bulk OCR pass.
 
 ### Lichess integration
 

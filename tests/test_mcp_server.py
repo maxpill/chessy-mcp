@@ -21,7 +21,7 @@ async def _close_analyzer_at_test_end():
     await server_module.close_analyzer_pool()
 
 
-def test_mcp_has_6_tools():
+def test_mcp_has_5_tools():
     tools_list = asyncio.run(server_module.mcp.list_tools())
     names = {t.name for t in tools_list}
     assert names == {
@@ -30,7 +30,6 @@ def test_mcp_has_6_tools():
         "classify_move",
         "analyze_game",
         "explore_opening",
-        "ocr_to_pgn",
     }
 
 
@@ -40,23 +39,6 @@ def test_evaluate_position_is_read_only_and_idempotent():
     assert tool.annotations is not None
     assert tool.annotations.read_only_hint is True
     assert tool.annotations.idempotent_hint is True
-
-
-def test_ocr_to_pgn_schema_exposes_v2_fields() -> None:
-    """``ocr_to_pgn`` v2 advertises image-union, verbosity, resolve_ambiguities, mode."""
-    tools_list = asyncio.run(server_module.mcp.list_tools())
-    tool = next(t for t in tools_list if t.name == "ocr_to_pgn")
-    props = tool.input_schema.get("properties", {})
-    assert "image" in props, "image union parameter must be advertised"
-    assert "verbosity" in props, "verbosity parameter must be advertised"
-    assert "resolve_ambiguities" in props, "resolve_ambiguities parameter must be advertised"
-    assert "mode" in props, "mode parameter must be advertised"
-    assert "metadata" in props, "metadata parameter must be advertised"
-    # Legacy ``image_b64`` is gone — the breaking change is intentional.
-    assert "image_b64" not in props, "image_b64 must be removed in v2"
-    # The image schema describes all three union forms in its description.
-    desc = props["image"].get("description", "")
-    assert "base64" in desc and "url" in desc and "file_uri" in desc
 
 
 @pytest.mark.asyncio

@@ -65,7 +65,6 @@ services:
       - CHESS_MCP_AUTH_TOKEN=${CHESS_MCP_AUTH_TOKEN:-}
       - LICHESS_EXPLORER_TOKEN=${LICHESS_EXPLORER_TOKEN:-}
       - LICHESS_EXPLORER_ENDPOINT=${LICHESS_EXPLORER_ENDPOINT:-https://explorer.lichess.ovh}
-      - OCR_SIDECAR_URL=http://chess-ocr:9552
       - BUILD_SHA=${BUILD_SHA:-unknown}
       - CHESSY_PACKAGE_VERSION=${CHESSY_PACKAGE_VERSION:-0.1.0}
       - LOG_LEVEL=INFO
@@ -98,36 +97,6 @@ services:
       - caddy_config:/config
     networks:
       - mcp-net
-
-  chess-ocr:
-    build:
-      context: .
-      dockerfile: Dockerfile.ocr
-    restart: unless-stopped
-    environment:
-      # M3 multimodal API key. Read from env var `n` (single-letter per project convention).
-      # The MCP server does NOT need this — only the sidecar talks to the model provider.
-      - n=${n:-}
-      - OCR_HOST=0.0.0.0
-      - OCR_PORT=9552
-      - OCR_API_BASE=${OCR_API_BASE:-https://api.MiniMax.io/v1}
-      - OCR_MODEL=${OCR_MODEL:-MiniMax-M3}
-      - OCR_MAX_PASSES=${OCR_MAX_PASSES:-6}
-      - OCR_TARGET_VERIFIER_CONFIDENCE=${OCR_TARGET_VERIFIER_CONFIDENCE:-0.9}
-      # Per-pass HTTP timeout to M3. 360s is the empirically derived sweet
-      # spot (40/40 valid on the real-photo corpus at this budget; 240s
-      # left 2/40 hard cases timing out). See tests/real_photos_report/.
-      - OCR_PER_PASS_TIMEOUT_S=${OCR_PER_PASS_TIMEOUT_S:-360}
-    networks:
-      - mcp-net
-    expose:
-      - "9552"
-    healthcheck:
-      test: ["CMD", "/opt/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9552/health', timeout=2)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
 
 networks:
   mcp-net:
