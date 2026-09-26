@@ -1,0 +1,32 @@
+FROM debian:bookworm-slim AS stockfish-build
+
+ARG STOCKFISH_REF=edb0d9db6731067ec50ce619ff372b463bc4dd5d
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ca-certificates curl tar gzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /tmp/stockfish
+
+RUN curl -fsSL "https://codeload.github.com/official-stockfish/Stockfish/tar.gz/${STOCKFISH_REF}" \
+      -o /tmp/stockfish/source.tar.gz \
+    && tar -xzf /tmp/stockfish/source.tar.gz -C /tmp/stockfish --strip-components=1 \
+    && cd /tmp/stockfish/src \
+    && make -j"$(nproc)" profile-build ARCH=armv8-dotprod \
+    && install -Dm755 stockfish /out/stockfish
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates libstdc++6 python3 tini \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=stockfish-build /out/stockfish /usr/local/bin/stockfish
+COPY broker /app/broker
+
+WORKDIR /app
+EXPOSE 9550
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 CMD python3 -c "import socket; connection=socket.create_connection(('127.0.0.1', 9550), 2); connection.sendall(b'uci\\n'); assert b'uciok' in connection.recv(8192)" || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["python3", "-m", "broker.server"]
