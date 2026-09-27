@@ -2,6 +2,7 @@ name: chessy-mcp
 
 services:
   stockfish-broker:
+    user: "10001:10001"
     build:
       context: .
       dockerfile: Dockerfile.broker
@@ -16,9 +17,12 @@ services:
     mem_limit: 1400m
     cpus: "6.0"
     pids_limit: 64
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     networks: [chessy-platform]
 
   mcp:
+    user: "10001:10001"
     build:
       context: .
       dockerfile: Dockerfile.mcp
@@ -30,7 +34,7 @@ services:
       stockfish-broker:
         condition: service_healthy
     tmpfs:
-      - /cache:size=64m
+      - /cache:size=64m,uid=10001,gid=10001,mode=0700
     environment:
       CHESS_MCP_TRANSPORT: streamable-http
       CHESS_MCP_HOST: 0.0.0.0
@@ -58,6 +62,8 @@ services:
     mem_limit: 700m
     cpus: "1.0"
     pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     networks: [chessy-platform]
 
 networks:

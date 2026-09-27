@@ -18,7 +18,9 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libstdc++6 python3 tini \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 chessy \
+    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin chessy
 
 COPY --from=stockfish-build /out/stockfish /usr/local/bin/stockfish
 COPY broker /app/broker
@@ -28,5 +30,6 @@ EXPOSE 9550
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 CMD python3 -c "import socket; connection=socket.create_connection(('127.0.0.1', 9550), 2); connection.settimeout(2); connection.sendall(b'uci\\n'); response=b''; exec(\"while b'uciok' not in response:\\n response += connection.recv(8192)\"); assert b'uciok' in response" || exit 1
 
+USER 10001:10001
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python3", "-m", "broker.server"]

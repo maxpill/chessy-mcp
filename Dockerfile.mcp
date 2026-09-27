@@ -11,13 +11,17 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/tmp \
     UVLOOP_DISABLE_IMPORT_ERRORS=1 \
     BUILD_SHA=${BUILD_SHA} \
     CHESSY_PACKAGE_VERSION=${CHESSY_PACKAGE_VERSION}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates tini \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 chessy \
+    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin chessy
 
 WORKDIR /app
 
@@ -34,5 +38,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \
   CMD /opt/venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)" || exit 1
 
+USER 10001:10001
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/opt/venv/bin/python", "-m", "mcp_server.server"]
