@@ -20,7 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libstdc++6 python3 tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 chessy \
-    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin chessy
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/chessy --shell /usr/sbin/nologin chessy
+
+ENV HOME=/home/chessy
 
 COPY --from=stockfish-build /out/stockfish /usr/local/bin/stockfish
 COPY broker /app/broker

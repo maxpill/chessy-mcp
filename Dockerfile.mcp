@@ -12,7 +12,7 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    HOME=/tmp \
+    HOME=/home/chessy \
     UVLOOP_DISABLE_IMPORT_ERRORS=1 \
     BUILD_SHA=${BUILD_SHA} \
     CHESSY_PACKAGE_VERSION=${CHESSY_PACKAGE_VERSION}
@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 chessy \
-    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin chessy
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/chessy --shell /usr/sbin/nologin chessy
 
 WORKDIR /app
 
@@ -32,6 +32,7 @@ RUN uv sync --frozen --no-dev
 # Application code
 COPY mcp_server ./mcp_server
 COPY core ./core
+RUN chown -R chessy:chessy /home/chessy
 
 EXPOSE 8000
 
