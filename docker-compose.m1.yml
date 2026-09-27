@@ -1,0 +1,62 @@
+name: chessy-mcp
+
+services:
+  stockfish-broker:
+    build:
+      context: .
+      dockerfile: Dockerfile.broker
+    restart: unless-stopped
+    volumes:
+      - ./syzygy:/syzygy:ro
+    expose:
+      - "9550"
+    mem_limit: 1400m
+    cpus: "6.0"
+    pids_limit: 64
+    networks: [chessy-platform]
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
+        CHESSY_PACKAGE_VERSION: ${CHESSY_PACKAGE_VERSION:-0.1.0}
+    restart: unless-stopped
+    depends_on:
+      stockfish-broker:
+        condition: service_healthy
+    tmpfs:
+      - /cache:size=64m
+    environment:
+      CHESS_MCP_TRANSPORT: streamable-http
+      CHESS_MCP_HOST: 0.0.0.0
+      CHESS_MCP_PORT: "8000"
+      CHESS_MCP_LOCK_CHATGPT: "true"
+      CHESS_MCP_POOL_SIZE: "4"
+      CHESS_MCP_MAX_CONCURRENT_EVALUATES: "4"
+      STOCKFISH_HASH_MB: "1024"
+      STOCKFISH_THREADS_PER_WORKER: "6"
+      STOCKFISH_HOST: stockfish-broker
+      STOCKFISH_PORT: "9550"
+      CHESS_MCP_CACHE_DB: /cache/chess_mcp_eval_cache.sqlite3
+      CHESS_MCP_POOL_STATS_INTERVAL_S: "30"
+      CHESS_MCP_SHOW_WDL: "true"
+      CHESS_MCP_PONDER_ENABLED: "false"
+      CHESS_MCP_SYZYGY_PATH: /syzygy
+      CHESS_MCP_AUTH_TOKEN: ${CHESS_MCP_AUTH_TOKEN:?set_in_root_only_env_file}
+      LICHESS_EXPLORER_TOKEN: ${LICHESS_EXPLORER_TOKEN:?set_in_root_only_env_file}
+      LICHESS_EXPLORER_ENDPOINT: ${LICHESS_EXPLORER_ENDPOINT:-https://explorer.lichess.ovh}
+      BUILD_SHA: ${BUILD_SHA:-unknown}
+      CHESSY_PACKAGE_VERSION: ${CHESSY_PACKAGE_VERSION:-0.1.0}
+      LOG_LEVEL: INFO
+    expose:
+      - "8000"
+    mem_limit: 700m
+    cpus: "1.0"
+    pids_limit: 128
+    networks: [chessy-platform]
+
+networks:
+  chessy-platform:
+    external: true
