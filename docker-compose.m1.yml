@@ -10,6 +10,9 @@ services:
       - ./syzygy:/syzygy:ro
     expose:
       - "9550"
+    environment:
+      STOCKFISH_HASH_MB: "768"
+      STOCKFISH_THREADS_PER_WORKER: "6"
     mem_limit: 1400m
     cpus: "6.0"
     pids_limit: 64
@@ -35,7 +38,7 @@ services:
       CHESS_MCP_LOCK_CHATGPT: "true"
       CHESS_MCP_POOL_SIZE: "4"
       CHESS_MCP_MAX_CONCURRENT_EVALUATES: "4"
-      STOCKFISH_HASH_MB: "1024"
+      STOCKFISH_HASH_MB: "768"
       STOCKFISH_THREADS_PER_WORKER: "6"
       STOCKFISH_HOST: stockfish-broker
       STOCKFISH_PORT: "9550"

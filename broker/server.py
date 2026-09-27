@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 
 _DEFAULT_OPTIONS: dict[str, str] = {
-    "Threads": "6",
-    "Hash": "1024",
+    "Threads": os.environ.get("STOCKFISH_THREADS_PER_WORKER", "6"),
+    "Hash": os.environ.get("STOCKFISH_HASH_MB", "768"),
     "MultiPV": "1",
     "UCI_LimitStrength": "false",
     "UCI_Elo": "2850",
